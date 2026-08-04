@@ -400,6 +400,7 @@ function uiConfirm(msg, okLabel = 'OK') {
   return new Promise(res => {
     $('uicMsg').textContent = msg;
     $('uicOk').textContent = okLabel;
+    $('uicInput').hidden = true;
     $('uiConfirmWrap').hidden = false;
     const done = v => {
       $('uiConfirmWrap').hidden = true;
@@ -408,6 +409,26 @@ function uiConfirm(msg, okLabel = 'OK') {
     };
     $('uicOk').onclick = () => done(true);
     $('uicCancel').onclick = () => done(false);
+  });
+}
+function uiPrompt(msg, value = '', okLabel = 'OK') {
+  return new Promise(res => {
+    $('uicMsg').textContent = msg;
+    $('uicOk').textContent = okLabel;
+    const inp = $('uicInput');
+    inp.hidden = false;
+    inp.value = value;
+    $('uiConfirmWrap').hidden = false;
+    inp.focus();
+    const done = v => {
+      $('uiConfirmWrap').hidden = true;
+      inp.hidden = true;
+      $('uicOk').onclick = $('uicCancel').onclick = inp.onkeydown = null;
+      res(v);
+    };
+    inp.onkeydown = e => { if (e.key === 'Enter') done(inp.value.trim() || null); };
+    $('uicOk').onclick = () => done(inp.value.trim() || null);
+    $('uicCancel').onclick = () => done(null);
   });
 }
 
@@ -867,7 +888,78 @@ function updateRunStats(st) {
   $('stSpeed').textContent = last && last.speed != null ? last.speed.toFixed(0) : '–';
   $('stEnergy').textContent = last && last.db != null ? `${last.db.toFixed(1)} / ${st.endDb}` : '–';
   $('stCells').textContent = fmtCount(st.meshCells);
+  // ETA from progress so far
+  const running = ['starting', 'running', 'post'].includes(st.state);
+  $('runEta').textContent = running && st.percent > 3 && st.elapsed > 2
+    ? `~${Math.max(1, Math.round(st.elapsed * (100 - st.percent) / st.percent))}s left` : '';
+  // solver warnings
+  const warn = $('runWarn');
+  const msgs = st.warnMsgs || [];
+  warn.hidden = msgs.length === 0;
+  warn.innerHTML = msgs.map(m => `<div>${m.replace(/</g, '&lt;')}</div>`).join('');
+  // engine facts
+  const info = st.info || {};
+  const rows = [];
+  const add = (label, v) => { if (v != null) rows.push([label, v]); };
+  add('openEMS', info.version);
+  add('Engine', info.engine);
+  add('Threads', info.threads);
+  add('FDTD size', info.fdtdSize);
+  if (info.dt) add('Timestep', `${(parseFloat(info.dt) * 1e12).toFixed(3)} ps`);
+  add('Nyquist rate', info.nyquist && `${fmtCount(+info.nyquist)} ts`);
+  if (info.excitationTs) {
+    add('Excitation', `${fmtCount(+info.excitationTs)} ts` +
+      (info.excitationS ? ` (${(parseFloat(info.excitationS) * 1e9).toFixed(2)} ns)` : ''));
+  }
+  add('Run time', info.runTime && `${info.runTime} s`);
+  add('Final speed', info.finalSpeed && `${info.finalSpeed} MCells/s`);
+  $('runInfo').querySelector('tbody').innerHTML =
+    rows.map(([k, v]) => `<tr><td>${k}</td><td>${String(v).replace(/</g, '&lt;')}</td></tr>`).join('');
   drawRunChart($('runChart'), st.samples || [], st.nrts, st.endDb);
+  drawSpeedChart($('speedChart'), st.samples || [], st.nrts);
+}
+
+/* solver throughput over the run: MCells/s vs timestep */
+function drawSpeedChart(canvas, samples, nrts) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || canvas.parentElement.clientWidth || 280;
+  const h = Math.round(w * 0.38);
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.height = h + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const m = { l: 34, r: 8, t: 8, b: 16 };
+  const pts = samples.filter(s => s.speed != null && s.ts != null);
+  const vMax = Math.max(50, ...pts.map(s => s.speed)) * 1.15;
+  const xHi = Math.max(nrts || 1, pts.length ? pts[pts.length - 1].ts : 1);
+  const px = t => m.l + t / xHi * (w - m.l - m.r);
+  const py = v => m.t + (1 - v / vMax) * (h - m.t - m.b);
+  ctx.font = '10px system-ui';
+  ctx.lineWidth = 1;
+  for (const f of [0.5, 1]) {
+    const v = Math.round(vMax * f / 1.15);
+    ctx.strokeStyle = '#2c2c2a';
+    ctx.beginPath(); ctx.moveTo(m.l, py(v)); ctx.lineTo(w - m.r, py(v)); ctx.stroke();
+    ctx.fillStyle = '#898781';
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    ctx.fillText(String(v), m.l - 4, py(v));
+  }
+  ctx.strokeStyle = '#383835';
+  ctx.strokeRect(m.l, m.t, w - m.l - m.r, h - m.t - m.b);
+  ctx.fillStyle = '#898781';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+  ctx.fillText('MCells/s vs timestep', w - m.r - 2, h - m.b - 2);
+  if (pts.length) {
+    ctx.strokeStyle = '#d95926';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    pts.forEach((s, k) => {
+      const X = px(s.ts), Y = py(Math.min(s.speed, vMax));
+      k ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y);
+    });
+    ctx.stroke();
+  }
 }
 
 /* live energy-decay chart: energy dB vs timestep, with the end-criteria target */
@@ -1457,6 +1549,99 @@ async function importDrillFile(file) {
   }
 }
 
+/* ---------- server-side projects ---------- */
+async function saveProjectToServer() {
+  let name = app.project.name;
+  if (!name) {
+    name = await uiPrompt('Project name to save as:', '', 'Save');
+    if (!name) return;
+    app.project.name = name;
+    formsFromModel();
+  }
+  try {
+    const runId = app.currentRunId && String(app.currentRunId).startsWith('run_')
+      ? app.currentRunId : null;
+    const res = await apiJson('/api/projects/save', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, project: app.project, runId }),
+    });
+    if (res.name !== app.project.name) {
+      app.project.name = res.name;
+      formsFromModel();
+    }
+    app.dirty();
+    uiNotice(`Saved "${res.name}" on the server`
+      + (res.resultsSaved ? ' together with the latest results.'
+        : runId ? ' (results could not be attached).' : ' (run a simulation to attach results).'));
+  } catch (e) {
+    uiNotice('Save failed: ' + e.message, 'err', 8000);
+  }
+}
+
+async function openProjectsModal() {
+  const modal = $('projModal');
+  const list = $('projList');
+  list.innerHTML = '<li class="muted">loading…</li>';
+  modal.hidden = false;
+  let projects = [];
+  try {
+    projects = (await apiJson('/api/projects')).projects;
+  } catch (e) {
+    list.innerHTML = '<li class="muted">failed to list projects</li>';
+    return;
+  }
+  list.innerHTML = '';
+  if (!projects.length) {
+    list.innerHTML = '<li class="muted">No projects on the server yet — use Save.</li>';
+    return;
+  }
+  for (const pr of projects) {
+    const li = document.createElement('li');
+    const nm = document.createElement('span');
+    nm.className = 'pname';
+    nm.textContent = pr.name;
+    li.append(nm);
+    if (pr.hasResults) {
+      const b = document.createElement('span');
+      b.className = 'badge';
+      b.textContent = 'results';
+      li.append(b);
+    }
+    const meta = document.createElement('span');
+    meta.className = 'pmeta';
+    meta.textContent = new Date(pr.mtime * 1000).toLocaleString();
+    const del = document.createElement('button');
+    del.className = 'pdel';
+    del.textContent = '✕';
+    del.title = 'Delete this project from the server';
+    del.onclick = async e => {
+      e.stopPropagation();
+      if (!(await uiConfirm(`Delete project "${pr.name}" (and its stored results) from the server?`, 'Delete'))) return;
+      try {
+        await apiJson(`/api/projects/${encodeURIComponent(pr.name)}`, { method: 'DELETE' });
+        openProjectsModal();
+      } catch (err) { uiNotice('Delete failed: ' + err.message, 'err'); }
+    };
+    li.append(meta, del);
+    li.onclick = async () => {
+      modal.hidden = true;
+      try {
+        const data = await apiJson(`/api/projects/${encodeURIComponent(pr.name)}`);
+        data.project.name = pr.name;
+        loadProject(data.project);
+        if (data.resultsId) {
+          app.currentRunId = data.resultsId;
+          await loadResults(data.resultsId);
+          uiNotice(`Opened "${pr.name}" with its stored results.`);
+        } else {
+          uiNotice(`Opened "${pr.name}".`);
+        }
+      } catch (err) { uiNotice('Open failed: ' + err.message, 'err', 8000); }
+    };
+    list.append(li);
+  }
+}
+
 /* ---------- export / save / open ---------- */
 async function exportScript() {
   try {
@@ -1560,15 +1745,20 @@ window.addEventListener('DOMContentLoaded', () => {
     loadProject(p);
     uiNotice('New empty project started.');
   });
-  $('btnSave').addEventListener('click', () => {
-    if (!app.project.name) {
-      app.project.name = 'unsaved';
-      formsFromModel();
-      app.dirty();
-    }
-    download(app.project.name + '.json', JSON.stringify(app.project, null, 2), 'application/json');
+  $('btnSave').addEventListener('click', saveProjectToServer);
+  $('btnExportCfg').addEventListener('click', () => {
+    download((app.project.name || 'unsaved') + '.json',
+      JSON.stringify(app.project, null, 2), 'application/json');
   });
-  $('btnOpen').addEventListener('click', () => $('fileInput').click());
+  $('btnOpen').addEventListener('click', openProjectsModal);
+  $('projClose').addEventListener('click', () => { $('projModal').hidden = true; });
+  $('projModal').addEventListener('click', e => {
+    if (e.target === $('projModal')) $('projModal').hidden = true;
+  });
+  $('projImport').addEventListener('click', () => {
+    $('projModal').hidden = true;
+    $('fileInput').click();
+  });
   $('fileInput').addEventListener('change', async e => {
     const f = e.target.files[0];
     if (!f) return;

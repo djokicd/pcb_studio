@@ -256,6 +256,40 @@ select.mini { font-size: 12px; padding: 2px 5px; }
   font-size: 13px; white-space: pre-wrap; box-shadow: 0 10px 30px rgba(0,0,0,0.6);
 }
 .uic-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+#uicInput { width: 100%; margin-top: 12px; }
+#projModal {
+  position: fixed; inset: 0; z-index: 65; background: rgba(0,0,0,0.55);
+  display: flex; align-items: center; justify-content: center;
+}
+#projModal[hidden] { display: none; }
+.proj-box { width: 440px; max-height: 70vh; display: flex; flex-direction: column; }
+.proj-list {
+  list-style: none; margin: 10px 0 0; padding: 0; overflow-y: auto; flex: 1;
+}
+.proj-list li {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 6px; cursor: pointer;
+}
+.proj-list li:hover { background: #262624; }
+.proj-list .pname { font-weight: 600; }
+.proj-list .pmeta { margin-left: auto; color: #898781; font-size: 11px; white-space: nowrap; }
+.proj-list .badge {
+  font-size: 10px; padding: 1px 6px; border-radius: 8px;
+  background: rgba(12,163,12,0.18); color: #6fd66f; border: 1px solid rgba(12,163,12,0.4);
+}
+.proj-list .pdel { background: none; border: none; color: #898781; padding: 2px 6px; }
+.proj-list .pdel:hover { color: #e66767; }
+.runwarn {
+  margin-top: 10px; padding: 8px 10px; border-radius: 6px;
+  background: rgba(50,40,10,0.6); border: 1px solid #c98500;
+  color: #f4d284; font-size: 11px;
+}
+.runwarn div { margin: 2px 0; }
+.runwarn div::before { content: "⚠ "; }
+.runinfo { width: 100%; border-collapse: collapse; font-size: 11px; }
+.runinfo td { padding: 3px 6px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.runinfo td:first-child { color: #898781; white-space: nowrap; }
+.runinfo td:last-child { text-align: right; font-variant-numeric: tabular-nums; color: #c3c2b7; }
 .legend-chip { background: none; border: none; padding: 2px 4px; cursor: pointer; color: #c3c2b7; font-size: 12px; }
 .legend-chip:hover { color: #fff; background: none; }
 .legend-chip.off { opacity: 0.35; text-decoration: line-through; }

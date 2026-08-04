@@ -12,8 +12,9 @@
   <input id="projName" class="proj-name" placeholder="Unsaved" spellcheck="false" title="Project name — set from the JSON file name on open/save">
   <span class="spacer"></span>
   <button id="btnNew" title="New empty project">New</button>
-  <button id="btnOpen" title="Open project JSON">Open</button>
-  <button id="btnSave" title="Download project JSON">Save</button>
+  <button id="btnOpen" title="Open a project stored on the server (or import a JSON file)">Open</button>
+  <button id="btnSave" title="Save the project on the server, together with the latest results">Save</button>
+  <button id="btnExportCfg" title="Download the project configuration as a JSON file">Export cfg</button>
   <span class="sep"></span>
   <button id="btnExport" title="Download the generated Octave script">Export .m</button>
   <button id="btnRun" class="primary" title="Run the simulation with Octave/openEMS">&#9654; Run</button>
@@ -292,7 +293,7 @@
       <h3>Run</h3>
       <div class="runbar">
         <div class="progress"><div id="progFill"></div></div>
-        <div class="runmeta"><span id="runState">idle</span><span id="runElapsed"></span></div>
+        <div class="runmeta"><span id="runState">idle</span><span id="runEta"></span><span id="runElapsed"></span></div>
       </div>
 
       <div class="stats">
@@ -302,8 +303,16 @@
         <div class="stat"><b id="stCells">–</b><span>cells</span></div>
       </div>
 
+      <div id="runWarn" class="runwarn" hidden></div>
+
       <h3 style="margin-top:14px">Energy decay</h3>
       <div class="plotwrap"><canvas id="runChart"></canvas></div>
+
+      <h3 style="margin-top:14px">Solver speed</h3>
+      <div class="plotwrap"><canvas id="speedChart"></canvas></div>
+
+      <h3 style="margin-top:14px">Engine</h3>
+      <table id="runInfo" class="runinfo"><tbody></tbody></table>
 
       <button id="btnResults" class="wide-btn" hidden>View results &rarr;</button>
 
@@ -319,9 +328,20 @@
 <div id="uiConfirmWrap" hidden>
   <div class="uic-box">
     <div id="uicMsg"></div>
+    <input id="uicInput" type="text" hidden>
     <div class="uic-btns">
       <button id="uicCancel">Cancel</button>
       <button id="uicOk" class="primary">OK</button>
+    </div>
+  </div>
+</div>
+
+<div id="projModal" hidden>
+  <div class="uic-box proj-box">
+    <div class="modal-head"><span>Open project</span><button id="projClose">&#10005;</button></div>
+    <ul id="projList" class="proj-list"></ul>
+    <div class="uic-btns">
+      <button id="projImport">Import JSON file…</button>
     </div>
   </div>
 </div>

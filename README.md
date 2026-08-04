@@ -29,10 +29,21 @@ FDTD simulations of planar PCB structures via GNU Octave.
   Python and emitted into the script as explicit line vectors, so
   preview == simulation. The background mm grid can be toggled off (G).
 - **Run from the GUI**: Octave/openEMS subprocess with a graphical run
-  monitor — progress bar, stat tiles (timestep, speed, energy, cells)
-  and a live energy-decay chart with the end-criteria target line,
-  parsed from the solver output. The raw terminal log is collapsed by
+  monitor — progress bar with ETA, stat tiles (timestep, speed, energy,
+  cells), a live energy-decay chart with the end-criteria target line
+  and a solver-speed chart. All solver output is parsed: engine facts
+  (version, engine type, threads, FDTD size, timestep, Nyquist rate,
+  excitation length, final speed) appear in an Engine table and every
+  solver warning is surfaced in a highlighted box; non-converged runs
+  are labelled as such. The raw terminal log stays collapsed by
   default (auto-expands on errors). Runs can be stopped.
+- **Server-side projects**: Save stores the project on the server
+  (`projects/<name>/project.json`) together with a copy of the latest
+  run's results (S-parameters, port signals, current-density exports —
+  bulky raw field dumps excluded); Open lists the stored projects
+  (with a "results" badge, delete supported) and restores both the
+  design and its results. "Export cfg" downloads the project JSON,
+  and the Open dialog can import one.
 - **Results** open in a dedicated Results tab in the main area (the GUI
   switches to it when a run finishes), all interactive (hover tooltips)
   and pop-out-able to a large modal:

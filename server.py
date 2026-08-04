@@ -5,8 +5,10 @@ Serves the editor UI, generates Octave scripts, runs simulations via
 Octave/openEMS as a subprocess and reports progress parsed from the
 solver output.
 """
+import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -22,6 +24,8 @@ from meshlines import build_mesh
 BASE_DIR = Path(__file__).resolve().parent
 SIM_ROOT = BASE_DIR / 'sims'
 SIM_ROOT.mkdir(exist_ok=True)
+PROJ_ROOT = BASE_DIR / 'projects'
+PROJ_ROOT.mkdir(exist_ok=True)
 
 MAX_LOG_LINES = 5000
 
@@ -53,6 +57,8 @@ class Runner:
         self.nrts = 1
         self.end_db = -40.0
         self.not_converged = False
+        self.info = {}           # parsed engine facts (version, dt, ...)
+        self.warn_msgs = []      # solver warnings, deduped
 
     def status(self, offset=0):
         with self.lock:
@@ -70,6 +76,8 @@ class Runner:
                 'endDb': self.end_db,
                 'meshCells': self.mesh_cells,
                 'notConverged': self.not_converged,
+                'info': self.info,
+                'warnMsgs': self.warn_msgs,
             }
 
     def start(self, model):
@@ -128,7 +136,34 @@ class Runner:
             del self.log[:len(self.log) - MAX_LOG_LINES]
         self._parse(line)
 
+    INFO_PATTERNS = [
+        ('version', re.compile(r'openEMS \d+bit -- version (\S+)')),
+        ('engine', re.compile(r'Create FDTD operator \((.+)\)')),
+        ('threads', re.compile(r'Best performance found using (\d+) threads')),
+        ('fdtdSize', re.compile(r'FDTD simulation size:\s*(\d+x\d+x\d+)')),
+        ('dt', re.compile(r'FDTD timestep is:\s*([0-9.eE+-]+)\s*s')),
+        ('nyquist', re.compile(r'Nyquist rate:\s*(\d+)\s*timesteps')),
+        ('excitationTs', re.compile(r'Excitation signal length is:\s*(\d+)\s*timesteps')),
+        ('excitationS', re.compile(r'Excitation signal length is:.*\(([0-9.eE+-]+)s\)')),
+        ('maxTs', re.compile(r'Max. number of timesteps:\s*(\d+)')),
+        ('finalSpeed', re.compile(r'^Speed:\s*([\d.]+)\s*MCells/s')),
+        ('runTime', re.compile(r'Time for \d+ iterations with [\d.]+ cells\s*:\s*([\d.]+)\s*sec')),
+    ]
+
     def _parse(self, line):
+        for key, rx in self.INFO_PATTERNS:
+            m = rx.search(line)
+            if m:
+                self.info[key] = m.group(1)
+        low = line.lower()
+        if 'warning' in low and 'gui_marker' not in low:
+            msg = line.strip()
+            if msg not in self.warn_msgs and len(self.warn_msgs) < 20:
+                self.warn_msgs.append(msg)
+        elif self.warn_msgs and line.startswith('\t'):
+            # openEMS continues warnings on indented lines
+            if len(self.warn_msgs[-1]) < 400:
+                self.warn_msgs[-1] += ' ' + line.strip()
         if 'GUI_MARKER: starting FDTD' in line:
             self.state = 'running'
         elif 'GUI_MARKER: mesh' in line:
@@ -246,11 +281,21 @@ def api_mesh():
     return jsonify(mesh)
 
 
+def _safe_project_name(name):
+    safe = re.sub(r'[^\w.-]+', '_', (name or '').strip()).strip('._')
+    return safe[:60] or None
+
+
 def _run_dir(run_id):
-    if not re.fullmatch(r'run_[0-9_]+', run_id):
-        return None
-    d = SIM_ROOT / run_id
-    return d if d.is_dir() else None
+    """Resolve a results id: run_* under sims/, proj_* under projects/."""
+    if re.fullmatch(r'run_[0-9_]+', run_id):
+        d = SIM_ROOT / run_id
+        return d if d.is_dir() else None
+    m = re.fullmatch(r'proj_([\w.-]+)', run_id)
+    if m:
+        d = PROJ_ROOT / m.group(1) / 'results'
+        return d if d.is_dir() else None
+    return None
 
 
 def _read_probe(path):
@@ -275,10 +320,10 @@ def _read_probe(path):
 
 @app.get('/api/results/<run_id>/timedomain')
 def api_timedomain(run_id):
-    """Port voltage/current signals u(t), i(t) recorded by the lumped ports."""
-    if not re.fullmatch(r'run_[0-9_]+', run_id):
+    """Port voltage/current signals u(t), i(t) recorded by the ports."""
+    sim_dir = _run_dir(run_id)
+    if sim_dir is None:
         return jsonify({'error': 'bad run id'}), 400
-    sim_dir = SIM_ROOT / run_id
     # lumped ports write port_ut{N}; MSL ports write port_ut{N}A/B/C probes
     # around the measurement plane (B sits on it) and port_it{N}A/B either
     # side of it (calcPort averages them)
@@ -356,6 +401,72 @@ def api_jdump(run_id, layer, k):
     if d is None or not (d / fname).is_file():
         return jsonify({'error': 'no such dump'}), 404
     return send_from_directory(d, fname, mimetype='application/octet-stream')
+
+
+@app.get('/api/projects')
+def api_projects_list():
+    out = []
+    for d in sorted(PROJ_ROOT.iterdir()):
+        pj = d / 'project.json'
+        if d.is_dir() and pj.is_file():
+            out.append({
+                'name': d.name,
+                'mtime': pj.stat().st_mtime,
+                'hasResults': (d / 'results' / 'sparams.csv').is_file(),
+            })
+    out.sort(key=lambda p: -p['mtime'])
+    return jsonify({'projects': out})
+
+
+@app.post('/api/projects/save')
+def api_projects_save():
+    data = request.get_json(force=True)
+    safe = _safe_project_name(data.get('name'))
+    if not safe:
+        return jsonify({'error': 'invalid project name'}), 400
+    project = data.get('project')
+    if not isinstance(project, dict):
+        return jsonify({'error': 'missing project data'}), 400
+    pdir = PROJ_ROOT / safe
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / 'project.json').write_text(json.dumps(project, indent=1))
+    copied = False
+    run_id = data.get('runId')
+    if run_id and re.fullmatch(r'run_[0-9_]+', str(run_id)):
+        src = SIM_ROOT / run_id
+        if src.is_dir() and (src / 'sparams.csv').is_file():
+            dst = pdir / 'results'
+            if dst.is_dir():
+                shutil.rmtree(dst)
+            dst.mkdir()
+            for f in src.iterdir():
+                # skip bulky raw field dumps - the GUI uses the .bin exports
+                if f.suffix in ('.h5', '.vtr'):
+                    continue
+                shutil.copy2(f, dst / f.name)
+            copied = True
+    return jsonify({'name': safe, 'resultsSaved': copied})
+
+
+@app.get('/api/projects/<name>')
+def api_projects_get(name):
+    safe = _safe_project_name(name)
+    pdir = PROJ_ROOT / (safe or '')
+    if not safe or not (pdir / 'project.json').is_file():
+        return jsonify({'error': 'no such project'}), 404
+    project = json.loads((pdir / 'project.json').read_text())
+    has_results = (pdir / 'results' / 'sparams.csv').is_file()
+    return jsonify({'project': project, 'resultsId': f'proj_{safe}' if has_results else None})
+
+
+@app.delete('/api/projects/<name>')
+def api_projects_delete(name):
+    safe = _safe_project_name(name)
+    pdir = PROJ_ROOT / (safe or '')
+    if not safe or not (pdir / 'project.json').is_file():
+        return jsonify({'error': 'no such project'}), 404
+    shutil.rmtree(pdir)
+    return jsonify({'deleted': safe})
 
 
 @app.post('/api/import/gerber')
