@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenEMS PCB Studio</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="topbar">
+  <span class="brand">OpenEMS <b>PCB Studio</b></span>
+  <input id="projName" class="proj-name" placeholder="Unsaved" spellcheck="false" title="Project name — set from the JSON file name on open/save">
+  <span class="spacer"></span>
+  <button id="btnNew" title="New empty project">New</button>
+  <button id="btnOpen" title="Open project JSON">Open</button>
+  <button id="btnSave" title="Download project JSON">Save</button>
+  <span class="sep"></span>
+  <button id="btnExport" title="Download the generated Octave script">Export .m</button>
+  <button id="btnRun" class="primary" title="Run the simulation with Octave/openEMS">&#9654; Run</button>
+  <button id="btnStop" disabled title="Stop the running simulation">&#9632; Stop</button>
+  <input id="fileInput" type="file" accept=".json,application/json" hidden>
+</header>
+
+<main>
+  <aside id="left">
+    <div class="panel">
+      <h3>Tools</h3>
+      <div class="tools" id="toolButtons">
+        <button class="tool active" data-tool="select" title="Select / move (V)">
+          <svg viewBox="0 0 16 16"><path d="M3.5 1.5 L13 8 L8.3 8.9 L11 13.7 L8.9 14.8 L6.3 10 L3.5 13.2 Z" fill="currentColor" stroke="none"/></svg>
+        </button>
+        <button class="tool" data-tool="rect" title="Rectangle (R)">
+          <svg viewBox="0 0 16 16"><rect x="2" y="4" width="12" height="8"/></svg>
+        </button>
+        <button class="tool" data-tool="circle" title="Circle (C)">
+          <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/></svg>
+        </button>
+        <button class="tool" data-tool="segment" title="Circle segment (pie sector)">
+          <svg viewBox="0 0 16 16"><path d="M8 8 V2 A6 6 0 0 1 13.6 10.2 Z"/></svg>
+        </button>
+        <button class="tool" data-tool="arc" title="Arc (curved trace)">
+          <svg viewBox="0 0 16 16"><path d="M2.5 13.5 A11 11 0 0 1 13.5 2.5 L13.5 6 A7.5 7.5 0 0 0 6 13.5 Z"/></svg>
+        </button>
+        <button class="tool" data-tool="poly" title="Polygon (click points, Enter/double-click to finish)">
+          <svg viewBox="0 0 16 16"><polygon points="8,1.8 14.2,6.3 11.8,13.6 4.2,13.6 1.8,6.3"/></svg>
+        </button>
+        <button class="tool" data-tool="via" title="Via (click to place)">
+          <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="1.8" fill="currentColor" stroke="none"/></svg>
+        </button>
+        <button class="tool" data-tool="comp" title="Component R/L/C (click to place)">
+          <svg viewBox="0 0 16 16"><rect x="4" y="5.5" width="8" height="5"/><rect x="1.5" y="5.5" width="2.5" height="5" fill="currentColor" stroke="none"/><rect x="12" y="5.5" width="2.5" height="5" fill="currentColor" stroke="none"/></svg>
+        </button>
+        <button class="tool" data-tool="port" title="Lumped port (P)">
+          <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M4.8 8 h5.4 M8 5.6 L10.4 8 L8 10.4"/></svg>
+        </button>
+      </div>
+      <div class="tools">
+        <button id="btnGrid" class="tool wide active" title="Toggle background grid (G)">
+          <svg viewBox="0 0 16 16"><path d="M3 3 h.01 M8 3 h.01 M13 3 h.01 M3 8 h.01 M8 8 h.01 M13 8 h.01 M3 13 h.01 M8 13 h.01 M13 13 h.01" stroke-linecap="round" stroke-width="2"/></svg>
+          <span>Grid</span>
+        </button>
+        <button id="btnMesh" class="tool wide" title="Toggle mesh preview (M)">
+          <svg viewBox="0 0 16 16"><path d="M2 5.5 h12 M2 10.5 h12 M5.5 2 v12 M10.5 2 v12"/></svg>
+          <span>Mesh</span>
+        </button>
+        <button id="btnFit" class="tool wide" title="Fit view (F)">
+          <svg viewBox="0 0 16 16"><path d="M2 5 V2 h3 M11 2 h3 v3 M14 11 v3 h-3 M5 14 H2 v-3"/></svg>
+          <span>Fit</span>
+        </button>
+      </div>
+      <div class="row">
+        <label>Layer</label>
+        <select id="activeLayer"></select>
+      </div>
+      <div class="row">
+        <label>Snap</label>
+        <select id="snapSel">
+          <option value="0">off</option>
+          <option value="0.1">0.1 mm</option>
+          <option value="0.25">0.25 mm</option>
+          <option value="0.5" selected>0.5 mm</option>
+          <option value="1">1 mm</option>
+        </select>
+      </div>
+    </div>
+    <div class="panel grow">
+      <h3>Objects</h3>
+      <ul id="objList" class="obj-list"></ul>
+    </div>
+    <div class="panel hint">
+      V/R/C/P tools &middot; M mesh &middot; F fit &middot; Del deletes &middot; arrows nudge &middot;
+      wheel zooms &middot; middle/right-drag pans &middot; polygon: click points, Enter closes
+    </div>
+  </aside>
+
+  <section id="center">
+    <nav class="viewtabs">
+      <button class="viewtab active" data-view="editor">Editor</button>
+      <button class="viewtab" data-view="results">Results</button>
+    </nav>
+    <div id="editorView" class="view active">
+      <div id="warnBar" hidden></div>
+      <canvas id="editor"></canvas>
+      <div id="statusbar"><span id="cursorPos">&nbsp;</span><span id="meshInfo"></span><span id="zoomInfo"></span></div>
+    </div>
+    <div id="resultsView" class="view">
+      <div id="noResults" class="muted center-note">No results yet — run a simulation from the Run tab.</div>
+      <div id="results" hidden>
+        <div class="rconfig">
+          <span class="muted">Show:</span>
+          <label class="mini-check"><input type="checkbox" id="cfg_refl" checked> Reflection</label>
+          <label class="mini-check"><input type="checkbox" id="cfg_trans" checked> Transmission</label>
+          <label class="mini-check"><input type="checkbox" id="cfg_td" checked> Time domain</label>
+          <label class="mini-check"><input type="checkbox" id="cfg_j" checked> Current density</label>
+          <span class="muted" style="margin-left:12px">Columns:</span>
+          <select id="rCols" class="mini">
+            <option value="auto">auto</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+          </select>
+          <button id="rReset" class="mini-btn" title="Reset card order and sizes">Reset layout</button>
+          <span class="muted hint-inline">drag &#x2630; to rearrange cards · drag a card's corner to resize · drag on a plot / wheel to zoom · double-click resets</span>
+        </div>
+        <div class="rgrid">
+          <div class="card" id="reflCard">
+            <div class="card-head">
+              <span class="grip" draggable="true" title="Drag to rearrange">&#x2630;</span>
+              <span>Reflection</span>
+              <select id="reflView" class="mini">
+                <option value="mag">Magnitude (dB)</option>
+                <option value="smith">Smith chart</option>
+              </select>
+              <button class="mini-btn" data-png="reflCanvas" title="Export PNG">PNG</button>
+              <button class="mini-btn" data-csv="refl" title="Export CSV">CSV</button>
+              <button class="icon-btn" id="reflPop" title="Pop out">
+                <svg viewBox="0 0 16 16"><path d="M6.5 2.5 H2.5 V13.5 H13.5 V9.5 M9.5 6.5 L14 2 M10 2 h4 v4"/></svg>
+              </button>
+            </div>
+            <div class="legend" id="reflLegend"></div>
+            <div class="plotwrap rsz"><canvas id="reflCanvas"></canvas><div class="tooltip" id="reflTip" hidden></div></div>
+          </div>
+
+          <div class="card" id="transCard">
+            <div class="card-head">
+              <span class="grip" draggable="true" title="Drag to rearrange">&#x2630;</span>
+              <span>Transmission</span>
+              <select id="transView" class="mini">
+                <option value="mag">Magnitude (dB)</option>
+                <option value="polar">Polar</option>
+              </select>
+              <button class="mini-btn" data-png="transCanvas" title="Export PNG">PNG</button>
+              <button class="mini-btn" data-csv="trans" title="Export CSV">CSV</button>
+              <button class="icon-btn" id="transPop" title="Pop out">
+                <svg viewBox="0 0 16 16"><path d="M6.5 2.5 H2.5 V13.5 H13.5 V9.5 M9.5 6.5 L14 2 M10 2 h4 v4"/></svg>
+              </button>
+            </div>
+            <div class="legend" id="transLegend"></div>
+            <div class="plotwrap rsz"><canvas id="transCanvas"></canvas><div class="tooltip" id="transTip" hidden></div></div>
+          </div>
+
+          <div class="card" id="tdCard" hidden>
+            <div class="card-head">
+              <span class="grip" draggable="true" title="Drag to rearrange">&#x2630;</span>
+              <span title="Raw port signals u(t) / i(t)">Time domain</span>
+              <select id="tdView" class="mini">
+                <option value="u">Voltage u(t)</option>
+                <option value="i">Current i(t)</option>
+              </select>
+              <button class="mini-btn" data-png="tdCanvas" title="Export PNG">PNG</button>
+              <button class="mini-btn" data-csv="td" title="Export CSV">CSV</button>
+              <button class="icon-btn" id="tdPop" title="Pop out">
+                <svg viewBox="0 0 16 16"><path d="M6.5 2.5 H2.5 V13.5 H13.5 V9.5 M9.5 6.5 L14 2 M10 2 h4 v4"/></svg>
+              </button>
+            </div>
+            <div class="legend" id="tdLegend"></div>
+            <div class="plotwrap rsz"><canvas id="tdCanvas"></canvas><div class="tooltip" id="tdTip" hidden></div></div>
+          </div>
+
+          <div class="card" id="jCard" hidden>
+            <div class="card-head">
+              <span class="grip" draggable="true" title="Drag to rearrange">&#x2630;</span>
+              <span>Current density</span>
+              <select id="jMode" class="mini">
+                <option value="fd">Phasor (single f)</option>
+                <option value="td">Recorded J(t)</option>
+              </select>
+              <button class="mini-btn" data-png="jCanvas" title="Export PNG">PNG</button>
+              <button class="mini-btn" id="jGif" title="Export the animation as GIF">GIF</button>
+              <button class="icon-btn" id="jPop" title="Pop out">
+                <svg viewBox="0 0 16 16"><path d="M6.5 2.5 H2.5 V13.5 H13.5 V9.5 M9.5 6.5 L14 2 M10 2 h4 v4"/></svg>
+              </button>
+            </div>
+            <div class="jrow">
+              <select id="jLayer" class="mini"></select>
+              <select id="jFreq" class="mini" title="Dumped frequencies (quick pick)"></select>
+              <input id="jFreqNum" type="number" class="mini jfnum" step="0.01"
+                     title="Arbitrary frequency (GHz) — interpolated between the dumped points">
+              <button id="jPlay" class="mini-btn" title="Play / pause">&#9654;</button>
+              <input id="jPhase" type="range" min="0" max="360" value="0" step="2">
+              <label class="check mini-check" title="Bilinear resampling of the non-uniform FDTD grid; off shows raw mesh cells">
+                <input id="jInterp" type="checkbox" checked> interp</label>
+              <span id="jInfo" class="muted"></span>
+            </div>
+            <div class="plotwrap rsz"><canvas id="jCanvas"></canvas></div>
+            <div class="jscale">
+              <span>0</span>
+              <div class="jscale-bar" id="jScaleBar"></div>
+              <span id="jMax"></span>
+            </div>
+          </div>
+        </div>
+
+        <p class="muted"><a id="csvLink" href="#" download>Download sparams.csv</a> for the full data table.</p>
+      </div>
+    </div>
+  </section>
+
+  <div id="rightSplit" title="Drag to resize the panel"></div>
+  <aside id="right">
+    <nav class="tabs">
+      <button class="tab active" data-tab="props">Properties</button>
+      <button class="tab" data-tab="stackup">Stackup</button>
+      <button class="tab" data-tab="sim">Simulation</button>
+      <button class="tab" data-tab="run">Run</button>
+    </nav>
+
+    <div id="tab-props" class="tabpage active">
+      <div id="propsBody"><p class="muted">Nothing selected.<br>Click an object or draw a new one.</p></div>
+    </div>
+
+    <div id="tab-stackup" class="tabpage">
+      <h3>Board outline</h3>
+      <div class="form">
+        <label>Width (mm) <input id="b_width" type="number" step="0.1" min="0.1"></label>
+        <label>Height (mm) <input id="b_height" type="number" step="0.1" min="0.1"></label>
+      </div>
+      <h3 style="margin-top:16px">Stackup (top &rarr; bottom)</h3>
+      <div id="stackupList"></div>
+      <div class="stackup-add">
+        <button id="addCond">+ Conductor</button>
+        <button id="addDiel">+ Dielectric</button>
+      </div>
+      <h3 style="margin-top:16px">Import fabrication data</h3>
+      <p class="muted" style="margin:4px 0 8px">
+        Use the &#8686; button on a conductor layer to import a Gerber file
+        onto it. Drill files create through-hole vias.
+      </p>
+      <button id="btnDrill" class="wide-btn" style="margin-top:0">&#8686; Import drill file (PTH vias)</button>
+      <input id="gerberInput" type="file" hidden>
+      <input id="drillInput" type="file" accept=".drl,.xln,.txt,.exc,.drill" hidden>
+    </div>
+
+    <div id="tab-sim" class="tabpage">
+      <h3>Simulation settings</h3>
+      <div class="form">
+        <label>f start (GHz) <input id="s_fStart" type="number" step="0.1" min="0.001"></label>
+        <label>f stop (GHz) <input id="s_fStop" type="number" step="0.1" min="0.001"></label>
+        <label>Frequency points <input id="s_points" type="number" step="1" min="2"></label>
+        <label>Boundary
+          <select id="s_boundary">
+            <option value="MUR">MUR (absorbing)</option>
+            <option value="PML_8">PML-8 (absorbing, better)</option>
+            <option value="PEC">PEC (metal box)</option>
+            <option value="PMC">PMC</option>
+          </select>
+        </label>
+        <label>End criteria (dB) <input id="s_endCriteria" type="number" step="1" max="-10"></label>
+        <label>Max. timesteps <input id="s_maxTimesteps" type="number" step="1000" min="100"></label>
+        <label>Mesh: &lambda;/N <input id="s_meshDiv" type="number" step="1" min="4"></label>
+        <label>Edge resolution (mm) <input id="s_edgeRes" type="number" step="0.05" min="0" placeholder="auto"></label>
+        <label title="Mesh lines closer than this are merged (prevents tiny cells that crush the timestep)">
+          Merge lines &lt; (mm) <input id="s_meshMerge" type="number" step="0.01" min="0" placeholder="0.1"></label>
+        <label>Air margin (mm) <input id="s_airMargin" type="number" step="1" min="0"></label>
+      </div>
+      <h3 style="margin-top:16px">Current density recording</h3>
+      <div class="form">
+        <label class="check"><input id="s_dumpJ" type="checkbox"> Phasor dump (frequency domain)</label>
+        <label>Frequencies (GHz) <input id="s_dumpFreqs" type="text" placeholder='f0 · "all" · 2.4, 5.8'></label>
+        <label class="check"><input id="s_dumpJt" type="checkbox"> Record J(t) (time domain)</label>
+        <label>Window start (ns) <input id="s_jtStart" type="number" step="0.1" min="0"></label>
+        <label>Window stop (ns) <input id="s_jtStop" type="number" step="0.1" min="0.1"></label>
+        <label>Spatial subsampling
+          <select id="s_jtSub">
+            <option value="1">1 (full)</option>
+            <option value="2">2</option>
+            <option value="4">4</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div id="tab-run" class="tabpage">
+      <h3>Run</h3>
+      <div class="runbar">
+        <div class="progress"><div id="progFill"></div></div>
+        <div class="runmeta"><span id="runState">idle</span><span id="runElapsed"></span></div>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><b id="stTs">–</b><span>timestep</span></div>
+        <div class="stat"><b id="stSpeed">–</b><span>MCells/s</span></div>
+        <div class="stat"><b id="stEnergy">–</b><span>energy dB</span></div>
+        <div class="stat"><b id="stCells">–</b><span>cells</span></div>
+      </div>
+
+      <h3 style="margin-top:14px">Energy decay</h3>
+      <div class="plotwrap"><canvas id="runChart"></canvas></div>
+
+      <button id="btnResults" class="wide-btn" hidden>View results &rarr;</button>
+
+      <details id="rawLog">
+        <summary>Raw solver output</summary>
+        <pre id="runLog" class="log"></pre>
+      </details>
+    </div>
+  </aside>
+</main>
+
+<div id="toasts"></div>
+<div id="uiConfirmWrap" hidden>
+  <div class="uic-box">
+    <div id="uicMsg"></div>
+    <div class="uic-btns">
+      <button id="uicCancel">Cancel</button>
+      <button id="uicOk" class="primary">OK</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head"><span id="modalTitle"></span><button id="modalClose">&#10005;</button></div>
+    <div class="modal-body">
+      <div class="plotwrap big"><canvas id="modalCanvas"></canvas><div class="tooltip" id="modalTip" hidden></div></div>
+    </div>
+  </div>
+</div>
+
+<script src="js/gifenc.js"></script>
+<script src="js/charts.js"></script>
+<script src="js/jview.js"></script>
+<script src="js/editor.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
