@@ -527,9 +527,13 @@ class TimeChart extends ChartBase {
     if (idx < 0) { this.clearHover(); return; }
     this.hover = idx;
     this.draw();
-    const rows = series.map((s, i) =>
-      `<div class="t-row"><span class="swatch" style="background:${SERIES_COLORS[(s.ci != null ? s.ci : i) % SERIES_COLORS.length]}"></span>` +
-      `${s.label}<span class="t-val">${s.values[idx] != null ? s.values[idx].toExponential(3) : '—'} ${unit}</span></div>`).join('');
+    const rows = series.map((s, i) => {
+      const val = s.raw
+        ? (s.raw[idx] != null ? `${s.raw[idx].toExponential(3)} ${s.rawUnit || 'A'}` : '—')
+        : (s.values[idx] != null ? `${s.values[idx].toExponential(3)} ${unit}` : '—');
+      return `<div class="t-row"><span class="swatch" style="background:${SERIES_COLORS[(s.ci != null ? s.ci : i) % SERIES_COLORS.length]}"></span>` +
+        `${s.label}<span class="t-val">${val}</span></div>`;
+    }).join('');
     this.showTip(e, `<div class="t-head">${(t[idx] * 1e9).toFixed(3)} ns</div>${rows}`);
   }
 }

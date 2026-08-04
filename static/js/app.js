@@ -182,6 +182,29 @@ const app = {
     this.select('port', id);
     this.dirty();
   },
+  createMslPort(x, y, w, h) {
+    const p = this.project;
+    const layers = this.conductorLayers();
+    const id = p.nextId++;
+    const number = p.ports.length ? Math.max(...p.ports.map(q => q.number)) + 1 : 1;
+    // propagation points inward, away from the nearest board edge
+    const cx = x + w / 2, cy = y + h / 2;
+    const dists = [
+      [cx, '+x'], [p.board.width - cx, '-x'],
+      [cy, '+y'], [p.board.height - cy, '-y'],
+    ];
+    dists.sort((a, b) => a[0] - b[0]);
+    const strip = layers.find(l => l.id === this.activeLayer && l.id) || layers[0];
+    const gnd = [...layers].reverse().find(l => l.fill && l.id !== strip.id) ||
+      layers.find(l => l.id !== strip.id) || layers[layers.length - 1];
+    p.ports.push({
+      id, ptype: 'msl', number, x, y, w, h, orient: dists[0][1],
+      layerTo: strip.id, layerFrom: gnd.id,
+      impedance: 50, excite: p.ports.length === 0,
+    });
+    this.select('port', id);
+    this.dirty();
+  },
 
   deleteSelection() {
     const sel = this.selection;
@@ -323,8 +346,28 @@ function validateProject() {
     if (!(lo > d0 + 1e-9 && hi < d1 - 1e-9))
       w.push(`${c.ref}: body ends do not touch copper — the R/L/C will not be connected`);
   }
+  const s = p.sim;
+  if (s.fStart && s.fStop && s.fStart < s.fStop / 10) {
+    w.push(`Very wide band (${s.fStart}–${s.fStop} GHz): the pulse then contains near-DC energy `
+      + `that neither the boundaries nor the ports can absorb — the energy decay will plateau. `
+      + `Use f start ≥ ${(s.fStop / 10).toFixed(1)} GHz, or expect a non-converged run.`);
+  }
+  if (s.endCriteria != null && s.endCriteria < -50) {
+    w.push(`End criteria ${s.endCriteria} dB is below the typical numerical floor (≈ −50 dB) — `
+      + `the run will likely stop at the timestep limit instead. −40 dB is usually sufficient.`);
+  }
   for (const q of p.ports) {
     const bb = [q.x, q.y, q.x + q.w, q.y + q.h];
+    if (q.ptype === 'msl') {
+      if (!['MUR', 'PML_8'].includes(p.sim.boundary))
+        w.push(`MSL port ${q.number} needs an absorbing boundary (MUR or PML-8), not ${p.sim.boundary}`);
+      const gnd = p.stackup.find(l => l.id === q.layerFrom);
+      if (gnd && !gnd.fill)
+        w.push(`MSL port ${q.number}: ground layer "${app.layerName(q.layerFrom)}" is not a full plane`);
+      if (!copperOn(q.layerTo, bb))
+        w.push(`MSL port ${q.number} does not touch copper on its strip layer`);
+      continue;
+    }
     if (!inside(bb)) w.push(`Port ${q.number} extends outside the board outline`);
     if (q.direction === 'z') {
       for (const lid of [q.layerFrom, q.layerTo]) {
@@ -394,7 +437,9 @@ function renderObjList() {
   };
   // ports/components/vias first so a large import cannot push them off the list
   for (const p of app.project.ports)
-    add('port', p, '#0ca30c', `Port ${p.number}${p.excite ? ' *' : ''}`, p.direction + (p.excite ? ' exc' : ''));
+    add('port', p, p.ptype === 'msl' ? '#0ca378' : '#0ca30c',
+      `${p.ptype === 'msl' ? 'MSL port' : 'Port'} ${p.number}${p.excite ? ' *' : ''}`,
+      (p.ptype === 'msl' ? (p.orient || '+x') : p.direction) + (p.excite ? ' exc' : ''));
   for (const c of app.project.components)
     add('component', c, '#b9b9b3', app.compLabel(c), c.package);
   for (const v of app.project.vias)
@@ -462,7 +507,9 @@ function renderProps() {
     shape: () => [app.layerColor(obj.layer), obj.name || obj.type],
     via: () => ['#c3c2b7', 'Via'],
     component: () => ['#b9b9b3', app.compLabel(obj)],
-    port: () => ['#0ca30c', `Lumped port ${obj.number}`],
+    port: () => obj.ptype === 'msl'
+      ? ['#0ca378', `MSL port ${obj.number}`]
+      : ['#0ca30c', `Lumped port ${obj.number}`],
   };
   const [color, txt] = heads[kind]();
   chip.style.background = color;
@@ -531,6 +578,34 @@ function renderProps() {
     F('Layer', layerSel(obj.layer, v => { obj.layer = v; upd(); }));
     F('Center x', numIn(obj.x, 0.1, v => { obj.x = v; upd(); }));
     F('Center y', numIn(obj.y, 0.1, v => { obj.y = v; upd(); }));
+  } else if (kind === 'port' && obj.ptype === 'msl') {
+    F('Port number', numIn(obj.number, 1, v => { obj.number = Math.max(1, Math.round(v)); upd(); }));
+    F('Direction (into board)', selIn([['+x', '+x →'], ['-x', '-x ←'], ['+y', '+y ↑'], ['-y', '-y ↓']],
+      obj.orient || '+x', v => { obj.orient = v; upd(); }));
+    F('Strip layer', layerSel(obj.layerTo, v => { obj.layerTo = v; upd(); }));
+    F('Ground layer', layerSel(obj.layerFrom, v => { obj.layerFrom = v; upd(); }));
+    F('Ref. impedance (Ω)', numIn(obj.impedance, 1, v => { obj.impedance = v; upd(); }));
+    const note = document.createElement('p');
+    note.className = 'muted';
+    note.textContent = 'The strip is extended from the port to the absorbing '
+      + 'boundary automatically; the S-parameter reference plane sits at the '
+      + 'port’s inner edge. Match the port width to the line width.';
+    form.append(note);
+    const excI0 = document.createElement('input');
+    excI0.type = 'checkbox'; excI0.checked = !!obj.excite;
+    excI0.addEventListener('change', () => {
+      if (excI0.checked) app.project.ports.forEach(q => { q.excite = (q === obj); });
+      else obj.excite = false;
+      rerender();
+    });
+    const excL0 = document.createElement('label');
+    excL0.className = 'check';
+    excL0.append(excI0, document.createTextNode(' Excited port (source)'));
+    form.append(excL0);
+    F('x (mm)', numIn(obj.x, 0.1, v => { obj.x = v; upd(); }));
+    F('y (mm)', numIn(obj.y, 0.1, v => { obj.y = v; upd(); }));
+    F('Width (mm)', numIn(obj.w, 0.1, v => { obj.w = Math.max(0.01, v); upd(); }));
+    F('Height (mm)', numIn(obj.h, 0.1, v => { obj.h = Math.max(0.01, v); upd(); }));
   } else if (kind === 'port') {
     F('Port number', numIn(obj.number, 1, v => { obj.number = Math.max(1, Math.round(v)); upd(); }));
     F('Direction', selIn([['x', 'x (in-plane)'], ['y', 'y (in-plane)'], ['z', 'z (vertical)']],
@@ -890,7 +965,16 @@ function poll() {
       setRunUI(st.state, st.percent, st.elapsed);
       updateRunStats(st);
       if (['starting', 'running', 'post'].includes(st.state)) poll();
-      else if (st.state === 'done') loadResults(st.runId);
+      else if (st.state === 'done') {
+        if (st.notConverged) {
+          $('runState').textContent = 'done — NOT converged';
+          uiNotice('The run hit the timestep limit before reaching the end criteria — '
+            + 'residual energy stayed in the domain. S-parameters may show ripple and the '
+            + 'lowest frequencies may be unreliable. See the design warnings for likely causes '
+            + '(very wide band or a too-strict end criteria).', 'warn', 12000);
+        }
+        loadResults(st.runId);
+      }
       else if (st.state === 'error') {
         appendLog(['', '*** ' + (st.error || 'simulation failed') + ' ***']);
         $('rawLog').open = true;
@@ -928,7 +1012,14 @@ async function loadResults(runId) {
     app.tdData = null;
     try {
       const td = await apiJson(`/api/results/${runId}/timedomain`);
-      if (td.ports && td.ports.length) app.tdData = td;
+      if (td.ports && td.ports.length) {
+        app.tdData = td;
+        // currents start hidden unless the user has toggled them before
+        for (const p of td.ports) {
+          if (resultsPrefs.hidden[`td:i${p.n}`] === undefined)
+            resultsPrefs.hidden[`td:i${p.n}`] = true;
+        }
+      }
     } catch (e) { /* no TD data - card stays hidden */ }
     $('results').hidden = false;
     $('noResults').hidden = true;
@@ -1008,17 +1099,29 @@ function makeTransChart(canvas, tip) {
   return ch;
 }
 
+/* every port contributes u(t) [V] and i(t) plotted as i·Z0 so both signal
+   kinds share one honest axis; the tooltip shows the raw current */
+function tdSignals() {
+  const out = [];
+  app.tdData.ports.forEach((p, idx) => {
+    const z0 = (app.project.ports.find(q => q.number === p.n) || {}).impedance || 50;
+    if (p.u.length) {
+      out.push({ key: `td:u${p.n}`, label: `u${p.n}(t)`, ci: 2 * idx,
+        values: p.u, raw: null });
+    }
+    if (p.i.length) {
+      out.push({ key: `td:i${p.n}`, label: `i${p.n}·Z₀`, ci: 2 * idx + 1,
+        values: p.i.map(v => v * z0), raw: p.i, rawUnit: 'A' });
+    }
+  });
+  return out;
+}
 function makeTdChart(canvas, tip) {
-  const mode = $('tdView').value;   // 'u' | 'i'
-  const ports = app.tdData.ports;
   const ch = new TimeChart(canvas, tip);
   ch.setData({
-    t: ports[0].t,
-    unit: mode === 'u' ? 'V' : 'A',
-    series: ports
-      .map((p, i) => ({ p, ci: i }))
-      .filter(({ p }) => (mode === 'u' ? p.u : p.i).length && !resultsPrefs.hidden[`td:${p.n}`])
-      .map(({ p, ci }) => ({ label: `${mode}${p.n}(t)`, values: mode === 'u' ? p.u : p.i, ci })),
+    t: app.tdData.ports[0].t,
+    unit: 'V',
+    series: tdSignals().filter(s => !resultsPrefs.hidden[s.key]),
   });
   return ch;
 }
@@ -1078,8 +1181,7 @@ function renderCharts() {
   if (!$('tdCard').hidden && app.tdData) {
     if (tdChart) tdChart.destroy();
     tdChart = makeTdChart($('tdCanvas'), $('tdTip'));
-    buildLegend($('tdLegend'),
-      app.tdData.ports.map((p, i) => ({ label: `${$('tdView').value}${p.n}(t)`, key: `td:${p.n}`, ci: i })));
+    buildLegend($('tdLegend'), tdSignals().map(s => ({ label: s.label, key: s.key, ci: s.ci })));
   }
 }
 
@@ -1113,14 +1215,13 @@ function exportCSVFor(kind) {
     download(`${name}_${kind}.csv`, out, 'text/csv');
   } else if (kind === 'td') {
     if (!app.tdData) return;
-    const mode = $('tdView').value;
     const ports = app.tdData.ports;
-    let out = 't_s' + ports.map(p => `,${mode}${p.n}`).join('') + '\n';
+    let out = 't_s' + ports.map(p => `,u${p.n}_V,i${p.n}_A`).join('') + '\n';
     ports[0].t.forEach((tv, k) => {
       out += tv.toExponential(6) +
-        ports.map(p => ',' + (((mode === 'u' ? p.u : p.i)[k] ?? 0).toExponential(6))).join('') + '\n';
+        ports.map(p => `,${(p.u[k] ?? 0).toExponential(6)},${(p.i[k] ?? 0).toExponential(6)}`).join('') + '\n';
     });
-    download(`${name}_timedomain_${mode}.csv`, out, 'text/csv');
+    download(`${name}_timedomain.csv`, out, 'text/csv');
   }
 }
 
@@ -1498,7 +1599,6 @@ window.addEventListener('DOMContentLoaded', () => {
   // results controls
   $('reflView').addEventListener('change', renderCharts);
   $('transView').addEventListener('change', renderCharts);
-  $('tdView').addEventListener('change', renderCharts);
   $('reflPop').addEventListener('click', () =>
     Modal.open('Reflection', (c, t) => makeReflChart(c, t)));
   $('transPop').addEventListener('click', () =>

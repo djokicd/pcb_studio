@@ -52,6 +52,7 @@ class Runner:
         self.started_at = None
         self.nrts = 1
         self.end_db = -40.0
+        self.not_converged = False
 
     def status(self, offset=0):
         with self.lock:
@@ -68,6 +69,7 @@ class Runner:
                 'nrts': self.nrts,
                 'endDb': self.end_db,
                 'meshCells': self.mesh_cells,
+                'notConverged': self.not_converged,
             }
 
     def start(self, model):
@@ -133,6 +135,8 @@ class Runner:
             m = re.search(r'=\s*(\d+)\s*cells', line)
             if m:
                 self.mesh_cells = int(m.group(1))
+        elif 'Max. number of timesteps was reached before the end-criteria' in line:
+            self.not_converged = True
         elif 'GUI_MARKER: post-processing' in line:
             self.state = 'post'
             self.percent = max(self.percent, 97.0)
@@ -275,19 +279,38 @@ def api_timedomain(run_id):
     if not re.fullmatch(r'run_[0-9_]+', run_id):
         return jsonify({'error': 'bad run id'}), 400
     sim_dir = SIM_ROOT / run_id
+    # lumped ports write port_ut{N}; MSL ports write port_ut{N}A/B/C probes
+    # around the measurement plane (B sits on it) and port_it{N}A/B either
+    # side of it (calcPort averages them)
+    variants = {}
+    for ut in sim_dir.glob('port_ut*'):
+        m = re.fullmatch(r'port_ut_?(\d+)([ABC])?', ut.name)
+        if m:
+            variants.setdefault(int(m.group(1)), {})[m.group(2) or ''] = ut
     ports = []
-    for ut in sorted(sim_dir.glob('port_ut*')):
-        m = re.fullmatch(r'port_ut_?(\d+)', ut.name)
-        if not m:
+    for n in sorted(variants):
+        v = variants[n]
+        ut = v.get('') or v.get('B') or v.get('A')
+        if ut is None:
             continue
-        n = int(m.group(1))
         t, u = _read_probe(ut)
         i_vals = []
-        for it_name in (f'port_it_{n}', f'port_it{n}'):
-            it_path = sim_dir / it_name
-            if it_path.is_file():
-                i_vals = _read_probe(it_path)[1]
-                break
+        if '' in v:   # lumped port
+            for it_name in (f'port_it_{n}', f'port_it{n}'):
+                it_path = sim_dir / it_name
+                if it_path.is_file():
+                    i_vals = _read_probe(it_path)[1]
+                    break
+        else:         # MSL port: average the probes straddling the plane
+
+            acc = []
+            for sfx in ('A', 'B'):
+                it_path = sim_dir / f'port_it{n}{sfx}'
+                if it_path.is_file():
+                    acc.append(_read_probe(it_path)[1])
+            if acc:
+                nmin = min(len(a) for a in acc)
+                i_vals = [sum(a[k] for a in acc) / len(acc) for k in range(nmin)]
         ports.append({'n': n, 't': t, 'u': u, 'i': i_vals})
     if not ports:
         return jsonify({'error': 'no time-domain data for this run'}), 404

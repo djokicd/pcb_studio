@@ -135,11 +135,24 @@ def validate(model):
     excited = [p for p in ports if p.get('excite')]
     if len(excited) != 1:
         raise ValidationError(f'Exactly one port must be excited ({len(excited)} are)')
+    sim_boundary = (model.get('sim') or {}).get('boundary') or 'MUR'
     for i, p in enumerate(ports):
         n = f'port {p.get("number", i + 1)}'
         for k in ('x', 'y', 'w', 'h'):
             _num(p.get(k), f'{n}.{k}')
         _num(p.get('impedance', 50), f'{n} impedance', positive=True)
+        if p.get('ptype') == 'msl':
+            if p.get('orient', '+x') not in ('+x', '-x', '+y', '-y'):
+                raise ValidationError(f'{n}: invalid MSL orientation')
+            if p.get('layerFrom') not in conductors or p.get('layerTo') not in conductors:
+                raise ValidationError(f'{n}: strip/ground must be conductor layers')
+            if p.get('layerFrom') == p.get('layerTo'):
+                raise ValidationError(f'{n}: strip and ground layer are the same')
+            if sim_boundary not in ('MUR', 'PML_8'):
+                raise ValidationError(
+                    f'{n}: MSL ports need an absorbing boundary (MUR or PML-8), '
+                    f'the simulation uses {sim_boundary}')
+            continue
         d = p.get('direction', 'z')
         if d not in ('x', 'y', 'z'):
             raise ValidationError(f'{n}: invalid direction')
@@ -247,6 +260,24 @@ def generate_script(model):
     a('CSX = InitCSX();')
     a('')
 
+    # sides carrying MSL ports: substrate and ground must extend to the
+    # domain boundary there so the port launches into the real line
+    # cross-section (the feed would otherwise hang in air)
+    msl_sides = {p.get('orient', '+x') for p in ports if p.get('ptype') == 'msl'}
+    msl_gnd_layers = {p['layerFrom'] for p in ports if p.get('ptype') == 'msl'}
+
+    def _extend(x0, y0, x1, y1):
+        """Grow a full-board box to the domain edge on every MSL side."""
+        if '+x' in msl_sides:
+            x0 = mesh['x'][0]
+        if '-x' in msl_sides:
+            x1 = mesh['x'][-1]
+        if '+y' in msl_sides:
+            y0 = mesh['y'][0]
+        if '-y' in msl_sides:
+            y1 = mesh['y'][-1]
+        return x0, y0, x1, y1
+
     a('%% --- stackup ----------------------------------------------------')
     for l in stackup:
         lid = _ident(l['id'])
@@ -255,14 +286,19 @@ def generate_script(model):
             tand = float(l.get('tand') or 0.0)
             kappa = tand * 2 * math.pi * f0 * EPS0 * er
             z0, z1 = diel_z[l['id']]
+            bx0, by0, bx1, by1 = _extend(0.0, 0.0, W, H)
             a(f"CSX = AddMaterial(CSX, 'diel_{lid}');  % {l.get('name', lid)}")
             a(f"CSX = SetMaterialProperty(CSX, 'diel_{lid}', 'Epsilon', {_fmt(er)}, 'Kappa', {_fmt(kappa)});")
-            a(f"CSX = AddBox(CSX, 'diel_{lid}', 1, [0 0 {_fmt(z0)}], [{_fmt(W)} {_fmt(H)} {_fmt(z1)}]);")
+            a(f"CSX = AddBox(CSX, 'diel_{lid}', 1, [{_fmt(bx0)} {_fmt(by0)} {_fmt(z0)}], "
+              f"[{_fmt(bx1)} {_fmt(by1)} {_fmt(z1)}]);")
         else:
             z = cond_z[l['id']]
             a(f"CSX = AddMetal(CSX, 'cond_{lid}');  % {l.get('name', lid)} @ z={_fmt(z)}")
             if l.get('fill'):
-                a(f"CSX = AddBox(CSX, 'cond_{lid}', 10, [0 0 {_fmt(z)}], [{_fmt(W)} {_fmt(H)} {_fmt(z)}]);")
+                bx0, by0, bx1, by1 = (_extend(0.0, 0.0, W, H)
+                                      if l['id'] in msl_gnd_layers else (0.0, 0.0, W, H))
+                a(f"CSX = AddBox(CSX, 'cond_{lid}', 10, [{_fmt(bx0)} {_fmt(by0)} {_fmt(z)}], "
+                  f"[{_fmt(bx1)} {_fmt(by1)} {_fmt(z)}]);")
     a('')
 
     if shapes:
@@ -318,25 +354,6 @@ def generate_script(model):
               f"[{_fmt(x1)} {_fmt(y1)} {_fmt(z)}]);{note}")
         a('')
 
-    a('%% --- lumped ports -----------------------------------------------')
-    a('port = {};')
-    dir_vec = {'x': '[1 0 0]', 'y': '[0 1 0]', 'z': '[0 0 1]'}
-    for i, p in enumerate(ports):
-        x, y = float(p['x']), float(p['y'])
-        w, h = float(p['w']), float(p['h'])
-        d = p.get('direction', 'z')
-        num = int(p.get('number', i + 1))
-        r = float(p.get('impedance', 50))
-        excite = 1 if p.get('excite') else 0
-        if d == 'z':
-            z0, z1 = sorted([cond_z[p['layerFrom']], cond_z[p['layerTo']]])
-        else:
-            z0 = z1 = cond_z[p['layer']]
-        a(f'[CSX, port{{{num}}}] = AddLumpedPort(CSX, 5, {num}, {_fmt(r)}, '
-          f'[{_fmt(x)} {_fmt(y)} {_fmt(z0)}], [{_fmt(x + w)} {_fmt(y + h)} {_fmt(z1)}], '
-          f'{dir_vec[d]}, {excite});')
-    a('')
-
     a('%% --- mesh (pre-computed, matches the GUI preview) ---------------')
     a(f'% resolution: {_fmt(mesh["edgeRes"])} mm on the board, {_fmt(mesh["maxRes"])} mm in air')
     a(f'mesh.x = {_vec(mesh["x"])};')
@@ -344,6 +361,58 @@ def generate_script(model):
     a(f'mesh.z = {_vec(mesh["z"])};')
     a('CSX = DefineRectGrid(CSX, unit, mesh);')
     a(f"disp('GUI_MARKER: mesh {len(mesh['x'])}x{len(mesh['y'])}x{len(mesh['z'])} = {mesh['cells']} cells');")
+    a('')
+
+    a('%% --- ports ------------------------------------------------------')
+    a('port = {};')
+    dir_vec = {'x': '[1 0 0]', 'y': '[0 1 0]', 'z': '[0 0 1]'}
+    for i, p in enumerate(ports):
+        x, y = float(p['x']), float(p['y'])
+        w, h = float(p['w']), float(p['h'])
+        num = int(p.get('number', i + 1))
+        r = float(p.get('impedance', 50))
+        excite = 1 if p.get('excite') else 0
+        if p.get('ptype') == 'msl':
+            # matched microstrip-line port: the strip runs from the domain
+            # boundary (absorbed there) to the port's inner edge, where the
+            # de-embedded S-parameter reference plane sits
+            orient = p.get('orient', '+x')
+            z_strip = cond_z[p['layerTo']]
+            z_gnd = cond_z[p['layerFrom']]
+            ev = '[0 0 -1]' if z_gnd < z_strip else '[0 0 1]'
+            if orient in ('+x', '-x'):
+                dom = mesh['x'][0] if orient == '+x' else mesh['x'][-1]
+                inner = x + w if orient == '+x' else x
+                start = (dom, y, z_strip)
+                stop = (inner, y + h, z_gnd)
+                length = abs(inner - dom)
+                dirn = 0
+            else:
+                dom = mesh['y'][0] if orient == '+y' else mesh['y'][-1]
+                inner = y + h if orient == '+y' else y
+                start = (x, dom, z_strip)
+                stop = (x + w, inner, z_gnd)
+                length = abs(inner - dom)
+                dirn = 1
+            margin = float(sim.get('airMargin', 20.0))
+            feed_shift = min(margin / 3.0, length / 4.0)
+            meas_shift = max(length - mesh['edgeRes'], length * 0.75)
+            opts = f", 'MeasPlaneShift', {_fmt(meas_shift)}"
+            if excite:
+                opts += f", 'ExcitePort', true, 'FeedShift', {_fmt(feed_shift)}"
+            a(f"[CSX, port{{{num}}}] = AddMSLPort(CSX, 30, {num}, 'cond_{_ident(p['layerTo'])}', "
+              f'[{_fmt(start[0])} {_fmt(start[1])} {_fmt(start[2])}], '
+              f'[{_fmt(stop[0])} {_fmt(stop[1])} {_fmt(stop[2])}], '
+              f'{dirn}, {ev}{opts});  % MSL port {num} ({orient})')
+            continue
+        d = p.get('direction', 'z')
+        if d == 'z':
+            z0, z1 = sorted([cond_z[p['layerFrom']], cond_z[p['layerTo']]])
+        else:
+            z0 = z1 = cond_z[p['layer']]
+        a(f'[CSX, port{{{num}}}] = AddLumpedPort(CSX, 5, {num}, {_fmt(r)}, '
+          f'[{_fmt(x)} {_fmt(y)} {_fmt(z0)}], [{_fmt(x + w)} {_fmt(y + h)} {_fmt(z1)}], '
+          f'{dir_vec[d]}, {excite});')
     a('')
 
     jlayers = dump_layers(model) if sim.get('dumpJ') else []
@@ -389,7 +458,10 @@ def generate_script(model):
     a('%% --- post-processing --------------------------------------------')
     a("disp('GUI_MARKER: post-processing');")
     a(f'freq = linspace(f_start, f_stop, {points});')
-    a('port = calcPort(port, Sim_Path, freq);')
+    for i, p in enumerate(ports):
+        num = int(p.get('number', i + 1))
+        r = float(p.get('impedance', 50))
+        a(f"port{{{num}}} = calcPort(port{{{num}}}, Sim_Path, freq, 'RefImpedance', {_fmt(r)});")
     a(f'exc = {exc_idx};  % excited port')
     a('')
     header = 'freq_Hz'

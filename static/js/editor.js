@@ -326,11 +326,12 @@ class Editor {
   finishDraw(d) {
     const dx = d.x1 - d.x0, dy = d.y1 - d.y0;
     const dist = Math.hypot(dx, dy);
-    if (d.tool === 'rect' || d.tool === 'port') {
+    if (d.tool === 'rect' || d.tool === 'port' || d.tool === 'mslport') {
       const x = Math.min(d.x0, d.x1), y = Math.min(d.y0, d.y1);
       const w = Math.abs(dx), h = Math.abs(dy);
       if (w < 0.05 || h < 0.05) return;
       if (d.tool === 'rect') this.app.createShape('rect', { x, y, w, h });
+      else if (d.tool === 'mslport') this.app.createMslPort(x, y, w, h);
       else this.app.createPort(x, y, w, h);
       return;
     }
@@ -550,26 +551,48 @@ class Editor {
     const ctx = this.ctx;
     const [sx, sy] = this.toScreen(p.x, p.y + p.h);
     const w = p.w * this.view.scale, h = p.h * this.view.scale;
-    ctx.fillStyle = 'rgba(12,163,12,0.30)';
+    const msl = p.ptype === 'msl';
+    ctx.fillStyle = msl ? 'rgba(12,163,120,0.30)' : 'rgba(12,163,12,0.30)';
     ctx.fillRect(sx, sy, w, h);
-    ctx.strokeStyle = ED.port;
+    ctx.strokeStyle = msl ? '#0ca378' : ED.port;
     ctx.lineWidth = p.excite ? 2 : 1;
     ctx.strokeRect(sx, sy, w, h);
-    ctx.fillStyle = '#9fe89f';
+    if (msl) {
+      // chevrons pointing along the propagation direction (into the board)
+      const cx = sx + w / 2, cy = sy + h / 2;
+      const s = Math.max(4, Math.min(9, Math.min(w, h) * 0.3));
+      const dirs = { '+x': 0, '-x': Math.PI, '+y': -Math.PI / 2, '-y': Math.PI / 2 };
+      const a = dirs[p.orient || '+x'];
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(a);
+      ctx.beginPath();
+      for (const off of [-s * 0.6, s * 0.6]) {
+        ctx.moveTo(off - s / 2, -s);
+        ctx.lineTo(off + s / 2, 0);
+        ctx.lineTo(off - s / 2, s);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.fillStyle = msl ? '#8fe8cf' : '#9fe89f';
     ctx.font = `${Math.max(10, Math.min(13, h * 0.5))}px system-ui`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(`P${p.number}${p.excite ? '*' : ''}`, sx + w / 2, sy + h / 2);
+    ctx.fillText(`${msl ? 'M' : 'P'}${p.number}${p.excite ? '*' : ''}`,
+      sx + w / 2, msl ? sy - 7 : sy + h / 2);
   }
 
   drawDragPreview() {
     const d = this.drag;
     if (!d || d.type !== 'draw') return;
     const ctx = this.ctx;
-    const color = d.tool === 'port' ? ED.port : (this.app.layerColor(this.app.activeLayer) || '#fff');
+    const color = d.tool === 'port' ? ED.port
+      : d.tool === 'mslport' ? '#0ca378'
+      : (this.app.layerColor(this.app.activeLayer) || '#fff');
     ctx.strokeStyle = color;
     ctx.setLineDash([4, 3]);
     ctx.lineWidth = 1.5;
-    if (d.tool === 'rect' || d.tool === 'port') {
+    if (d.tool === 'rect' || d.tool === 'port' || d.tool === 'mslport') {
       const [sx, sy] = this.toScreen(Math.min(d.x0, d.x1), Math.max(d.y0, d.y1));
       ctx.strokeRect(sx, sy, Math.abs(d.x1 - d.x0) * this.view.scale, Math.abs(d.y1 - d.y0) * this.view.scale);
     } else {

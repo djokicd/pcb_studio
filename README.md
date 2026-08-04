@@ -39,8 +39,13 @@ FDTD simulations of planar PCB structures via GNU Octave.
   - Reflection: magnitude (dB) plot or **Smith chart** (Γ and denormalised
     impedance readout on hover)
   - Transmission: magnitude (dB) plot or **polar plot** (|S| dB vs phase)
-  - **Time domain**: the raw port signals u(t) / i(t) recorded by the
-    lumped ports, one trace per port.
+  - **Time domain**: the raw port signals of every port (lumped and
+    MSL — for MSL ports the measurement-plane probes are used). Any
+    combination of voltages and currents plots on one shared axis:
+    currents are drawn as i(t)·Z₀ so they are directly comparable with
+    the voltages (equal traces = matched wave); tooltips report the
+    raw current in amperes. Legend chips toggle each signal
+    (voltages shown by default, currents hidden).
   - **Recorded J(t)**: time-domain rot(H) current density captured
     during a configurable window (StartTime/StopTime, optional spatial
     subsampling), decimated to ~160 frames and played back like the
@@ -83,6 +88,18 @@ FDTD simulations of planar PCB structures via GNU Octave.
   A shared import offset keeps all imported files aligned; the board
   outline grows to fit. Imported geometry meshes by bounding box to
   keep cell counts sane.
+- **MSL ports**: matched microstrip-line ports (openEMS `AddMSLPort`)
+  with de-embedded reference planes, available as their own toolbar
+  tool. Drag one at a line end; the chevrons point into the board
+  (auto-set toward the nearest edge, editable). The generator extends
+  the strip, substrate and ground plane to the absorbing boundary so
+  the port launches into the true line cross-section, places the feed
+  in the launch run and the S-parameter reference plane at the port's
+  inner edge. Use these instead of lumped ports when accurate line
+  impedance / return loss matters (a 50 Ω test line measures S11
+  < −30 dB with MSL ports vs ≈ −25 dB with lumped ports). Requires an
+  absorbing boundary (MUR/PML-8); S-parameters are referenced to the
+  port's "Ref. impedance".
 - **Design rule warnings**: objects outside the board outline and
   z-ports that don't land on copper are flagged in the editor and
   before each run.
