@@ -67,6 +67,16 @@ def _grade_out(start, res0, res_max, margin, direction, ratio=1.4):
 
 
 def _smooth_axis(fixed, lo, hi, edge_res, max_res, margin, regions=(), merge=0.0):
+    # region boundaries must be mesh lines themselves, otherwise a fine
+    # region inside a large gap never splits it (the gap midpoint decides
+    # the fill resolution and may lie outside the region)
+    fixed = list(fixed)
+    span_lo, span_hi = min(fixed), max(fixed)
+    for rlo, rhi, _res in regions:
+        if span_lo < rlo < span_hi:
+            fixed.append(rlo)
+        if span_lo < rhi < span_hi:
+            fixed.append(rhi)
     lines = _merge_close(fixed, merge) if merge > 0 else _dedupe(fixed)
     out = [lines[0]]
     for a, b in zip(lines, lines[1:]):
@@ -108,7 +118,9 @@ def build_mesh(model):
 
     merge = sim.get('meshMerge')
     merge = 0.1 if merge is None else max(0.0, float(merge))
-    xs, ys, xreg, yreg = mesh_lines_xy(model, edge_res)
+    # fringing length scale: total dielectric height of the stackup
+    _, _diel, _total = stackup_z(model.get('stackup') or [])
+    xs, ys, xreg, yreg = mesh_lines_xy(model, edge_res, fringe=_total or None)
     x = _smooth_axis(xs, 0.0, W, edge_res, max_res, margin, xreg, merge)
     y = _smooth_axis(ys, 0.0, H, edge_res, max_res, margin, yreg, merge)
 
@@ -123,6 +135,15 @@ def build_mesh(model):
         z.append(a)
         z += _fill_gap(a, b, res)
     z.append(boundaries[-1])
+    # mirror the outermost dielectric's cell size into the air above/below:
+    # the microstrip fringing field lives within ~one substrate height of the
+    # outer conductors, and coarse first air cells bias Z0 low
+    if diel_z:
+        spans = sorted(diel_z.values())
+        b_thk = spans[0][1] - spans[0][0]
+        t_thk = spans[-1][1] - spans[-1][0]
+        z += [total + t_thk * k / 3.0 for k in (1, 2, 3)]
+        z += [-b_thk * k / 3.0 for k in (1, 2, 3)]
     z = _smooth_axis(z, 0.0, total, edge_res, max_res, margin)
 
     return {'x': x, 'y': y, 'z': z, 'cells': len(x) * len(y) * len(z),

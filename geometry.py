@@ -139,7 +139,7 @@ def _obj_mesh(obj):
     return res, bool(m.get('thirds'))
 
 
-def mesh_lines_xy(model, edge_res):
+def mesh_lines_xy(model, edge_res, fringe=None):
     """Fixed mesh lines and per-object refinement implied by the geometry.
 
     Returns (xs, ys, xregions, yregions); regions are (lo, hi, res) intervals
@@ -178,12 +178,25 @@ def mesh_lines_xy(model, edge_res):
         t = s.get('type', 'rect')
         if thirds:
             # replace the metal bbox edges with the 1/3-2/3 pair; interior
-            # points (poly vertices, centre lines) are kept. Cap the offset
-            # by the feature size so the pair cannot land beyond
-            # neighbouring geometry (which would let edges snap wrongly).
-            rt = min(res or edge_res, max(bx1 - bx0, 1e-3), max(by1 - by0, 1e-3))
+            # points (poly vertices, centre lines) are kept. The rule only
+            # converges with a FINE local resolution: coarse edge cells make
+            # a thin PEC strip electrically wider (several ohms of Z0 error),
+            # so default to a quarter of the smallest feature dimension.
+            feat = min(max(bx1 - bx0, 1e-3), max(by1 - by0, 1e-3))
+            rt = min(res, feat) if res else min(edge_res, feat / 8.0)
             xs += thirds_pair(bx0, +1, rt) + thirds_pair(bx1, -1, rt)
             ys += thirds_pair(by0, +1, rt) + thirds_pair(by1, -1, rt)
+            # resolve the cross-section of narrow strips: fine cells across
+            # the thin dimension(s) and a medium band one fringe-length
+            # (~substrate height) beyond the edges, where the microstrip
+            # fringing field concentrates; long dimensions stay global
+            fr = fringe or 4 * rt
+            if bx1 - bx0 <= 8 * rt:
+                xreg.append((bx0 - 2 * rt, bx1 + 2 * rt, rt))
+                xreg.append((bx0 - fr, bx1 + fr, max(rt, fr / 3.0)))
+            if by1 - by0 <= 8 * rt:
+                yreg.append((by0 - 2 * rt, by1 + 2 * rt, rt))
+                yreg.append((by0 - fr, by1 + fr, max(rt, fr / 3.0)))
             eps = 1e-6
             if t in ('rect', 'poly'):
                 xs += [v for v in pxs if bx0 + eps < v < bx1 - eps]
@@ -219,5 +232,13 @@ def mesh_lines_xy(model, edge_res):
         ys += [y0, y1]
         res, _ = _obj_mesh(p)
         region(res, x0, x1, y0, y1)
+        if not res:
+            # the port's voltage/current probes need locally resolved fields:
+            # coarse neighbouring cells systematically bias the measured
+            # impedance. Refine one fringe-length around the port.
+            fr = fringe or max(x1 - x0, y1 - y0, 1.0)
+            rp = min(edge_res, fr / 3.0)
+            xreg.append((x0 - fr, x1 + fr, rp))
+            yreg.append((y0 - fr, y1 + fr, rp))
 
     return xs, ys, xreg, yreg
