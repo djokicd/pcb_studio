@@ -38,6 +38,10 @@ function hexRgba(hex, a) {
   return `rgba(${(v >> 16) & 255},${(v >> 8) & 255},${v & 255},${a})`;
 }
 
+/* a note's marker colour: its own override, else the theme default (so
+   uncoloured notes keep following light/dark) */
+function noteColor(n) { return (n && n.color) || ED.noteEdge; }
+
 function arcPts(cx, cy, r, a0, a1, n) {
   while (a1 <= a0) a1 += 360;
   n = n || Math.max(8, Math.round((a1 - a0) / 360 * 64));
@@ -270,8 +274,8 @@ class Editor {
   /* ---- notes (canvas annotations) ----
      Notes are anchored to a world position but drawn at a fixed pixel
      size so the text stays readable at any zoom; hit testing therefore
-     happens in screen space. The first wrapped line is the title shown
-     when collapsed; the remaining lines are the collapsible body. */
+     happens in screen space. The title row is always shown; the body
+     text below it is what collapsing folds away. */
   wrapText(text, maxW) {
     const ctx = this.ctx;
     const out = [];
@@ -301,9 +305,9 @@ class Editor {
     const PAD = 7, LH = 14, HEAD = 20, TOG = 14;
     const w = Math.max(70, n.w || 190);
     ctx.font = '11px system-ui';
-    const lines = this.wrapText(n.text, w - PAD * 2 - TOG);
-    const title = lines[0] || '(empty note)';
-    const body = lines.slice(1);
+    const body = String(n.text || '').trim()
+      ? this.wrapText(n.text, w - PAD * 2 - TOG) : [];
+    const title = String(n.title || '').trim() || '(untitled note)';
     const [sx, sy] = this.toScreen(n.x, n.y);
     const expanded = !n.collapsed && body.length > 0;
     const h = HEAD + (expanded ? body.length * LH + PAD : 0);
@@ -744,12 +748,13 @@ class Editor {
     const ctx = this.ctx;
     for (const n of this.app.project.notes || []) {
       const L = this.noteLayout(n);
+      const col = noteColor(n);
       // anchor pin at the note's world point
-      ctx.fillStyle = ED.noteEdge;
+      ctx.fillStyle = col;
       ctx.beginPath(); ctx.arc(L.sx, L.sy, 2.5, 0, 7); ctx.fill();
 
       ctx.fillStyle = ED.note;
-      ctx.strokeStyle = ED.noteEdge;
+      ctx.strokeStyle = col;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.roundRect(L.sx, L.sy, L.w, L.h, 5);
@@ -759,7 +764,7 @@ class Editor {
       if (L.hasBody) {
         // collapse triangle: right when collapsed, down when expanded
         const cx = L.sx + L.PAD + 4, cy = L.sy + L.HEAD / 2;
-        ctx.fillStyle = ED.noteEdge;
+        ctx.fillStyle = col;
         ctx.beginPath();
         if (L.expanded) {
           ctx.moveTo(cx - 4, cy - 2); ctx.lineTo(cx + 4, cy - 2); ctx.lineTo(cx, cy + 3);

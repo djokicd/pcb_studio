@@ -6,11 +6,15 @@ const $ = id => document.getElementById(id);
 const PKG = { '0402': [1.0, 0.5], '0603': [1.6, 0.8], '0805': [2.0, 1.25] };
 const COMP_UNITS = { R: 'Ω', C: 'pF', L: 'nH' };
 const DIEL_CHIP = '#4d7a5e';
+/* shown while the project has no name of its own (never saved/opened) */
+const UNTITLED = 'Untitled project';
+/* quick-pick marker colours for canvas notes */
+const NOTE_COLORS = ['#c98500', '#e66767', '#3987e5', '#199e70', '#9085e9', '#898781'];
 
 function defaultProject() {
   return {
     version: 2,
-    name: 'patch_antenna',
+    name: '',
     board: { width: 60, height: 60 },
     stackup: [
       { id: 'top', name: 'Top', type: 'conductor', thickness: 0.035, fill: false },
@@ -45,6 +49,16 @@ function migrate(p) {
     p.vias = p.vias || [];
     p.components = p.components || [];
     p.notes = p.notes || [];
+    for (const n of p.notes) {
+      // notes predating the explicit title field used their first text
+      // line as the title - promote it so nothing shifts on screen
+      if (n.title === undefined) {
+        const lines = String(n.text || '').split('\n');
+        n.title = (lines.shift() || 'Note').trim();
+        n.text = lines.join('\n').trim();
+      }
+      if (n.color === undefined) n.color = null;
+    }
     p.sim.dumpJ = p.sim.dumpJ || false;
     p.sim.dumpFreqs = p.sim.dumpFreqs || '';
     p.devices = p.devices || [];
@@ -58,7 +72,7 @@ function migrate(p) {
   }
   const b = p.board || {};
   const out = defaultProject();
-  out.name = p.name || 'untitled';
+  out.name = p.name || '';
   out.board = { width: b.width || 60, height: b.height || 60 };
   out.stackup[1] = { id: 'core', name: 'Substrate', type: 'dielectric',
     thickness: b.thickness || 1.524, er: b.er || 4.3, tand: b.tand || 0 };
@@ -222,8 +236,9 @@ const app = {
     const id = this.project.nextId++;
     this.project.notes = this.project.notes || [];
     this.project.notes.push({
-      id, x, y, w: 190, collapsed: false,
-      text: 'Note\nClick the triangle to collapse; edit the text in the properties panel.',
+      id, x, y, w: 190, collapsed: false, title: 'Note', color: null,
+      text: 'Click the triangle to collapse; edit the title, colour and text '
+        + 'in the properties panel.',
     });
     // the new note is selected for editing right away, so hand the canvas
     // back to Select - otherwise the next click would place another note
@@ -552,8 +567,8 @@ function uiPrompt(msg, value = '', okLabel = 'OK') {
 
 /* ---------- object list ---------- */
 function noteTitle(n) {
-  const first = String(n.text || '').split('\n').find(l => l.trim()) || '(empty note)';
-  return first.length > 26 ? first.slice(0, 25) + '…' : first;
+  const t = String(n.title || '').trim() || '(untitled note)';
+  return t.length > 26 ? t.slice(0, 25) + '…' : t;
 }
 function renderObjList() {
   const ul = $('objList');
@@ -590,7 +605,7 @@ function renderObjList() {
         : (p.ptype === 'msl' ? (p.orient || '+x') : p.direction) + (p.excite ? ' exc' : ''));
   }
   for (const n of app.project.notes || [])
-    add('note', n, ED.noteEdge, noteTitle(n), n.collapsed ? 'collapsed' : 'note');
+    add('note', n, noteColor(n), noteTitle(n), n.collapsed ? 'collapsed' : 'note');
   for (const c of app.project.components)
     add('component', c, ED.compCap, app.compLabel(c), c.package);
   for (const v of app.project.vias)
@@ -690,7 +705,7 @@ function renderProps() {
     port: () => obj.ptype === 'msl'
       ? [ED.msl, `MSL port ${obj.number}`]
       : [ED.port, `Lumped port ${obj.number}`],
-    note: () => [ED.noteEdge, 'Note'],
+    note: () => [noteColor(obj), noteTitle(obj)],
   };
   const [color, txt] = heads[kind]();
   chip.style.background = color;
@@ -777,25 +792,61 @@ function renderProps() {
     F('Center x', numIn(obj.x, 0.1, v => { obj.x = v; upd(); }));
     F('Center y', numIn(obj.y, 0.1, v => { obj.y = v; upd(); }));
   } else if (kind === 'note') {
+    const titleI = document.createElement('input');
+    titleI.type = 'text';
+    titleI.value = obj.title || '';
+    titleI.placeholder = 'Note';
+    titleI.title = 'Shown on the note at all times, including when collapsed';
+    // live, without re-rendering the panel (that would steal focus)
+    titleI.addEventListener('input', () => {
+      obj.title = titleI.value;
+      h.textContent = noteTitle(obj);
+      app.editor.render();
+      renderObjList();
+      app.dirty();
+    });
+    F('Title', titleI);
+    // marker colour: pin, border and toggle triangle
+    const colorRow = document.createElement('label');
+    colorRow.className = 'note-color';
+    const colI = document.createElement('input');
+    colI.type = 'color';
+    colI.value = noteColor(obj);
+    colI.title = 'Colour of the note marker (pin, border, triangle)';
+    colI.addEventListener('input', () => { obj.color = colI.value; upd(); });
+    const reset = mkBtn('↺', () => { obj.color = null; rerender(); });
+    reset.title = 'Back to the theme default colour';
+    reset.disabled = !obj.color;
+    const swatches = document.createElement('span');
+    swatches.className = 'note-swatches';
+    for (const c of NOTE_COLORS) {
+      const b = document.createElement('button');
+      b.className = 'note-swatch' + (obj.color === c ? ' on' : '');
+      b.style.background = c;
+      b.title = c;
+      b.onclick = () => { obj.color = c; rerender(); };
+      swatches.append(b);
+    }
+    colorRow.append(document.createTextNode('Marker colour'), colI, reset);
+    form.append(colorRow, swatches);
     const ta = textArea(obj.text || '', v => {
       obj.text = v;
       app.editor.render();
       renderObjList();
       app.dirty();
     });
-    ta.title = 'The first line is the title shown when the note is collapsed; '
-      + 'the remaining lines are the collapsible body.';
+    ta.title = 'Body text — this is what collapsing the note folds away.';
     const wrap = document.createElement('label');
     wrap.className = 'note-text';
     wrap.append(document.createTextNode('Text'), ta);
     form.append(wrap);
-    const colI = document.createElement('input');
-    colI.type = 'checkbox'; colI.checked = !!obj.collapsed;
-    colI.addEventListener('change', () => { obj.collapsed = colI.checked; upd(); });
-    const colL = document.createElement('label');
-    colL.className = 'check';
-    colL.append(colI, document.createTextNode(' Collapsed'));
-    form.append(colL);
+    const collI = document.createElement('input');
+    collI.type = 'checkbox'; collI.checked = !!obj.collapsed;
+    collI.addEventListener('change', () => { obj.collapsed = collI.checked; upd(); });
+    const collL = document.createElement('label');
+    collL.className = 'check';
+    collL.append(collI, document.createTextNode(' Collapsed'));
+    form.append(collL);
     F('Box width (px)', numIn(obj.w || 190, 10, v => {
       obj.w = Math.max(70, Math.min(600, v || 190));
       upd();
@@ -1027,7 +1078,9 @@ function formsFromModel() {
   $('s_dumpFreqs').value = app.project.sim.dumpFreqs || '';
   $('s_dumpJt').checked = !!app.project.sim.dumpJt;
   $('s_jtSub').value = String(app.project.sim.jtSub || 2);
-  $('projName').value = app.project.name || '';
+  // read-only display: the name comes from saving or opening a project
+  $('projName').textContent = app.project.name || UNTITLED;
+  $('projName').classList.toggle('unsaved', !app.project.name);
 }
 
 function bindForms() {
@@ -1045,7 +1098,6 @@ function bindForms() {
   $('s_dumpFreqs').addEventListener('change', e => { app.project.sim.dumpFreqs = e.target.value; app.dirty(); });
   $('s_dumpJt').addEventListener('change', e => { app.project.sim.dumpJt = e.target.checked; app.dirty(); });
   $('s_jtSub').addEventListener('change', e => { app.project.sim.jtSub = parseInt(e.target.value, 10); app.dirty(); });
-  $('projName').addEventListener('change', e => { app.project.name = e.target.value.trim() || 'untitled'; app.dirty(); });
 }
 
 /* ---------- tabs ---------- */
@@ -2502,9 +2554,8 @@ function updateMenuChecks() {
 
 async function newProject() {
   if (!(await uiConfirm('Start a new empty project?\n\nThe current project is replaced (save it first if you want to keep it).', 'New project'))) return;
-  const p = defaultProject();
-  p.name = '';   // shows as "Unsaved" until saved or opened from a file
-  p.shapes = []; p.ports = []; p.vias = []; p.components = [];
+  const p = defaultProject();   // unnamed until saved or opened
+  p.shapes = []; p.ports = []; p.vias = []; p.components = []; p.notes = [];
   const def = defaultStackup();
   if (def) p.stackup = JSON.parse(JSON.stringify(def));
   loadProject(p);
@@ -2525,7 +2576,7 @@ const MENU_ACTIONS = {
   save: saveProjectToServer,
   saveAs: saveProjectAs,
   importJson: () => $('fileInput').click(),
-  exportCfg: () => download((app.project.name || 'unsaved') + '.json',
+  exportCfg: () => download((app.project.name || 'untitled') + '.json',
     JSON.stringify(app.project, null, 2), 'application/json'),
   exportM: () => exportScript(),
   run: () => startRun(),

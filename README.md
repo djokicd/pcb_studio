@@ -23,13 +23,16 @@ FDTD simulations of planar PCB structures via GNU Octave.
   and in the Python geometry, so the mesh and simulation see exactly
   the drawn line.
 - **Canvas notes** (N): collapsible plain-text annotations pinned to a
-  board position. The first wrapped line is the title, always visible;
-  the rest is the body, folded away by clicking the note's triangle (or
-  double-clicking it). Notes are drawn at a fixed size so they stay
-  readable at any zoom, are edited in a textarea in the properties
-  panel (live preview), move/copy/delete like any other object, and are
-  saved with the project — but they are documentation only and never
-  reach the mesh or the generated Octave script.
+  board position. Each note has its own **title** (always visible, also
+  when collapsed) and body text, folded away by clicking the note's
+  triangle or double-clicking it, plus a per-note **marker colour**
+  (pin, border and triangle) chosen from quick swatches or a colour
+  picker — notes left on the default colour follow the light/dark
+  theme. Notes are drawn at a fixed size so they stay readable at any
+  zoom, are edited in the properties panel with live preview,
+  move/copy/delete like any other object, and are saved with the
+  project — but they are documentation only and never reach the mesh or
+  the generated Octave script.
 - **Menu bar** (File / Edit / View / Tools / Help) with the usual
   project, clipboard and view commands, keyboard-shortcut hints and a
   shortcuts reference under Help. The Tools menu is grouped into
@@ -99,7 +102,9 @@ FDTD simulations of planar PCB structures via GNU Octave.
   bulky raw field dumps excluded); Open lists the stored projects
   (with a "results" badge, delete supported) and restores both the
   design and its results. "Export cfg" downloads the project JSON,
-  and the Open dialog can import one.
+  and the Open dialog can import one. The project name in the top bar
+  is a read-only display: a project reads "Untitled project" until it
+  is named by File → Save / Save as…, or by opening or importing one.
 - **Results** open in a dedicated Results tab in the main area (the GUI
   switches to it when a run finishes), all interactive (hover tooltips)
   and pop-out-able to a large modal:
