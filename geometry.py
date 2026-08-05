@@ -7,6 +7,8 @@ Shape types:
   segment {cx, cy, r, a0, a1}          circular sector (pie), angles in deg CCW
   arc     {cx, cy, r0, r1, a0, a1}     annular arc (curved trace)
   poly    {pts: [[x,y], ...]}
+  trace   {pts: [[x,y], ...], width, radius}   transmission line: centerline
+          polyline stroked to `width`, corners rounded with `radius`
 Vias:     {x, y, drill, pad, from, to}  drill/pad are diameters, from/to layer ids
 Components: {ctype: R|L|C, value, package: 0402|0603|0805|custom, len, wid,
              x, y (center), rot: 0|90, layer}
@@ -50,6 +52,106 @@ def circle_points(cx, cy, r, n=48):
              cy + r * math.sin(2 * math.pi * k / n)) for k in range(n)]
 
 
+def trace_centerline(pts, radius):
+    """Centerline of a trace: the drawn polyline with interior corners
+    rounded by `radius` (quadratic-bezier fillet, sampled ~15 deg/step).
+    Mirrors traceCenterline() in static/js/editor.js - keep in sync."""
+    pts = [(float(p[0]), float(p[1])) for p in pts]
+    r = float(radius or 0)
+    if r <= 0 or len(pts) < 3:
+        return pts
+    out = [pts[0]]
+    for i in range(1, len(pts) - 1):
+        ax, ay = out[-1]
+        bx, by = pts[i]
+        cx, cy = pts[i + 1]
+        l1 = math.hypot(bx - ax, by - ay)
+        l2 = math.hypot(cx - bx, cy - by)
+        if l1 < 1e-9 or l2 < 1e-9:
+            continue
+        u1 = ((bx - ax) / l1, (by - ay) / l1)
+        u2 = ((cx - bx) / l2, (cy - by) / l2)
+        cross = u1[0] * u2[1] - u1[1] * u2[0]
+        dot = max(-1.0, min(1.0, u1[0] * u2[0] + u1[1] * u2[1]))
+        turn = math.acos(dot)
+        if abs(cross) < 1e-9 or turn < 1e-3:
+            out.append((bx, by))
+            continue
+        # tangent length of a circular fillet, clamped to the half-segments
+        t = min(r * math.tan(turn / 2), l1 * 0.5, l2 * 0.5)
+        p1 = (bx - u1[0] * t, by - u1[1] * t)
+        p2 = (bx + u2[0] * t, by + u2[1] * t)
+        n = max(2, int(math.ceil(math.degrees(turn) / 15.0)))
+        for k in range(n + 1):
+            s_ = k / n
+            omu = 1 - s_
+            out.append((omu * omu * p1[0] + 2 * omu * s_ * bx + s_ * s_ * p2[0],
+                        omu * omu * p1[1] + 2 * omu * s_ * by + s_ * s_ * p2[1]))
+    out.append(pts[-1])
+    return out
+
+
+def trace_length(pts, radius):
+    cl = trace_centerline(pts, radius)
+    return sum(math.hypot(cl[i + 1][0] - cl[i][0], cl[i + 1][1] - cl[i][1])
+               for i in range(len(cl) - 1))
+
+
+def stroke_outline(cl, width):
+    """Closed polygon outlining the polyline `cl` stroked to `width`:
+    mitered joins along both sides plus semicircular end caps. Assumes
+    shallow join angles (sharp corners are pre-filleted by
+    trace_centerline). Mirrors strokeOutline() in editor.js."""
+    w2 = float(width) / 2.0
+    cl = [(float(p[0]), float(p[1])) for p in cl]
+    # drop zero-length segments
+    pts = [cl[0]]
+    for p in cl[1:]:
+        if math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1]) > 1e-9:
+            pts.append(p)
+    if len(pts) < 2:
+        raise ValueError('trace needs at least two distinct points')
+    dirs = []
+    for i in range(len(pts) - 1):
+        dx, dy = pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]
+        l = math.hypot(dx, dy)
+        dirs.append((dx / l, dy / l))
+    normals = [(-d[1], d[0]) for d in dirs]
+    left, right = [], []
+    for i, p in enumerate(pts):
+        if i == 0:
+            n = normals[0]
+        elif i == len(pts) - 1:
+            n = normals[-1]
+        else:
+            mx, my = normals[i - 1][0] + normals[i][0], normals[i - 1][1] + normals[i][1]
+            ml = math.hypot(mx, my)
+            if ml < 1e-9:               # 180 deg reversal - fall back
+                n = normals[i]
+            else:
+                mx, my = mx / ml, my / ml
+                # miter scale, limited to 4x half-width for sharp angles
+                scale = 1.0 / max(mx * normals[i][0] + my * normals[i][1], 0.25)
+                n = (mx * scale, my * scale)
+        left.append((p[0] + n[0] * w2, p[1] + n[1] * w2))
+        right.append((p[0] - n[0] * w2, p[1] - n[1] * w2))
+
+    def cap(center, n_from, n_to, direction):
+        # semicircle from center+n_from*w2 to center+n_to*w2, bulging along
+        # `direction` (unit vector pointing away from the line)
+        a0 = math.atan2(n_from[1], n_from[0])
+        out = []
+        for k in range(1, 8):
+            a = a0 + direction * math.pi * k / 8
+            out.append((center[0] + w2 * math.cos(a), center[1] + w2 * math.sin(a)))
+        return out
+
+    # end cap: rotate from left normal to right normal going around the tip
+    end_cap = cap(pts[-1], normals[-1], (-normals[-1][0], -normals[-1][1]), -1)
+    start_cap = cap(pts[0], (-normals[0][0], -normals[0][1]), normals[0], -1)
+    return left + end_cap + right[::-1] + start_cap
+
+
 def shape_outline(s):
     """Closed polygon outline (list of (x, y), not repeated at the end)."""
     t = s.get('type', 'rect')
@@ -70,6 +172,9 @@ def shape_outline(s):
         return outer + inner[::-1]
     if t == 'poly':
         return [(float(p[0]), float(p[1])) for p in s['pts']]
+    if t == 'trace':
+        cl = trace_centerline(s['pts'], s.get('radius') or 0)
+        return stroke_outline(cl, float(s['width']))
     raise ValueError(f'unknown shape type: {t}')
 
 
@@ -198,13 +303,13 @@ def mesh_lines_xy(model, edge_res, fringe=None):
                 yreg.append((by0 - 2 * rt, by1 + 2 * rt, rt))
                 yreg.append((by0 - fr, by1 + fr, max(rt, fr / 3.0)))
             eps = 1e-6
-            if t in ('rect', 'poly'):
+            if t in ('rect', 'poly', 'trace'):
                 xs += [v for v in pxs if bx0 + eps < v < bx1 - eps]
                 ys += [v for v in pys if by0 + eps < v < by1 - eps]
             else:
                 xs.append(float(s['cx']))
                 ys.append(float(s['cy']))
-        elif t in ('rect', 'poly'):
+        elif t in ('rect', 'poly', 'trace'):
             xs += pxs
             ys += pys
         else:  # curved shapes: bounding box + centre lines

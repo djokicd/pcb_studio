@@ -23,6 +23,7 @@ function defaultProject() {
     vias: [],
     components: [],
     devices: [],
+    notes: [],
     ports: [
       { id: 2, number: 1, x: 23.5, y: 29.5, w: 1, h: 1, direction: 'z',
         layerFrom: 'bot', layerTo: 'top', impedance: 50, excite: true },
@@ -43,6 +44,7 @@ function migrate(p) {
   if (p.stackup) {
     p.vias = p.vias || [];
     p.components = p.components || [];
+    p.notes = p.notes || [];
     p.sim.dumpJ = p.sim.dumpJ || false;
     p.sim.dumpFreqs = p.sim.dumpFreqs || '';
     p.devices = p.devices || [];
@@ -83,6 +85,9 @@ const app = {
   snapStep: 0.5,
   snapMode: 'xy',       // 'xy' | 'x' | 'y'
   snapCorners: false,
+  traceWidth: 1,        // defaults for the transmission-line tool
+  traceRadius: 0,
+  compare: {},          // projectName -> parsed sparams overlaid in Results
   editor: null,
   meshVisible: false,
   meshData: null,
@@ -159,9 +164,8 @@ const app = {
     return this.multi.some(m => m.kind === kind && m.id === id);
   },
   multiObjs() {
-    const lists = { shape: 'shapes', via: 'vias', component: 'components', port: 'ports' };
     return this.multi
-      .map(m => ({ kind: m.kind, obj: this.project[lists[m.kind]].find(o => o.id === m.id) }))
+      .map(m => ({ kind: m.kind, obj: (this.project[OBJ_LISTS[m.kind]] || []).find(o => o.id === m.id) }))
       .filter(x => x.obj);
   },
   selectAllObjects() {
@@ -170,6 +174,7 @@ const app = {
       ...this.project.vias.map(o => ({ kind: 'via', id: o.id })),
       ...this.project.components.map(o => ({ kind: 'component', id: o.id })),
       ...this.project.ports.map(o => ({ kind: 'port', id: o.id })),
+      ...(this.project.notes || []).map(o => ({ kind: 'note', id: o.id })),
     ];
     if (items.length === 1) this.select(items[0].kind, items[0].id);
     else if (items.length) this.selectMulti(items);
@@ -211,6 +216,21 @@ const app = {
     this.select('component', id);
     this.dirty();
   },
+  /* canvas annotation: plain text anchored at (x, y), independent of the
+     stackup and ignored by the mesh and the generated script */
+  createNote(x, y) {
+    const id = this.project.nextId++;
+    this.project.notes = this.project.notes || [];
+    this.project.notes.push({
+      id, x, y, w: 190, collapsed: false,
+      text: 'Note\nClick the triangle to collapse; edit the text in the properties panel.',
+    });
+    // the new note is selected for editing right away, so hand the canvas
+    // back to Select - otherwise the next click would place another note
+    if (this.setTool) this.setTool('select');
+    this.select('note', id);
+    this.dirty();
+  },
   createPort(x, y, w, h) {
     const p = this.project;
     const layers = this.conductorLayers();
@@ -250,10 +270,9 @@ const app = {
   },
 
   deleteSelection() {
-    const lists = { shape: 'shapes', via: 'vias', component: 'components', port: 'ports' };
     if (this.multi.length) {
       for (const m of this.multi) {
-        const key = lists[m.kind];
+        const key = OBJ_LISTS[m.kind];
         this.project[key] = this.project[key].filter(o => o.id !== m.id);
       }
       this.select(null);
@@ -262,7 +281,7 @@ const app = {
     }
     const sel = this.selection;
     if (!sel) return;
-    const key = lists[sel.kind];
+    const key = OBJ_LISTS[sel.kind];
     this.project[key] = this.project[key].filter(o => o.id !== sel.id);
     this.select(null);
     this.dirty();
@@ -309,6 +328,8 @@ const app = {
         p.components.push(obj);
       } else if (it.kind === 'via') {
         p.vias.push(obj);
+      } else if (it.kind === 'note') {
+        p.notes.push(obj);
       } else {
         obj.name = (obj.name || obj.type || 'shape') + '_copy';
         p.shapes.push(obj);
@@ -530,13 +551,18 @@ function uiPrompt(msg, value = '', okLabel = 'OK') {
 }
 
 /* ---------- object list ---------- */
+function noteTitle(n) {
+  const first = String(n.text || '').split('\n').find(l => l.trim()) || '(empty note)';
+  return first.length > 26 ? first.slice(0, 25) + '…' : first;
+}
 function renderObjList() {
   const ul = $('objList');
   ul.innerHTML = '';
   const MAX_LIST = 300;
   let count = 0;
   const total = app.project.shapes.length + app.project.vias.length +
-    app.project.components.length + app.project.ports.length;
+    app.project.components.length + app.project.ports.length +
+    (app.project.notes || []).length;
   const add = (kind, obj, color, label, tag) => {
     if (++count > MAX_LIST) return;
     const li = document.createElement('li');
@@ -563,6 +589,8 @@ function renderObjList() {
       pin ? `${pin.ref}.${pin.name}`
         : (p.ptype === 'msl' ? (p.orient || '+x') : p.direction) + (p.excite ? ' exc' : ''));
   }
+  for (const n of app.project.notes || [])
+    add('note', n, ED.noteEdge, noteTitle(n), n.collapsed ? 'collapsed' : 'note');
   for (const c of app.project.components)
     add('component', c, ED.compCap, app.compLabel(c), c.package);
   for (const v of app.project.vias)
@@ -596,6 +624,15 @@ function textIn(value, onchange) {
   i.addEventListener('change', () => onchange(i.value));
   return i;
 }
+function textArea(value, onchange) {
+  const t = document.createElement('textarea');
+  t.value = value;
+  t.rows = 6;
+  t.spellcheck = false;
+  // live update so the canvas follows what is being typed
+  t.addEventListener('input', () => onchange(t.value));
+  return t;
+}
 function selIn(options, value, onchange) {
   const s = document.createElement('select');
   for (const [v, txt] of options) {
@@ -617,7 +654,8 @@ function renderProps() {
     const objs = app.multiObjs();
     const byKind = {};
     for (const o of objs) byKind[o.kind] = (byKind[o.kind] || 0) + 1;
-    const kinds = { shape: 'shape', via: 'via', component: 'component', port: 'port' };
+    const kinds = { shape: 'shape', via: 'via', component: 'component',
+                    port: 'port', note: 'note' };
     body.innerHTML = '';
     const p = document.createElement('p');
     p.innerHTML = `<b>${objs.length} objects selected</b><br><span class="muted">`
@@ -652,6 +690,7 @@ function renderProps() {
     port: () => obj.ptype === 'msl'
       ? [ED.msl, `MSL port ${obj.number}`]
       : [ED.port, `Lumped port ${obj.number}`],
+    note: () => [ED.noteEdge, 'Note'],
   };
   const [color, txt] = heads[kind]();
   chip.style.background = color;
@@ -695,6 +734,23 @@ function renderProps() {
       p.className = 'muted';
       p.textContent = `${obj.pts.length} vertices — drag the white handles to edit.`;
       form.append(p);
+    } else if (t === 'trace') {
+      F('Width (mm)', numIn(obj.width, 0.05, v => {
+        obj.width = Math.max(0.05, v);
+        app.traceWidth = obj.width;   // becomes the default for the next trace
+        upd();
+      }));
+      F('Corner radius (mm)', numIn(obj.radius || 0, 0.1, v => {
+        obj.radius = Math.max(0, v);
+        app.traceRadius = obj.radius;
+        upd();
+      }));
+      const p = document.createElement('p');
+      p.className = 'muted';
+      p.textContent = `${obj.pts.length} centerline points, `
+        + `length ${traceLengthTo(traceCenterline(obj.pts, obj.radius || 0)).toFixed(2)} mm — `
+        + 'drag the white handles to edit; hover the trace to read lengths.';
+      form.append(p);
     }
     F('Priority', numIn(obj.priority ?? 10, 1, v => { obj.priority = Math.round(v); upd(); }));
   } else if (kind === 'via') {
@@ -720,6 +776,37 @@ function renderProps() {
     F('Layer', layerSel(obj.layer, v => { obj.layer = v; upd(); }));
     F('Center x', numIn(obj.x, 0.1, v => { obj.x = v; upd(); }));
     F('Center y', numIn(obj.y, 0.1, v => { obj.y = v; upd(); }));
+  } else if (kind === 'note') {
+    const ta = textArea(obj.text || '', v => {
+      obj.text = v;
+      app.editor.render();
+      renderObjList();
+      app.dirty();
+    });
+    ta.title = 'The first line is the title shown when the note is collapsed; '
+      + 'the remaining lines are the collapsible body.';
+    const wrap = document.createElement('label');
+    wrap.className = 'note-text';
+    wrap.append(document.createTextNode('Text'), ta);
+    form.append(wrap);
+    const colI = document.createElement('input');
+    colI.type = 'checkbox'; colI.checked = !!obj.collapsed;
+    colI.addEventListener('change', () => { obj.collapsed = colI.checked; upd(); });
+    const colL = document.createElement('label');
+    colL.className = 'check';
+    colL.append(colI, document.createTextNode(' Collapsed'));
+    form.append(colL);
+    F('Box width (px)', numIn(obj.w || 190, 10, v => {
+      obj.w = Math.max(70, Math.min(600, v || 190));
+      upd();
+    }));
+    F('Anchor x (mm)', numIn(obj.x, 0.1, v => { obj.x = v; upd(); }));
+    F('Anchor y (mm)', numIn(obj.y, 0.1, v => { obj.y = v; upd(); }));
+    const note = document.createElement('p');
+    note.className = 'muted';
+    note.textContent = 'Notes are documentation only — they are drawn at a fixed '
+      + 'size on the canvas and never reach the mesh or the generated script.';
+    form.append(note);
   } else if (kind === 'port' && obj.ptype === 'msl') {
     F('Port number', numIn(obj.number, 1, v => { obj.number = Math.max(1, Math.round(v)); upd(); }));
     F('Direction (into board)', selIn([['+x', '+x →'], ['-x', '-x ←'], ['+y', '+y ↑'], ['-y', '-y ↓']],
@@ -773,6 +860,15 @@ function renderProps() {
   }
   body.append(form);
 
+  if (kind === 'note') {   // annotations carry no geometry to mesh
+    const delN = document.createElement('button');
+    delN.className = 'danger';
+    delN.textContent = 'Delete';
+    delN.onclick = () => app.deleteSelection();
+    body.append(delN);
+    return;
+  }
+
   // advanced per-object meshing
   const mh = document.createElement('h3');
   mh.style.marginTop = '14px';
@@ -806,11 +902,16 @@ function renderProps() {
   body.append(del);
 }
 
-/* ---------- stackup editor ---------- */
-function renderStackup() {
-  const list = $('stackupList');
+/* ---------- stackup editor ----------
+   buildStackupRows renders an editable layer list for any stackup array:
+   the project's (Stackup tab, projectBound=true — with in-use guards and
+   per-layer Gerber import) or a library entry inside the manager. */
+function buildStackupRows(list, st, changed, projectBound) {
   list.innerHTML = '';
-  const st = app.project.stackup;
+  const colors = {};
+  let condIdx = 0;
+  for (const l of st) if (l.type === 'conductor') colors[l.id] = LAYER_COLORS[condIdx++ % LAYER_COLORS.length];
+  const rerender = () => buildStackupRows(list, st, changed, projectBound);
   st.forEach((layer, idx) => {
     const row = document.createElement('div');
     row.className = 'layer-row';
@@ -818,31 +919,31 @@ function renderStackup() {
     top.className = 'lr-top';
     const chip = document.createElement('span');
     chip.className = 'chip';
-    chip.style.background = layer.type === 'conductor' ? app.layerColor(layer.id) : DIEL_CHIP;
-    const name = textIn(layer.name || layer.id, v => { layer.name = v; stackChanged(); });
+    chip.style.background = layer.type === 'conductor' ? colors[layer.id] : DIEL_CHIP;
+    const name = textIn(layer.name || layer.id, v => { layer.name = v; changed(); });
     name.className = 'lr-name';
     const typeS = selIn([['conductor', 'conductor'], ['dielectric', 'dielectric']], layer.type, v => {
       if (v === layer.type) return;
-      if (layer.type === 'conductor' && layerInUse(layer.id)) {
+      if (projectBound && layer.type === 'conductor' && layerInUse(layer.id)) {
         uiNotice('Layer is in use by shapes/ports/vias - move them first.', 'warn');
-        renderStackup();
+        rerender();
         return;
       }
       layer.type = v;
       if (v === 'dielectric') { layer.er = layer.er || 4.3; layer.tand = layer.tand || 0.02; layer.thickness = layer.thickness || 0.2; }
       else { layer.fill = false; layer.thickness = layer.thickness || 0.035; }
-      stackChanged();
+      changed();
     });
     typeS.className = 'mini';
-    const up = mkBtn('↑', () => { if (idx > 0) { st.splice(idx - 1, 0, st.splice(idx, 1)[0]); stackChanged(); } });
-    const dn = mkBtn('↓', () => { if (idx < st.length - 1) { st.splice(idx + 1, 0, st.splice(idx, 1)[0]); stackChanged(); } });
+    const up = mkBtn('↑', () => { if (idx > 0) { st.splice(idx - 1, 0, st.splice(idx, 1)[0]); changed(); } });
+    const dn = mkBtn('↓', () => { if (idx < st.length - 1) { st.splice(idx + 1, 0, st.splice(idx, 1)[0]); changed(); } });
     const rm = mkBtn('×', () => {
-      if (layer.type === 'conductor' && layerInUse(layer.id)) { uiNotice('Layer is in use - move or delete its objects first.', 'warn'); return; }
+      if (projectBound && layer.type === 'conductor' && layerInUse(layer.id)) { uiNotice('Layer is in use - move or delete its objects first.', 'warn'); return; }
       st.splice(idx, 1);
-      stackChanged();
+      changed();
     });
     top.append(chip, name, typeS);
-    if (layer.type === 'conductor') {
+    if (projectBound && layer.type === 'conductor') {
       const imp = mkBtn('⇪', () => {
         app._importLayer = layer.id;
         $('gerberInput').click();
@@ -861,19 +962,22 @@ function renderStackup() {
       fields.append(sp);
     };
     if (layer.type === 'dielectric') {
-      add('thk (mm)', numIn(layer.thickness, 0.01, v => { layer.thickness = Math.max(0.001, v); stackChanged(); }));
-      add('εr', numIn(layer.er, 0.01, v => { layer.er = Math.max(1, v); stackChanged(); }));
-      add('tanδ', numIn(layer.tand ?? 0, 0.001, v => { layer.tand = Math.max(0, v); stackChanged(); }));
+      add('thk (mm)', numIn(layer.thickness, 0.01, v => { layer.thickness = Math.max(0.001, v); changed(); }));
+      add('εr', numIn(layer.er, 0.01, v => { layer.er = Math.max(1, v); changed(); }));
+      add('tanδ', numIn(layer.tand ?? 0, 0.001, v => { layer.tand = Math.max(0, v); changed(); }));
     } else {
-      add('thk (mm)', numIn(layer.thickness ?? 0.035, 0.005, v => { layer.thickness = v; stackChanged(); }));
+      add('thk (mm)', numIn(layer.thickness ?? 0.035, 0.005, v => { layer.thickness = v; changed(); }));
       const fill = document.createElement('input');
       fill.type = 'checkbox'; fill.checked = !!layer.fill;
-      fill.addEventListener('change', () => { layer.fill = fill.checked; stackChanged(); });
+      fill.addEventListener('change', () => { layer.fill = fill.checked; changed(); });
       add('full plane', fill);
     }
     row.append(fields);
     list.append(row);
   });
+}
+function renderStackup() {
+  buildStackupRows($('stackupList'), app.project.stackup, stackChanged, true);
 }
 function mkBtn(txt, onclick) {
   const b = document.createElement('button');
@@ -1209,20 +1313,7 @@ async function loadResults(runId) {
   try {
     const res = await fetch(`/api/results/${runId}/sparams.csv`);
     if (!res.ok) throw new Error('no results file');
-    const text = await res.text();
-    const lines = text.trim().split('\n');
-    const header = lines[0].replace(/^#/, '').split(',');
-    const rows = lines.slice(1).map(l => l.split(',').map(Number));
-    const freq = rows.map(r => r[0]);
-    const cols = [];
-    for (let c = 1; c < header.length - 2; c += 2) {
-      cols.push({
-        label: header[c].replace(/_re$/, ''),
-        re: rows.map(r => r[c]),
-        im: rows.map(r => r[c + 1]),
-      });
-    }
-    app.sparams = { freq, cols };
+    app.sparams = parseSparamsCsv(await res.text());
     app.tdData = null;
     try {
       const td = await apiJson(`/api/results/${runId}/timedomain`);
@@ -1268,8 +1359,24 @@ function excitedZ0() {
   const p = app.project.ports.find(q => q.excite);
   return p ? (p.impedance || 50) : 50;
 }
-function splitSparams() {
-  const { cols } = app.sparams;
+/* raw sparams.csv text -> {freq[], cols: [{label, re[], im[]}]} */
+function parseSparamsCsv(text) {
+  const lines = text.trim().split('\n');
+  const header = lines[0].replace(/^#/, '').split(',');
+  const rows = lines.slice(1).map(l => l.split(',').map(Number));
+  const freq = rows.map(r => r[0]);
+  const cols = [];
+  for (let c = 1; c < header.length - 2; c += 2) {
+    cols.push({
+      label: header[c].replace(/_re$/, ''),
+      re: rows.map(r => r[c]),
+      im: rows.map(r => r[c + 1]),
+    });
+  }
+  return { freq, cols };
+}
+function splitSparams(sp = app.sparams) {
+  const { cols } = sp;
   const isRefl = c => c.label.length >= 3 && c.label[1] === c.label[2];
   let refl = cols.filter(isRefl);
   if (!refl.length && cols.length) refl = [cols[0]];
@@ -1302,11 +1409,52 @@ function buildLegend(el, items) {
   }
 }
 
-function reflSeries() {
+/* ---------- comparison overlays (Projects pane) ----------
+   Other projects' S-parameters, linearly resampled onto the current
+   result's frequency axis (clamped outside their own sweep). */
+function interpCol(col, srcFreq, dstFreq) {
+  const re = [], im = [];
+  if (srcFreq.length < 2) {
+    for (const _f of dstFreq) { re.push(col.re[0]); im.push(col.im[0]); }
+    return { re, im };
+  }
+  let j = 0;
+  for (const f of dstFreq) {
+    while (j < srcFreq.length - 2 && srcFreq[j + 1] < f) j++;
+    const f0 = srcFreq[j], f1 = srcFreq[j + 1];
+    let t = f1 > f0 ? (f - f0) / (f1 - f0) : 0;
+    t = Math.max(0, Math.min(1, t));
+    re.push(col.re[j] + (col.re[j + 1] - col.re[j]) * t);
+    im.push(col.im[j] + (col.im[j + 1] - col.im[j]) * t);
+  }
+  return { re, im };
+}
+function compareCols(kind) {
+  if (!app.sparams) return [];
+  const dst = app.sparams.freq;
+  const out = [];
+  for (const [name, sp] of Object.entries(app.compare)) {
+    const { refl, trans } = splitSparams(sp);
+    for (const c of (kind === 'refl' ? refl : trans)) {
+      out.push({ label: `${name}:${c.label}`, key: `cmp:${kind}:${name}:${c.label}`,
+                 ...interpCol(c, sp.freq, dst) });
+    }
+  }
+  return out;
+}
+
+function reflSeriesAll() {
   const { refl } = splitSparams();
-  return refl
-    .map((c, i) => ({ ...c, ci: i }))
-    .filter(c => !resultsPrefs.hidden[`refl:${c.label}`]);
+  return refl.map((c, i) => ({ ...c, key: `refl:${c.label}`, ci: i }))
+    .concat(compareCols('refl').map((c, i) => ({ ...c, ci: refl.length + i })));
+}
+function reflSeries() {
+  return reflSeriesAll().filter(c => !resultsPrefs.hidden[c.key]);
+}
+function transSeriesAll() {
+  const { trans } = splitSparams();
+  return trans.map((c, i) => ({ ...c, key: `trans:${c.label}`, ci: i + 1 }))
+    .concat(compareCols('trans').map((c, i) => ({ ...c, ci: trans.length + 1 + i })));
 }
 function makeReflChart(canvas, tip) {
   const { freq } = app.sparams;
@@ -1324,11 +1472,8 @@ function makeReflChart(canvas, tip) {
 }
 function makeTransChart(canvas, tip) {
   const { freq } = app.sparams;
-  const { trans } = splitSparams();
   const view = $('transView').value;
-  const visible = trans
-    .map((c, i) => ({ ...c, ci: i + 1 }))
-    .filter(c => !resultsPrefs.hidden[`trans:${c.label}`]);
+  const visible = transSeriesAll().filter(c => !resultsPrefs.hidden[c.key]);
   let ch;
   if (view === 'polar') {
     ch = new PolarChart(canvas, tip);
@@ -1397,29 +1542,27 @@ function applyResultsConfig() {
       if (sz.h) el.style.height = sz.h;
     }
   }
-  const { trans } = app.sparams ? splitSparams() : { trans: [] };
+  const nTrans = app.sparams ? transSeriesAll().length : 0;
   $('reflCard').hidden = !resultsPrefs.refl || !app.sparams;
-  $('transCard').hidden = !resultsPrefs.trans || trans.length === 0;
+  $('transCard').hidden = !resultsPrefs.trans || nTrans === 0;
   $('tdCard').hidden = !resultsPrefs.td || !app.tdData;
   $('jCard').hidden = !resultsPrefs.j || !((app.jdumps || []).length || (app.jtdumps || []).length);
 }
 
 function renderCharts() {
   if (!app.sparams) return;
-  const { trans } = splitSparams();
   applyResultsConfig();
   if (!$('reflCard').hidden) {
     if (reflChart) reflChart.destroy();
     reflChart = makeReflChart($('reflCanvas'), $('reflTip'));
-    const { refl } = splitSparams();
     buildLegend($('reflLegend'),
-      refl.map((c, i) => ({ label: c.label, key: `refl:${c.label}`, ci: i })));
+      reflSeriesAll().map(c => ({ label: c.label, key: c.key, ci: c.ci })));
   }
-  if (!$('transCard').hidden && trans.length) {
+  if (!$('transCard').hidden && transSeriesAll().length) {
     if (transChart) transChart.destroy();
     transChart = makeTransChart($('transCanvas'), $('transTip'));
     buildLegend($('transLegend'),
-      trans.map((c, i) => ({ label: c.label, key: `trans:${c.label}`, ci: i + 1 })));
+      transSeriesAll().map(c => ({ label: c.label, key: c.key, ci: c.ci })));
   }
   if (!$('tdCard').hidden && app.tdData) {
     if (tdChart) tdChart.destroy();
@@ -2016,22 +2159,98 @@ async function openProjectsModal() {
       } catch (err) { uiNotice('Delete failed: ' + err.message, 'err'); }
     };
     li.append(meta, del);
-    li.onclick = async () => {
+    li.onclick = () => {
       modal.hidden = true;
-      try {
-        const data = await apiJson(`/api/projects/${encodeURIComponent(pr.name)}`);
-        data.project.name = pr.name;
-        loadProject(data.project);
-        if (data.resultsId) {
-          app.currentRunId = data.resultsId;
-          await loadResults(data.resultsId);
-          uiNotice(`Opened "${pr.name}" with its stored results.`);
-        } else {
-          uiNotice(`Opened "${pr.name}".`);
-        }
-      } catch (err) { uiNotice('Open failed: ' + err.message, 'err', 8000); }
+      openServerProject(pr.name);
     };
     list.append(li);
+  }
+}
+
+async function openServerProject(name) {
+  try {
+    const data = await apiJson(`/api/projects/${encodeURIComponent(name)}`);
+    data.project.name = name;
+    loadProject(data.project);
+    if (data.resultsId) {
+      app.currentRunId = data.resultsId;
+      await loadResults(data.resultsId);
+      uiNotice(`Opened "${name}" with its stored results.`);
+    } else {
+      uiNotice(`Opened "${name}".`);
+    }
+  } catch (err) { uiNotice('Open failed: ' + err.message, 'err', 8000); }
+}
+
+/* ---------- left-side Projects pane (open + compare) ---------- */
+function showLeftTab(name) {
+  document.querySelectorAll('#leftTabs .tab').forEach(b =>
+    b.classList.toggle('active', b.dataset.ltab === name));
+  document.querySelectorAll('.ltabpage').forEach(p =>
+    p.classList.toggle('active', p.id === 'ltab-' + name));
+  if (name === 'projects') refreshProjPane();
+}
+async function refreshProjPane() {
+  const ul = $('projPane');
+  ul.innerHTML = '<li class="muted">loading…</li>';
+  let projects = [];
+  try {
+    projects = (await apiJson('/api/projects')).projects;
+  } catch (e) {
+    ul.innerHTML = '<li class="muted">failed to list projects</li>';
+    return;
+  }
+  ul.innerHTML = '';
+  if (!projects.length) {
+    ul.innerHTML = '<li class="muted">No server projects yet — use File → Save.</li>';
+    return;
+  }
+  for (const pr of projects) {
+    const li = document.createElement('li');
+    if (pr.name === app.project.name) li.classList.add('selected');
+    const nm = document.createElement('span');
+    nm.textContent = pr.name;
+    nm.title = 'Open this project in the editor';
+    li.append(nm);
+    if (pr.hasResults) {
+      const cmp = document.createElement('label');
+      cmp.className = 'mini-check tag';
+      cmp.title = "Overlay this project's S-parameters in the Results charts";
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !!app.compare[pr.name];
+      cmp.addEventListener('click', e => e.stopPropagation());
+      cb.addEventListener('change', () => toggleCompare(pr.name, cb.checked));
+      cmp.append(cb, document.createTextNode('cmp'));
+      li.append(cmp);
+    }
+    li.onclick = () => openServerProject(pr.name).then(refreshProjPane);
+    ul.append(li);
+  }
+}
+async function toggleCompare(name, on) {
+  if (!on) {
+    delete app.compare[name];
+    renderCharts();
+    return;
+  }
+  try {
+    const data = await apiJson(`/api/projects/${encodeURIComponent(name)}`);
+    if (!data.resultsId) throw new Error('project has no stored results');
+    const res = await fetch(`/api/results/${data.resultsId}/sparams.csv`);
+    if (!res.ok) throw new Error('results file missing');
+    app.compare[name] = parseSparamsCsv(await res.text());
+    if (!app.sparams) {
+      uiNotice('Comparison loaded — open or run a project with results to plot it against.', 'info', 6000);
+    } else {
+      uiNotice(`Comparing against "${name}" — see the Results charts.`, 'info', 4000);
+      showView('results');
+    }
+    renderCharts();
+  } catch (e) {
+    uiNotice(`Cannot compare "${name}": ` + e.message, 'err', 6000);
+    delete app.compare[name];
+    refreshProjPane();
   }
 }
 
@@ -2129,17 +2348,22 @@ async function applyStackup(st) {
   $('stackModal').hidden = true;
   uiNotice('Stackup applied.');
 }
+let stackSelName = null;
+function stackUid() {
+  return 'L' + Math.random().toString(36).slice(2, 7);
+}
 function renderStackupManager() {
   const list = $('stackList');
   const lib = stackLib();
   const def = JSON.stringify(defaultStackup());
   list.innerHTML = '';
+  if (!lib.some(x => x.name === stackSelName)) stackSelName = null;
   if (!lib.length) {
     list.innerHTML = '<li class="muted">No saved stackups yet — use "Save current as…".</li>';
-    return;
   }
   for (const entry of lib) {
     const li = document.createElement('li');
+    if (entry.name === stackSelName) li.classList.add('selected');
     const star = document.createElement('button');
     const isDef = JSON.stringify(entry.stackup) === def;
     star.className = 'pdel star' + (isDef ? ' on' : '');
@@ -2169,11 +2393,34 @@ function renderStackupManager() {
       saveStackLib(stackLib().filter(x => x.name !== entry.name));
       renderStackupManager();
     };
-    li.title = 'Click to apply this stackup to the current project';
-    li.onclick = () => applyStackup(entry.stackup);
+    li.title = 'Click to edit this stackup';
+    li.onclick = () => {
+      stackSelName = entry.name === stackSelName ? null : entry.name;
+      renderStackupManager();
+    };
     li.append(star, nm, meta, del);
     list.append(li);
   }
+  // inline editor for the selected library entry
+  const edit = $('stackEdit');
+  const entry = lib.find(x => x.name === stackSelName);
+  edit.hidden = !entry;
+  if (!entry) return;
+  $('stackEditName').textContent = `Edit "${entry.name}" (top → bottom)`;
+  const persist = () => {
+    saveStackLib(lib);
+    renderStackupManager();
+  };
+  buildStackupRows($('stackEditList'), entry.stackup, persist, false);
+  $('seAddCond').onclick = () => {
+    entry.stackup.unshift({ id: stackUid(), name: 'Conductor', type: 'conductor', thickness: 0.035, fill: false });
+    persist();
+  };
+  $('seAddDiel').onclick = () => {
+    entry.stackup.push({ id: stackUid(), name: 'Dielectric', type: 'dielectric', thickness: 0.2, er: 4.3, tand: 0.02 });
+    persist();
+  };
+  $('seApply').onclick = () => applyStackup(entry.stackup);
 }
 function openStackupManager() {
   renderStackupManager();
@@ -2296,7 +2543,20 @@ const MENU_ACTIONS = {
   colors: openColorsModal,
   toolSelect: () => app.setTool('select'),
   toolMeasure: () => app.setTool('measure'),
+  toolRect: () => app.setTool('rect'),
+  toolCircle: () => app.setTool('circle'),
+  toolSegment: () => app.setTool('segment'),
+  toolArc: () => app.setTool('arc'),
+  toolPoly: () => app.setTool('poly'),
+  toolTrace: () => app.setTool('trace'),
+  toolVia: () => app.setTool('via'),
+  toolComp: () => app.setTool('comp'),
+  toolPort: () => app.setTool('port'),
+  toolMsl: () => app.setTool('mslport'),
+  toolNote: () => app.setTool('note'),
+  importDrill: () => $('drillInput').click(),
   stackman: openStackupManager,
+  tests: () => { $('testsTab').hidden = false; showView('tests'); },
   shortcuts: () => { $('helpModal').hidden = false; },
   about: () => uiNotice('OpenEMS PCB Studio — a browser GUI for openEMS FDTD '
     + 'simulations of PCB structures via GNU Octave.', 'info', 8000),
@@ -2319,8 +2579,8 @@ function loadProject(p) {
   app.project = migrate(p);
   app.selection = null;
   if (!app.project.nextId) {
-    const ids = ['shapes', 'vias', 'components', 'ports']
-      .flatMap(k => app.project[k].map(o => o.id || 0));
+    const ids = ['shapes', 'vias', 'components', 'ports', 'notes']
+      .flatMap(k => (app.project[k] || []).map(o => o.id || 0));
     app.project.nextId = (ids.length ? Math.max(...ids) : 0) + 1;
   }
   formsFromModel();
@@ -2343,6 +2603,8 @@ window.addEventListener('DOMContentLoaded', () => {
   Modal.init();
   initTabs();
   initMenus();
+  document.querySelectorAll('#leftTabs .tab').forEach(btn =>
+    btn.addEventListener('click', () => showLeftTab(btn.dataset.ltab)));
   bindForms();
   applyTheme();
   loadProject(saved || defaultProject());
@@ -2372,6 +2634,7 @@ window.addEventListener('DOMContentLoaded', () => {
     app.snapStep = isFinite(v) && v > 0 ? v : 0;
     uiSettings.snapStep = app.snapStep;
     saveUiSettings();
+    app.editor.render();   // the visual grid follows the snap step
   });
   $('snapMode').addEventListener('change', e => {
     app.snapMode = e.target.value;
@@ -2494,7 +2757,6 @@ window.addEventListener('DOMContentLoaded', () => {
     if (f && app._importLayer) await importGerberFile(app._importLayer, f);
     e.target.value = '';
   });
-  $('btnDrill').addEventListener('click', () => $('drillInput').click());
   $('drillInput').addEventListener('change', async e => {
     const f = e.target.files[0];
     if (f) await importDrillFile(f);
@@ -2688,11 +2950,15 @@ window.addEventListener('DOMContentLoaded', () => {
       case 'r': case 'R': setTool('rect'); break;
       case 'c': case 'C': setTool('circle'); break;
       case 'p': case 'P': setTool('port'); break;
+      case 't': case 'T': setTool('trace'); break;
+      case 'n': case 'N': setTool('note'); break;
       case 'x': case 'X': setTool('measure'); break;
       case 'm': case 'M': $('btnMesh').click(); break;
       case 'g': case 'G': $('btnGrid').click(); break;
       case 'f': case 'F': app.editor.zoomFit(); break;
-      case 'Enter': if (app.tool === 'poly') { app.editor.finishPoly(); e.preventDefault(); } break;
+      case 'Enter':
+        if (app.tool === 'poly' || app.tool === 'trace') { app.editor.finishPoly(); e.preventDefault(); }
+        break;
       case 'Escape':
         // Esc backs out of the current tool state, then falls back to Select
         if (app.editor.pendingPoly) app.editor.cancelPoly();

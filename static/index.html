@@ -19,6 +19,7 @@
         <button data-action="saveAs">Save as&hellip;</button>
         <div class="menu-sep"></div>
         <button data-action="importJson">Import project JSON&hellip;</button>
+        <button data-action="importDrill">Import drill file (PTH vias)&hellip;</button>
         <button data-action="exportCfg">Export cfg (JSON)</button>
         <button data-action="exportM">Export Octave script (.m)</button>
         <div class="menu-sep"></div>
@@ -52,10 +53,27 @@
     <div class="menu">
       <button class="menu-btn">Tools</button>
       <div class="menu-drop">
-        <button data-action="toolSelect">Select tool <kbd>V</kbd></button>
-        <button data-action="toolMeasure">Measure tool <kbd>X</kbd></button>
-        <div class="menu-sep"></div>
+        <div class="menu-label">Editing</div>
+        <button data-action="toolSelect">Select <kbd>V</kbd></button>
+        <button data-action="toolMeasure">Measure <kbd>X</kbd></button>
+        <div class="menu-label">Drawing</div>
+        <button data-action="toolRect">Rectangle <kbd>R</kbd></button>
+        <button data-action="toolCircle">Circle <kbd>C</kbd></button>
+        <button data-action="toolSegment">Circle segment</button>
+        <button data-action="toolArc">Arc</button>
+        <button data-action="toolPoly">Polygon</button>
+        <button data-action="toolTrace">Transmission line <kbd>T</kbd></button>
+        <div class="menu-label">Placement</div>
+        <button data-action="toolVia">Via</button>
+        <button data-action="toolComp">Component R/L/C</button>
+        <button data-action="toolPort">Lumped port <kbd>P</kbd></button>
+        <button data-action="toolMsl">MSL port</button>
+        <div class="menu-label">Annotation</div>
+        <button data-action="toolNote">Note <kbd>N</kbd></button>
+        <div class="menu-label">Configuration</div>
         <button data-action="stackman">Stackup manager&hellip;</button>
+        <div class="menu-label">Verification</div>
+        <button data-action="tests">Verification tests&hellip;</button>
       </div>
     </div>
     <div class="menu">
@@ -75,6 +93,11 @@
 
 <main>
   <aside id="left">
+    <nav class="tabs" id="leftTabs">
+      <button class="tab active" data-ltab="design">Design</button>
+      <button class="tab" data-ltab="projects">Projects</button>
+    </nav>
+    <div id="ltab-design" class="ltabpage active">
     <div class="panel">
       <h3>Tools</h3>
       <div class="tools" id="toolButtons">
@@ -108,8 +131,14 @@
         <button class="tool" data-tool="mslport" title="MSL port — matched microstrip-line port with de-embedded reference plane; drag at a line end, chevrons point into the board">
           <svg viewBox="0 0 16 16"><path d="M1.5 8 h5 M8 4.5 L11.5 8 L8 11.5 M11 4.5 L14.5 8 L11 11.5"/></svg>
         </button>
+        <button class="tool" data-tool="trace" title="Transmission line (T) — click centerline points, Enter/double-click finishes; width and corner radius in the properties panel">
+          <svg viewBox="0 0 16 16"><path d="M2 13 h5 a4 4 0 0 0 4-4 v-3 a2 2 0 0 1 2-2 h1" fill="none" stroke-width="2.4"/></svg>
+        </button>
         <button class="tool" data-tool="measure" title="Measure (X) — drag between two points to read Δx, Δy and the distance; Esc clears">
           <svg viewBox="0 0 16 16"><path d="M2.5 13.5 L13.5 2.5 M4.5 11.5 l1.6 1.6 M7 9 l1.6 1.6 M9.5 6.5 l1.6 1.6 M12 4 l1.6 1.6"/></svg>
+        </button>
+        <button class="tool" data-tool="note" title="Note (N) — click to place a collapsible text note; documentation only, never simulated">
+          <svg viewBox="0 0 16 16"><path d="M3 1.5 h6.5 L13 5 v9.5 H3 Z M9.5 1.5 V5 H13 M5.5 8 h5 M5.5 11 h3.5"/></svg>
         </button>
       </div>
       <div class="tools">
@@ -151,9 +180,21 @@
       <ul id="objList" class="obj-list"></ul>
     </div>
     <div class="panel hint">
-      V/R/C/P/X tools &middot; Esc back to select &middot; drag on empty = box select &middot;
+      V/R/C/P/T/X/N tools &middot; Esc back to select &middot; drag on empty = box select &middot;
       M mesh &middot; F fit &middot; Del deletes &middot; arrows nudge &middot;
-      wheel zooms &middot; middle/right-drag pans &middot; polygon: click points, Enter closes
+      wheel zooms &middot; middle/right-drag pans &middot; polygon/line: click points, Enter closes
+    </div>
+    </div>
+    <div id="ltab-projects" class="ltabpage">
+      <div class="panel grow">
+        <h3>Server projects</h3>
+        <ul id="projPane" class="obj-list"></ul>
+      </div>
+      <div class="panel hint">
+        Click a project to open it in the editor. Tick &ldquo;cmp&rdquo; to
+        overlay that project&rsquo;s S-parameters in the Results charts for
+        comparison with the current results.
+      </div>
     </div>
   </aside>
 
@@ -161,7 +202,7 @@
     <nav class="viewtabs">
       <button class="viewtab active" data-view="editor">Editor</button>
       <button class="viewtab" data-view="results">Results</button>
-      <button class="viewtab" data-view="tests">Tests</button>
+      <button class="viewtab" data-view="tests" id="testsTab" hidden>Tests</button>
     </nav>
     <div id="editorView" class="view active">
       <div id="warnBar" hidden></div>
@@ -316,14 +357,12 @@
       <div class="stackup-add">
         <button id="addCond">+ Conductor</button>
         <button id="addDiel">+ Dielectric</button>
-        <button id="btnStackMan" title="Save/load stackups, export to file, pick the default for new projects">Manager&hellip;</button>
+        <button id="btnStackMan" title="Stackup library: edit saved stackups, export/import files, pick the default for new projects">Manager&hellip;</button>
       </div>
-      <h3 style="margin-top:16px">Import fabrication data</h3>
-      <p class="muted" style="margin:4px 0 8px">
-        Use the &#8686; button on a conductor layer to import a Gerber file
-        onto it. Drill files create through-hole vias.
+      <p class="muted" style="margin:10px 0 0">
+        The &#8686; button on a conductor layer imports a Gerber file onto
+        it; drill files (PTH vias) import via File &rarr; Import drill file.
       </p>
-      <button id="btnDrill" class="wide-btn" style="margin-top:0">&#8686; Import drill file (PTH vias)</button>
       <input id="gerberInput" type="file" hidden>
       <input id="drillInput" type="file" accept=".drl,.xln,.txt,.exc,.drill" hidden>
     </div>
@@ -443,13 +482,22 @@
   <div class="uic-box proj-box">
     <div class="modal-head"><span>Stackup manager</span><button id="stackClose">&#10005;</button></div>
     <p class="muted" style="margin:6px 0 0">
-      Click a saved stackup to apply it to the current project. The
-      &#9733; marks the default stackup used by File &rarr; New project.
+      Click a saved stackup to edit its layers below. The &#9733; marks
+      the default stackup used by File &rarr; New project.
     </p>
     <ul id="stackList" class="proj-list"></ul>
+    <div id="stackEdit" hidden>
+      <h3 id="stackEditName" style="margin-top:12px"></h3>
+      <div id="stackEditList"></div>
+      <div class="stackup-add">
+        <button id="seAddCond">+ Conductor</button>
+        <button id="seAddDiel">+ Dielectric</button>
+        <button id="seApply" class="primary" title="Replace the current project's stackup with this one">Apply to project</button>
+      </div>
+    </div>
     <div class="uic-btns" style="justify-content:flex-start; flex-wrap:wrap">
-      <button id="stackSaveAs" title="Store the current stackup in the browser library">Save current as&hellip;</button>
-      <button id="stackExport" title="Download the current stackup as a JSON file">Export to file</button>
+      <button id="stackSaveAs" title="Store the current project's stackup in the browser library">Save current as&hellip;</button>
+      <button id="stackExport" title="Download the current project's stackup as a JSON file">Export to file</button>
       <button id="stackImport" title="Import a stackup JSON file into the library">Import file&hellip;</button>
     </div>
   </div>
@@ -477,7 +525,9 @@
     <table class="shortcuts">
       <tr><td><kbd>V</kbd> / <kbd>Esc</kbd></td><td>select tool (Esc also clears the selection)</td></tr>
       <tr><td><kbd>R</kbd> <kbd>C</kbd> <kbd>P</kbd></td><td>rectangle / circle / lumped-port tool</td></tr>
+      <tr><td><kbd>T</kbd></td><td>transmission line — click centerline points, Enter closes; hover a line to read its length</td></tr>
       <tr><td><kbd>X</kbd></td><td>measure tool — drag between two points</td></tr>
+      <tr><td><kbd>N</kbd></td><td>note — click to place; click its triangle (or double-click) to collapse/expand</td></tr>
       <tr><td><kbd>G</kbd> / <kbd>M</kbd> / <kbd>F</kbd></td><td>toggle grid / mesh preview / fit view</td></tr>
       <tr><td><kbd>Ctrl+C/X/V</kbd></td><td>copy / cut / paste the selection</td></tr>
       <tr><td><kbd>Ctrl+D</kbd></td><td>duplicate</td></tr>

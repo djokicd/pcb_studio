@@ -82,3 +82,53 @@ def test_mesh_z_air_cells_mirrored():
 def test_mesh_cells_count_consistent():
     m = build_mesh(_model([rect('t', 10, 8, 10, 3)]))
     assert m['cells'] == len(m['x']) * len(m['y']) * len(m['z'])
+
+
+def test_trace_outline_straight():
+    from geometry import trace_length
+    s = {'type': 'trace', 'pts': [[0, 0], [10, 0]], 'width': 2}
+    pts = shape_outline(s)
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    assert len(pts) >= 8
+    # sides at +/- w/2, round caps extending w/2 past the ends
+    assert abs(min(ys) + 1) < 1e-6 and abs(max(ys) - 1) < 1e-6
+    assert -1.01 < min(xs) < -0.9 and 10.9 < max(xs) < 11.01
+    assert abs(trace_length(s['pts'], 0) - 10) < 1e-9
+
+
+def test_trace_fillet_length():
+    from geometry import trace_length
+    # right-angle bend, corner radius 2: shorter than the 20 mm manhattan
+    # path, close to the circular-fillet value 16 + pi/2*2 ~ 19.14
+    l = trace_length([[0, 0], [10, 0], [10, 10]], 2)
+    assert 18.5 < l < 19.5
+
+
+def test_trace_meshes_and_validates():
+    from scriptgen import generate_script
+    t = {'id': 7, 'name': 'line', 'type': 'trace', 'layer': 'top',
+         'priority': 10, 'pts': [[2, 10], [20, 10], [28, 18]],
+         'width': 1.45, 'radius': 3, 'mesh': {}}
+    m = _model([t])
+    mesh = build_mesh(m)
+    # trace edge lines present around y = 10 +/- 0.725
+    assert any(abs(v - 9.275) < 0.15 for v in mesh['y'])
+    assert any(abs(v - 10.725) < 0.15 for v in mesh['y'])
+    assert 'AddLinPoly' in generate_script(m)
+
+
+def test_canvas_notes_are_ignored_by_mesh_and_script():
+    """Notes are editor-only annotations: they must never influence the
+    mesh or reach the generated script."""
+    from scriptgen import generate_script
+    m = _model([rect('t', 10, 8, 10, 3)])
+    plain_mesh = build_mesh(m)
+    plain_script = generate_script(m)
+    m['notes'] = [{'id': 900, 'x': 500, 'y': -400, 'w': 190,
+                   'collapsed': False, 'text': 'tuning note\nsecond line'}]
+    noted = build_mesh(m)
+    assert noted['x'] == plain_mesh['x'] and noted['y'] == plain_mesh['y']
+    assert noted['z'] == plain_mesh['z']
+    assert generate_script(m) == plain_script
+    assert 'tuning note' not in plain_script

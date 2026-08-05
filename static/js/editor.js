@@ -5,6 +5,9 @@
 
 const LAYER_COLORS = ['#e07840', '#4a90d9', '#c9b458', '#9085e9', '#d55181', '#199e70'];
 const LAYER_COLORS_DEFAULT = [...LAYER_COLORS];
+/* selectable object kind -> the project array holding it */
+const OBJ_LISTS = { shape: 'shapes', via: 'vias', component: 'components',
+                    port: 'ports', note: 'notes' };
 /* editor canvas palettes; ED is mutated by applyTheme()/applyColorPrefs() */
 const ED_THEMES = {
   dark: {
@@ -15,6 +18,7 @@ const ED_THEMES = {
     mesh: 'rgba(120,180,255,0.20)', text: '#898781', ink: '#e8e7e0',
     measure: '#f2c94c', overlay: 'rgba(13,13,13,0.82)',
     overlayEdge: 'rgba(255,255,255,0.14)', selectFill: 'rgba(57,135,229,0.12)',
+    note: 'rgba(38,38,36,0.94)', noteEdge: '#c98500', noteText: '#e8e7e0',
   },
   light: {
     port: '#0a8a0a', msl: '#0a8a66', pin: '#6a5bd8',
@@ -24,6 +28,7 @@ const ED_THEMES = {
     mesh: 'rgba(40,110,220,0.30)', text: '#77756d', ink: '#1c1c1a',
     measure: '#a9770a', overlay: 'rgba(255,255,255,0.90)',
     overlayEdge: 'rgba(0,0,0,0.15)', selectFill: 'rgba(47,111,202,0.10)',
+    note: 'rgba(255,251,235,0.97)', noteEdge: '#a9770a', noteText: '#1c1c1a',
   },
 };
 const ED = { ...ED_THEMES.dark };
@@ -44,8 +49,100 @@ function arcPts(cx, cy, r, a0, a1, n) {
   return pts;
 }
 
+/* trace centerline: drawn polyline with interior corners rounded by
+   `radius` (quadratic-bezier fillet). Mirrors trace_centerline() in
+   geometry.py - keep in sync. */
+function traceCenterline(pts, radius) {
+  const r = radius || 0;
+  if (r <= 0 || pts.length < 3) return pts.map(p => [p[0], p[1]]);
+  const out = [[pts[0][0], pts[0][1]]];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const [ax, ay] = out[out.length - 1];
+    const [bx, by] = pts[i];
+    const [cx, cy] = pts[i + 1];
+    const l1 = Math.hypot(bx - ax, by - ay), l2 = Math.hypot(cx - bx, cy - by);
+    if (l1 < 1e-9 || l2 < 1e-9) continue;
+    const u1 = [(bx - ax) / l1, (by - ay) / l1], u2 = [(cx - bx) / l2, (cy - by) / l2];
+    const cross = u1[0] * u2[1] - u1[1] * u2[0];
+    const turn = Math.acos(Math.max(-1, Math.min(1, u1[0] * u2[0] + u1[1] * u2[1])));
+    if (Math.abs(cross) < 1e-9 || turn < 1e-3) { out.push([bx, by]); continue; }
+    const t = Math.min(r * Math.tan(turn / 2), l1 * 0.5, l2 * 0.5);
+    const p1 = [bx - u1[0] * t, by - u1[1] * t];
+    const p2 = [bx + u2[0] * t, by + u2[1] * t];
+    const n = Math.max(2, Math.ceil(turn * 180 / Math.PI / 15));
+    for (let k = 0; k <= n; k++) {
+      const q = k / n, o = 1 - q;
+      out.push([o * o * p1[0] + 2 * o * q * bx + q * q * p2[0],
+                o * o * p1[1] + 2 * o * q * by + q * q * p2[1]]);
+    }
+  }
+  out.push([pts[pts.length - 1][0], pts[pts.length - 1][1]]);
+  return out;
+}
+
+/* closed outline of the centerline stroked to `width` (mitered sides +
+   semicircular caps). Mirrors stroke_outline() in geometry.py. */
+function strokeOutline(cl, width) {
+  const w2 = width / 2;
+  const pts = [cl[0]];
+  for (const p of cl.slice(1))
+    if (Math.hypot(p[0] - pts[pts.length - 1][0], p[1] - pts[pts.length - 1][1]) > 1e-9) pts.push(p);
+  if (pts.length < 2) {
+    const [x, y] = pts[0] || [0, 0];
+    return arcPts(x, y, w2 || 0.1, 0, 360, 16).slice(0, -1);
+  }
+  const dirs = [], normals = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const dx = pts[i + 1][0] - pts[i][0], dy = pts[i + 1][1] - pts[i][1];
+    const l = Math.hypot(dx, dy);
+    dirs.push([dx / l, dy / l]);
+    normals.push([-dy / l, dx / l]);
+  }
+  const left = [], right = [];
+  pts.forEach((p, i) => {
+    let n;
+    if (i === 0) n = normals[0];
+    else if (i === pts.length - 1) n = normals[normals.length - 1];
+    else {
+      let mx = normals[i - 1][0] + normals[i][0], my = normals[i - 1][1] + normals[i][1];
+      const ml = Math.hypot(mx, my);
+      if (ml < 1e-9) n = normals[i];
+      else {
+        mx /= ml; my /= ml;
+        const scale = 1 / Math.max(mx * normals[i][0] + my * normals[i][1], 0.25);
+        n = [mx * scale, my * scale];
+      }
+    }
+    left.push([p[0] + n[0] * w2, p[1] + n[1] * w2]);
+    right.push([p[0] - n[0] * w2, p[1] - n[1] * w2]);
+  });
+  const cap = (c, nFrom) => {
+    const a0 = Math.atan2(nFrom[1], nFrom[0]);
+    const out = [];
+    for (let k = 1; k < 8; k++) {
+      const a = a0 - Math.PI * k / 8;
+      out.push([c[0] + w2 * Math.cos(a), c[1] + w2 * Math.sin(a)]);
+    }
+    return out;
+  };
+  const nEnd = normals[normals.length - 1], n0 = normals[0];
+  return left
+    .concat(cap(pts[pts.length - 1], nEnd))
+    .concat(right.reverse())
+    .concat(cap(pts[0], [-n0[0], -n0[1]]));
+}
+
+function traceLengthTo(cl, upto) {
+  let l = 0;
+  for (let i = 0; i < (upto == null ? cl.length - 1 : upto); i++)
+    l += Math.hypot(cl[i + 1][0] - cl[i][0], cl[i + 1][1] - cl[i][1]);
+  return l;
+}
+
 function outlinePts(s) {
   switch (s.type || 'rect') {
+    case 'trace':
+      return strokeOutline(traceCenterline(s.pts, s.radius), s.width || 0.1);
     case 'rect':
       return [[s.x, s.y], [s.x + s.w, s.y], [s.x + s.w, s.y + s.h], [s.x, s.y + s.h]];
     case 'circle':
@@ -142,6 +239,7 @@ class Editor {
     };
     for (const { kind, obj } of this.objects()) {
       if (++n > 4000) break;
+      if (kind === 'note') continue;   // annotations carry no geometry
       if (kind === 'via') { consider(obj.x, obj.y); continue; }
       if (kind === 'component') {
         const [x0, y0, x1, y1] = this.app.compBody(obj);
@@ -169,6 +267,64 @@ class Editor {
     this.render();
   }
 
+  /* ---- notes (canvas annotations) ----
+     Notes are anchored to a world position but drawn at a fixed pixel
+     size so the text stays readable at any zoom; hit testing therefore
+     happens in screen space. The first wrapped line is the title shown
+     when collapsed; the remaining lines are the collapsible body. */
+  wrapText(text, maxW) {
+    const ctx = this.ctx;
+    const out = [];
+    for (const para of String(text == null ? '' : text).split('\n')) {
+      if (!para.trim()) { out.push(''); continue; }
+      let line = '';
+      for (let word of para.trim().split(/\s+/)) {
+        while (ctx.measureText(word).width > maxW && word.length > 1) {
+          // hard-break a word that cannot fit on its own line
+          let cut = 1;
+          while (cut < word.length && ctx.measureText(word.slice(0, cut + 1)).width <= maxW) cut++;
+          if (line) { out.push(line); line = ''; }
+          out.push(word.slice(0, cut));
+          word = word.slice(cut);
+        }
+        const t = line ? line + ' ' + word : word;
+        if (!line || ctx.measureText(t).width <= maxW) line = t;
+        else { out.push(line); line = word; }
+      }
+      out.push(line);
+    }
+    return out;
+  }
+
+  noteLayout(n) {
+    const ctx = this.ctx;
+    const PAD = 7, LH = 14, HEAD = 20, TOG = 14;
+    const w = Math.max(70, n.w || 190);
+    ctx.font = '11px system-ui';
+    const lines = this.wrapText(n.text, w - PAD * 2 - TOG);
+    const title = lines[0] || '(empty note)';
+    const body = lines.slice(1);
+    const [sx, sy] = this.toScreen(n.x, n.y);
+    const expanded = !n.collapsed && body.length > 0;
+    const h = HEAD + (expanded ? body.length * LH + PAD : 0);
+    return { sx, sy, w, h, title, body, expanded, hasBody: body.length > 0, PAD, LH, HEAD, TOG };
+  }
+
+  /* {it, toggle} for the topmost note under the screen point, else null */
+  noteAt(sx, sy) {
+    const notes = this.app.project.notes || [];
+    for (let i = notes.length - 1; i >= 0; i--) {
+      const L = this.noteLayout(notes[i]);
+      if (sx >= L.sx && sx <= L.sx + L.w && sy >= L.sy && sy <= L.sy + L.h) {
+        return {
+          it: { kind: 'note', obj: notes[i] },
+          toggle: L.hasBody && sx <= L.sx + L.TOG + L.PAD && sy <= L.sy + L.HEAD,
+        };
+      }
+    }
+    return null;
+  }
+
   /* ---- object access ---- */
   objects() {
     const p = this.app.project;
@@ -176,6 +332,7 @@ class Editor {
     (this.app.conductorLayers() || []).forEach((l, i) => { layerRank[l.id] = i; });
     const shapes = [...p.shapes].sort((a, b) => (layerRank[b.layer] ?? 0) - (layerRank[a.layer] ?? 0));
     return [
+      ...[...(p.notes || [])].reverse().map(obj => ({ kind: 'note', obj })),  // overlay: on top
       ...p.components.map(obj => ({ kind: 'component', obj })),
       ...p.ports.map(obj => ({ kind: 'port', obj })),
       ...p.vias.map(obj => ({ kind: 'via', obj })),
@@ -186,6 +343,12 @@ class Editor {
   hitTest(wx, wy) {
     for (const it of this.objects()) {
       const { kind, obj } = it;
+      if (kind === 'note') {
+        const L = this.noteLayout(obj);
+        const [sx, sy] = this.toScreen(wx, wy);
+        if (sx >= L.sx && sx <= L.sx + L.w && sy >= L.sy && sy <= L.sy + L.h) return it;
+        continue;
+      }
       if (kind === 'shape' && pointInPoly(wx, wy, outlinePts(obj))) return it;
       if (kind === 'via' && Math.hypot(wx - obj.x, wy - obj.y) <= obj.pad / 2) return it;
       if (kind === 'component') {
@@ -201,13 +364,19 @@ class Editor {
   selectedObj() {
     const sel = this.app.selection;
     if (!sel) return null;
-    const lists = { shape: 'shapes', via: 'vias', component: 'components', port: 'ports' };
-    const obj = this.app.project[lists[sel.kind]].find(o => o.id === sel.id);
+    const obj = (this.app.project[OBJ_LISTS[sel.kind]] || []).find(o => o.id === sel.id);
     return obj ? { kind: sel.kind, obj } : null;
   }
 
   selBounds(sel) {
     const { kind, obj } = sel;
+    if (kind === 'note') {
+      // screen-space box back into world coordinates (y is flipped)
+      const L = this.noteLayout(obj);
+      const [x0, y0] = this.toWorld(L.sx, L.sy);
+      const [x1, y1] = this.toWorld(L.sx + L.w, L.sy + L.h);
+      return [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
+    }
     if (kind === 'shape') return boundsOf(outlinePts(obj));
     if (kind === 'via') return [obj.x - obj.pad / 2, obj.y - obj.pad / 2, obj.x + obj.pad / 2, obj.y + obj.pad / 2];
     if (kind === 'component') { const [a, b, c, d] = this.app.compBody(obj); return [a, b, c, d]; }
@@ -219,7 +388,7 @@ class Editor {
     if (kind === 'shape') {
       const t = obj.type || 'rect';
       if (t === 'rect') { obj.x += dx; obj.y += dy; }
-      else if (t === 'poly') obj.pts = obj.pts.map(p => [p[0] + dx, p[1] + dy]);
+      else if (t === 'poly' || t === 'trace') obj.pts = obj.pts.map(p => [p[0] + dx, p[1] + dy]);
       else { obj.cx += dx; obj.cy += dy; }
     } else if (kind === 'port') { obj.x += dx; obj.y += dy; }
     else { obj.x += dx; obj.y += dy; }
@@ -244,7 +413,7 @@ class Editor {
       const [hx, hy] = this.toScreen(obj.cx + obj.r, obj.cy);
       return [{ id: 'radius', x: hx, y: hy }];
     }
-    if (kind === 'shape' && obj.type === 'poly') {
+    if (kind === 'shape' && (obj.type === 'poly' || obj.type === 'trace')) {
       return obj.pts.map((p, i) => {
         const [sx, sy] = this.toScreen(p[0], p[1]);
         return { id: 'v' + i, x: sx, y: sy };
@@ -270,7 +439,17 @@ class Editor {
     const tool = this.app.tool;
 
     if (tool === 'select') {
-      const h = this.handleAt(sx, sy);
+      // notes float above the geometry: their collapse toggle wins over
+      // handles, and the box itself over anything underneath
+      const nh = this.noteAt(sx, sy);
+      if (nh && nh.toggle) {
+        nh.it.obj.collapsed = !nh.it.obj.collapsed;
+        this.app.select('note', nh.it.obj.id);
+        this.app.dirty();
+        this.render();
+        return;
+      }
+      const h = nh ? null : this.handleAt(sx, sy);
       if (h) {
         const sel = this.selectedObj();
         this.drag = { type: 'handle', handle: h.id, sel, orig: JSON.parse(JSON.stringify(sel.obj)) };
@@ -302,9 +481,9 @@ class Editor {
       return;
     }
 
-    if (tool === 'poly') {
+    if (tool === 'poly' || tool === 'trace') {
       const [x, y] = this.snapPt(wx, wy);
-      if (!this.pendingPoly) this.pendingPoly = [];
+      if (!this.pendingPoly) { this.pendingPoly = []; this.pendingTool = tool; }
       this.pendingPoly.push([x, y]);
       this.render();
       return;
@@ -312,6 +491,7 @@ class Editor {
 
     if (tool === 'via') { const [x, y] = this.snapPt(wx, wy); this.app.createVia(x, y); return; }
     if (tool === 'comp') { const [x, y] = this.snapPt(wx, wy); this.app.createComp(x, y); return; }
+    if (tool === 'note') { const [x, y] = this.snapPt(wx, wy); this.app.createNote(x, y); return; }
 
     // drag-to-draw tools: rect, circle, segment, arc, port
     const [x0, y0] = this.snapPt(wx, wy);
@@ -319,16 +499,33 @@ class Editor {
   }
 
   onDblClick(e) {
-    if (this.app.tool === 'poly') this.finishPoly();
+    if (this.app.tool === 'poly' || this.app.tool === 'trace') { this.finishPoly(); return; }
+    if (this.app.tool === 'select') {
+      const nh = this.noteAt(...this.eventPos(e));
+      if (nh && nh.it.obj.text !== undefined) {
+        nh.it.obj.collapsed = !nh.it.obj.collapsed;
+        this.app.select('note', nh.it.obj.id);
+        this.app.dirty();
+        this.render();
+      }
+    }
   }
 
   finishPoly() {
-    if (this.pendingPoly && this.pendingPoly.length >= 3) {
+    const trace = this.pendingTool === 'trace';
+    const need = trace ? 2 : 3;
+    if (this.pendingPoly && this.pendingPoly.length >= need) {
       // drop the duplicate point a double-click adds
       const pts = this.pendingPoly;
       const n = pts.length;
-      if (n > 3 && pts[n - 1][0] === pts[n - 2][0] && pts[n - 1][1] === pts[n - 2][1]) pts.pop();
-      this.app.createShape('poly', { pts });
+      if (n > need && pts[n - 1][0] === pts[n - 2][0] && pts[n - 1][1] === pts[n - 2][1]) pts.pop();
+      if (trace) {
+        this.app.createShape('trace', {
+          pts, width: this.app.traceWidth || 1, radius: this.app.traceRadius || 0,
+        });
+      } else {
+        this.app.createShape('poly', { pts });
+      }
     }
     this.pendingPoly = null;
     this.render();
@@ -342,13 +539,21 @@ class Editor {
     this.app.onCursor(wx, wy);
 
     if (!this.drag) {
+      let hover = null;
       if (this.app.tool === 'select') {
-        const h = this.handleAt(sx, sy);
-        this.canvas.style.cursor = h ? 'pointer' : (this.hitTest(wx, wy) ? 'move' : 'default');
+        const nh = this.noteAt(sx, sy);
+        const h = nh ? null : this.handleAt(sx, sy);
+        const hit = (nh || h) ? null : this.hitTest(wx, wy);
+        this.canvas.style.cursor = (nh && nh.toggle) || h ? 'pointer'
+          : (nh || hit) ? 'move' : 'default';
+        if (hit && hit.kind === 'shape' && hit.obj.type === 'trace')
+          hover = this.traceHoverInfo(hit.obj, wx, wy);
       } else {
         this.canvas.style.cursor = 'crosshair';
       }
-      if (this.pendingPoly) this.render();
+      const changed = !!hover !== !!this.traceHover;
+      this.traceHover = hover;
+      if (this.pendingPoly || hover || changed) this.render();
       return;
     }
 
@@ -524,11 +729,68 @@ class Editor {
     this.drawMesh();
     this.drawDragPreview();
     this.drawPendingPoly();
+    this.drawNotes();
     this.drawSelection();
     this.drawBox();
     this.drawMeasure();
+    this.drawTraceHover();
     this.drawAxes();
     this.drawZStrip(w, h);
+  }
+
+  /* text annotations: a pin at the anchor point plus a fixed-size box
+     with the title row (always) and the wrapped body (when expanded) */
+  drawNotes() {
+    const ctx = this.ctx;
+    for (const n of this.app.project.notes || []) {
+      const L = this.noteLayout(n);
+      // anchor pin at the note's world point
+      ctx.fillStyle = ED.noteEdge;
+      ctx.beginPath(); ctx.arc(L.sx, L.sy, 2.5, 0, 7); ctx.fill();
+
+      ctx.fillStyle = ED.note;
+      ctx.strokeStyle = ED.noteEdge;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(L.sx, L.sy, L.w, L.h, 5);
+      ctx.fill(); ctx.stroke();
+
+      const tx = L.sx + L.PAD + (L.hasBody ? L.TOG : 0);
+      if (L.hasBody) {
+        // collapse triangle: right when collapsed, down when expanded
+        const cx = L.sx + L.PAD + 4, cy = L.sy + L.HEAD / 2;
+        ctx.fillStyle = ED.noteEdge;
+        ctx.beginPath();
+        if (L.expanded) {
+          ctx.moveTo(cx - 4, cy - 2); ctx.lineTo(cx + 4, cy - 2); ctx.lineTo(cx, cy + 3);
+        } else {
+          ctx.moveTo(cx - 2, cy - 4); ctx.lineTo(cx + 3, cy); ctx.lineTo(cx - 2, cy + 4);
+        }
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.font = '11px system-ui';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = ED.noteText;
+      // clip the title to the box so a long first line cannot overflow
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(L.sx, L.sy, L.w - L.PAD, L.HEAD);
+      ctx.clip();
+      ctx.fillText(L.title, tx, L.sy + L.HEAD / 2);
+      ctx.restore();
+      if (!L.expanded) continue;
+      ctx.strokeStyle = ED.overlayEdge;
+      ctx.beginPath();
+      ctx.moveTo(L.sx + L.PAD, L.sy + L.HEAD);
+      ctx.lineTo(L.sx + L.w - L.PAD, L.sy + L.HEAD);
+      ctx.stroke();
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = ED.noteText;
+      L.body.forEach((line, i) => {
+        ctx.fillText(line, L.sx + L.PAD, L.sy + L.HEAD + L.PAD - 2 + i * L.LH);
+      });
+    }
   }
 
   drawBox() {
@@ -545,6 +807,57 @@ class Editor {
     ctx.lineWidth = 1;
     ctx.strokeRect(sx, sy, w, h);
     ctx.setLineDash([]);
+  }
+
+  /* cumulative centerline length from the trace start to the cursor's
+     projection, plus the total - shown while hovering a trace */
+  traceHoverInfo(obj, wx, wy) {
+    const cl = traceCenterline(obj.pts, obj.radius || 0);
+    let best = null, bd = Infinity, upto = 0, acc = 0;
+    for (let i = 0; i < cl.length - 1; i++) {
+      const [x0, y0] = cl[i], [x1, y1] = cl[i + 1];
+      const dx = x1 - x0, dy = y1 - y0;
+      const l2 = dx * dx + dy * dy;
+      const t = l2 > 0 ? Math.max(0, Math.min(1, ((wx - x0) * dx + (wy - y0) * dy) / l2)) : 0;
+      const px = x0 + dx * t, py = y0 + dy * t;
+      const d = Math.hypot(wx - px, wy - py);
+      if (d < bd) { bd = d; best = [px, py]; upto = acc + Math.sqrt(l2) * t; }
+      acc += Math.sqrt(l2);
+    }
+    return { cl, pt: best, upto, total: acc, wx, wy };
+  }
+
+  drawTraceHover() {
+    const h = this.traceHover;
+    if (!h) return;
+    const ctx = this.ctx;
+    // centerline
+    ctx.strokeStyle = ED.measure;
+    ctx.globalAlpha = 0.75;
+    ctx.setLineDash([4, 3]);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    h.cl.forEach(([x, y], i) => {
+      const [sx, sy] = this.toScreen(x, y);
+      i ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy);
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    const [px, py] = this.toScreen(h.pt[0], h.pt[1]);
+    ctx.fillStyle = ED.measure;
+    ctx.beginPath(); ctx.arc(px, py, 3, 0, 7); ctx.fill();
+    const txt = `${h.upto.toFixed(2)} / ${h.total.toFixed(2)} mm`;
+    ctx.font = '11px system-ui';
+    const tw = ctx.measureText(txt).width;
+    ctx.fillStyle = ED.overlay;
+    ctx.strokeStyle = ED.overlayEdge;
+    ctx.beginPath();
+    ctx.roundRect(px + 10, py - 24, tw + 12, 18, 4);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = ED.measure;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(txt, px + 16, py - 15);
   }
 
   drawMeasure() {
@@ -626,8 +939,13 @@ class Editor {
 
   drawGrid(w, h) {
     const ctx = this.ctx;
-    const steps = [0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100];
-    const step = steps.find(s => s * this.view.scale >= 14) || 100;
+    // the visual grid IS the snap grid: base spacing = snap step, coarsened
+    // by 2/5/10/... multiples when zoomed out so lines stay readable
+    const base = this.app.snapStep > 0 ? this.app.snapStep : 1;
+    let step = base;
+    const mult = [2, 5, 10, 20, 50, 100, 200, 500, 1000];
+    for (let i = 0; step * this.view.scale < 14 && i < mult.length; i++)
+      step = base * mult[i];
     const [wx0] = this.toWorld(0, 0);
     const [wx1, wy0] = this.toWorld(w, h);
     const wy1 = this.toWorld(0, 0)[1];
@@ -773,25 +1091,49 @@ class Editor {
   drawPendingPoly() {
     if (!this.pendingPoly || !this.pendingPoly.length) return;
     const ctx = this.ctx;
-    const color = this.app.layerColor(this.app.activeLayer) || '#fff';
+    const color = this.app.layerColor(this.app.activeLayer) || ED.select;
+    const trace = this.pendingTool === 'trace';
+    const pts = [...this.pendingPoly];
+    if (this.mouse) pts.push(this.snapPt(this.mouse[0], this.mouse[1]));
+    if (trace && pts.length >= 2) {
+      // live preview of the stroked line at the configured width
+      const cl = traceCenterline(pts, this.app.traceRadius || 0);
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.5;
+      ctx.lineWidth = Math.max(1, (this.app.traceWidth || 1) * this.view.scale);
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      cl.forEach(([x, y], i) => {
+        const [sx, sy] = this.toScreen(x, y);
+        i ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy);
+      });
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 1.5;
+    }
     ctx.strokeStyle = color;
     ctx.setLineDash([4, 3]);
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    this.pendingPoly.forEach(([x, y], i) => {
+    pts.forEach(([x, y], i) => {
       const [sx, sy] = this.toScreen(x, y);
       i ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy);
     });
-    if (this.mouse) {
-      const [sx, sy] = this.toScreen(this.snap(this.mouse[0]), this.snap(this.mouse[1]));
-      ctx.lineTo(sx, sy);
-    }
     ctx.stroke();
     ctx.setLineDash([]);
     for (const [x, y] of this.pendingPoly) {
       const [sx, sy] = this.toScreen(x, y);
       ctx.fillStyle = color;
       ctx.fillRect(sx - 2.5, sy - 2.5, 5, 5);
+    }
+    if (trace && pts.length >= 2) {
+      const cl = traceCenterline(pts, this.app.traceRadius || 0);
+      const [lx, ly] = this.toScreen(...pts[pts.length - 1]);
+      ctx.fillStyle = ED.measure;
+      ctx.font = '11px system-ui';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+      ctx.fillText(`${traceLengthTo(cl).toFixed(2)} mm`, lx + 10, ly - 8);
     }
   }
 

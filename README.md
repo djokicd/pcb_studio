@@ -12,12 +12,40 @@ FDTD simulations of planar PCB structures via GNU Octave.
   points to read Δx, Δy and the distance; Esc clears). Objects can be
   moved, resized via drag handles (rects, circle radius, polygon
   vertices) or edited numerically. Zoom/pan, keyboard shortcuts.
+- **Transmission-line tool** (T): click centerline points
+  (Enter/double-click finishes) to draw a line of configurable width;
+  interior corners are optionally rounded with a configurable radius
+  (sampled fillet), so curved routes and meanders are easy. Hovering a
+  line shows the cumulative electrical length from its start to the
+  cursor plus the total centerline length; the properties panel edits
+  width, corner radius and shows the length. The stroked outline
+  (mitered sides, round caps) is generated identically in the editor
+  and in the Python geometry, so the mesh and simulation see exactly
+  the drawn line.
+- **Canvas notes** (N): collapsible plain-text annotations pinned to a
+  board position. The first wrapped line is the title, always visible;
+  the rest is the body, folded away by clicking the note's triangle (or
+  double-clicking it). Notes are drawn at a fixed size so they stay
+  readable at any zoom, are edited in a textarea in the properties
+  panel (live preview), move/copy/delete like any other object, and are
+  saved with the project — but they are documentation only and never
+  reach the mesh or the generated Octave script.
 - **Menu bar** (File / Edit / View / Tools / Help) with the usual
   project, clipboard and view commands, keyboard-shortcut hints and a
-  shortcuts reference under Help.
+  shortcuts reference under Help. The Tools menu is grouped into
+  Editing / Drawing / Placement / Configuration / Verification, and the
+  Tests view opens from Tools → Verification tests… (it no longer
+  occupies a permanent main-area tab).
 - **Snapping**: arbitrary snap-grid resolution (any mm value, 0 = off),
   restrictable to x-only or y-only grid ticks, plus optional snapping
-  to corners/vertices of existing objects.
+  to corners/vertices of existing objects. The background grid always
+  shows the configured snap grid (coarsened by 2/5/10× when zoomed out).
+- **Projects pane**: the left sidebar switches between Design (tools +
+  objects) and Projects — a list of the server-stored projects for
+  quick switching, where each project with stored results has a "cmp"
+  checkbox that overlays its S-parameters in the Results charts
+  (resampled onto the current sweep) for direct comparison; overlay
+  traces get their own legend chips.
 - **Multi-selection**: with the Select tool, dragging on empty canvas
   box-selects every object fully inside; the group moves/nudges/
   copies/deletes together (Ctrl+A selects everything). Esc in any
@@ -33,10 +61,12 @@ FDTD simulations of planar PCB structures via GNU Octave.
   layers; conductors are modelled as zero-thickness PEC sheets at their
   stackup interface.
 - **Stackup manager** (Tools menu or the Manager… button in the Stackup
-  tab): save the current stackup to a browser library, apply a saved
-  one to the project, export/import stackups as JSON files, and star
-  one as the **default stackup for new projects** (used by
-  File → New project).
+  tab): save the current stackup to a browser library, **edit any saved
+  stackup's layers in place** (same layer editor as the Stackup tab),
+  apply one to the project, export/import stackups as JSON files, and
+  star one as the **default stackup for new projects** (used by
+  File → New project). Drill files import via File → Import drill file;
+  Gerbers via the ⇪ button on a conductor layer.
 - **Vias**: drill/pad diameter, connecting any two conductor layers
   (metal barrel + pads on every crossed conductor layer).
 - **Discrete components**: R / L / C lumped elements in 0402, 0603, 0805
