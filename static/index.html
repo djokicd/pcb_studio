@@ -218,6 +218,7 @@
           <label class="mini-check"><input type="checkbox" id="cfg_trans" checked> Transmission</label>
           <label class="mini-check"><input type="checkbox" id="cfg_td" checked> Time domain</label>
           <label class="mini-check"><input type="checkbox" id="cfg_j" checked> Current density</label>
+          <label class="mini-check" title="Full N×N S-matrix from multi-excitation runs"><input type="checkbox" id="cfg_smat" checked> S-matrix</label>
           <span class="muted" style="margin-left:12px">Columns:</span>
           <select id="rCols" class="mini">
             <option value="auto">auto</option>
@@ -276,6 +277,37 @@
             </div>
             <div class="legend" id="tdLegend"></div>
             <div class="plotwrap rsz"><canvas id="tdCanvas"></canvas><div class="tooltip" id="tdTip" hidden></div></div>
+          </div>
+
+          <div class="card" id="smatCard" hidden>
+            <div class="card-head">
+              <span class="grip" draggable="true" title="Drag to rearrange">&#x2630;</span>
+              <span title="Raw simulation data: the full N&times;N S-matrix assembled from every excitation run, before and after device networks are folded in">S-matrix (raw)</span>
+              <select id="smatSet" class="mini" title="Which matrix to inspect"></select>
+              <select id="smatView" class="mini" title="How the selected entries are plotted">
+                <option value="mag">Magnitude (dB)</option>
+                <option value="smith">Smith (reflection)</option>
+                <option value="polar">Polar</option>
+              </select>
+              <button class="mini-btn" data-png="smatCanvas" title="Export PNG">PNG</button>
+              <button class="mini-btn" id="smatCsv" title="Export the whole matrix as CSV">CSV</button>
+              <button class="icon-btn" id="smatPop" title="Pop out">
+                <svg viewBox="0 0 16 16"><path d="M6.5 2.5 H2.5 V13.5 H13.5 V9.5 M9.5 6.5 L14 2 M10 2 h4 v4"/></svg>
+              </button>
+            </div>
+            <div class="jrow">
+              <select id="smatFreq" class="mini" title="Frequency shown in the matrix table"></select>
+              <select id="smatFmt" class="mini" title="How each matrix entry is displayed">
+                <option value="db">dB &ang; deg</option>
+                <option value="mag">mag &ang; deg</option>
+                <option value="ri">real / imag</option>
+              </select>
+              <span class="muted" id="smatInfo"></span>
+            </div>
+            <div class="smat-wrap"><table id="smatTable" class="smat"></table></div>
+            <div class="legend" id="smatLegend"></div>
+            <div class="plotwrap rsz"><canvas id="smatCanvas"></canvas><div class="tooltip" id="smatTip" hidden></div></div>
+            <div class="muted smat-note" id="smatStages"></div>
           </div>
 
           <div class="card" id="jCard" hidden>

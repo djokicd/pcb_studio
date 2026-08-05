@@ -882,11 +882,76 @@ def api_devices_delete(name):
 @app.get('/api/results/<run_id>/file/<name>')
 def api_results_file(run_id, name):
     d = _run_dir(run_id)
-    if d is None or not re.fullmatch(r'(board_full|combined)\.s\d+p|sparams_board\.csv', name):
+    if d is None or not re.fullmatch(
+            r'(board_full|combined)\.s\d+p|sparams(_board|_primary)?\.csv', name):
         return jsonify({'error': 'no such file'}), 404
     if not (d / name).is_file():
         return jsonify({'error': 'no such file'}), 404
     return send_from_directory(d, name, mimetype='text/plain')
+
+
+@app.get('/api/results/<run_id>/stage/<int:exc>')
+def api_results_stage(run_id, exc):
+    """Raw sparams.csv of one excitation run of a multi-excitation sweep.
+
+    The primary excitation's own file is preserved as sparams_board.csv /
+    sparams_primary.csv because the root sparams.csv is rewritten with the
+    assembled result; the other excitations keep theirs under exc_<n>/."""
+    d = _run_dir(run_id)
+    if d is None:
+        return jsonify({'error': 'no such run'}), 404
+    stage = d / f'exc_{exc}' / 'sparams.csv'
+    if not stage.is_file():
+        for alt in ('sparams_board.csv', 'sparams_primary.csv'):
+            if (d / alt).is_file():
+                stage = d / alt
+                break
+    if not stage.is_file():
+        return jsonify({'error': 'no such excitation'}), 404
+    return send_from_directory(stage.parent, stage.name, mimetype='text/csv')
+
+
+def _matrix_dataset(path, key, label):
+    """Touchstone file -> {key,label,nports,r,freq,entries:{Sij:{re,im}}}."""
+    m = re.search(r'\.s(\d+)p$', path.name, re.I)
+    ts = parse_touchstone(path.read_text(), int(m.group(1)))
+    n = ts['nports']
+    entries = {}
+    for i in range(n):
+        for j in range(n):
+            entries[f'S{i + 1}{j + 1}'] = {
+                're': [round(mat[i][j].real, 9) for mat in ts['s']],
+                'im': [round(mat[i][j].imag, 9) for mat in ts['s']],
+            }
+    return {'key': key, 'label': label, 'nports': n, 'r': ts['r'],
+            'freq': ts['freq'], 'entries': entries}
+
+
+@app.get('/api/results/<run_id>/smatrix')
+def api_results_smatrix(run_id):
+    """Full S-matrices of a multi-excitation run, for the raw-data viewer:
+    the assembled board matrix (every excitation, before any device is
+    folded in) and, when devices were folded, the resulting network."""
+    d = _run_dir(run_id)
+    if d is None:
+        return jsonify({'error': 'no such run'}), 404
+    datasets = []
+    board = sorted(d.glob('board_full.s*p'))
+    combined = sorted(d.glob('combined.s*p'))
+    try:
+        for p in board:
+            datasets.append(_matrix_dataset(
+                p, 'board', f'Raw board matrix — {p.name}'))
+        for p in combined:
+            # identical to the board matrix when no device was folded in
+            if board and p.stat().st_size == board[0].stat().st_size:
+                continue
+            datasets.append(_matrix_dataset(
+                p, 'combined', f'Devices folded in — {p.name}'))
+    except TouchstoneError as e:
+        return jsonify({'error': f'unreadable matrix file: {e}'}), 400
+    stages = sorted(int(p.parent.name[4:]) for p in d.glob('exc_*/sparams.csv'))
+    return jsonify({'datasets': datasets, 'stages': stages})
 
 
 @app.get('/api/tests')

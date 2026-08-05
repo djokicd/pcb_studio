@@ -118,6 +118,23 @@ FDTD simulations of planar PCB structures via GNU Octave.
     the voltages (equal traces = matched wave); tooltips report the
     raw current in amperes. Legend chips toggle each signal
     (voltages shown by default, currents hidden).
+  - **S-matrix (raw)**: for multi-excitation runs (the "Full S-matrix"
+    option, a multi-port excitation selection, or any run with devices)
+    the complete N×N matrix assembled from every excitation, shown as a
+    clickable table at a selectable frequency — each entry as dB∠deg,
+    mag∠deg or real/imag. Clicking a cell toggles that S_ij as a trace
+    on the chart below, so any subset (a whole row, the diagonal, a
+    reciprocity pair) can be compared directly, in **magnitude (dB), on
+    a Smith chart or on a polar plot**. The Smith chart is an impedance
+    chart, so it draws the selected reflection entries S_ii only —
+    transmission entries stay listed but are greyed out with a note;
+    the polar plot takes any entry, reflection or transmission. A
+    selector switches
+    between the **raw board matrix** (before device networks are folded
+    in) and the **resulting network**, the whole matrix exports to CSV,
+    and the untouched per-excitation `sparams.csv` of each FDTD run is
+    linked for download. Handy as a sanity check: S_ij = S_ji on a
+    reciprocal board.
   - **Recorded J(t)**: time-domain rot(H) current density captured
     during a configurable window (StartTime/StopTime, optional spatial
     subsampling), decimated to ~160 frames and played back like the

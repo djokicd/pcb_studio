@@ -1401,6 +1401,7 @@ async function loadResults(runId) {
       }
     }
     await loadJDumps(runId);
+    await loadSMatrix(runId);
     showView('results');
   } catch (e) {
     appendLog(['[gui] failed to load results: ' + e.message]);
@@ -1438,7 +1439,7 @@ function splitSparams(sp = app.sparams) {
 }
 const dB = (re, im) => re.map((r, k) => 20 * Math.log10(Math.max(Math.hypot(r, im[k]), 1e-12)));
 
-let reflChart = null, transChart = null, tdChart = null;
+let reflChart = null, transChart = null, tdChart = null, smatChart = null;
 
 /* items: [{label, key, ci}] — clicking a chip toggles that series on/off */
 function buildLegend(el, items) {
@@ -1566,7 +1567,8 @@ function makeTdChart(canvas, tip) {
 
 /* ---------- results pane configuration ---------- */
 const resultsPrefs = (() => {
-  let p = { refl: true, trans: true, td: true, j: true, cols: 'auto', order: [], sizes: {}, hidden: {} };
+  let p = { refl: true, trans: true, td: true, j: true, smat: true,
+            cols: 'auto', order: [], sizes: {}, hidden: {} };
   try { p = { ...p, ...JSON.parse(localStorage.getItem('openems_results_prefs') || '{}') }; } catch (e) { /* defaults */ }
   p.hidden = p.hidden || {};
   return p;
@@ -1599,6 +1601,7 @@ function applyResultsConfig() {
   $('transCard').hidden = !resultsPrefs.trans || nTrans === 0;
   $('tdCard').hidden = !resultsPrefs.td || !app.tdData;
   $('jCard').hidden = !resultsPrefs.j || !((app.jdumps || []).length || (app.jtdumps || []).length);
+  $('smatCard').hidden = !resultsPrefs.smat || !app.smat;
 }
 
 function renderCharts() {
@@ -1621,6 +1624,7 @@ function renderCharts() {
     tdChart = makeTdChart($('tdCanvas'), $('tdTip'));
     buildLegend($('tdLegend'), tdSignals().map(s => ({ label: s.label, key: s.key, ci: s.ci })));
   }
+  if (!$('smatCard').hidden && app.smat) renderSMatrix();
 }
 
 /* ---------- export ---------- */
@@ -1661,6 +1665,191 @@ function exportCSVFor(kind) {
     });
     download(`${name}_timedomain.csv`, out, 'text/csv');
   }
+}
+
+/* ---------- raw S-matrix viewer ----------
+   Multi-excitation runs (full S-matrix option, or any run with devices)
+   assemble one column per excitation into a full N×N matrix. This shows
+   that raw matrix: a table at a chosen frequency plus selectable traces,
+   for the board matrix and — when devices were folded — the result. */
+async function loadSMatrix(runId) {
+  app.smat = null;
+  app.smatSel = app.smatSel || {};
+  try {
+    const d = await apiJson(`/api/results/${runId}/smatrix`);
+    if (d.datasets && d.datasets.length) app.smat = d;
+  } catch (e) { /* single-excitation run: no matrix to show */ }
+  const sel = $('smatSet');
+  sel.innerHTML = '';
+  if (!app.smat) { $('smatCard').hidden = true; return; }
+  for (const ds of app.smat.datasets) {
+    const o = document.createElement('option');
+    o.value = ds.key; o.textContent = ds.label;
+    sel.append(o);
+  }
+  $('smatCard').hidden = !resultsPrefs.smat;
+  // per-excitation raw files, straight from each FDTD run
+  const st = $('smatStages');
+  st.innerHTML = '';
+  if (app.smat.stages && app.smat.stages.length) {
+    st.append(document.createTextNode('Raw per-excitation data: '));
+    for (const n of app.smat.stages) {
+      const a = document.createElement('a');
+      a.href = `/api/results/${runId}/stage/${n}`;
+      a.download = `exc_${n}_sparams.csv`;
+      a.textContent = `excitation ${n}`;
+      a.style.marginRight = '10px';
+      st.append(a);
+    }
+  }
+  renderSMatrix();
+}
+
+function smatDataset() {
+  if (!app.smat) return null;
+  const key = $('smatSet').value;
+  return app.smat.datasets.find(d => d.key === key) || app.smat.datasets[0];
+}
+function smatLabels(ds) {
+  const out = [];
+  for (let i = 1; i <= ds.nports; i++)
+    for (let j = 1; j <= ds.nports; j++) out.push(`S${i}${j}`);
+  return out;
+}
+/* which entries are drawn; defaults to the first row (S1j) */
+function smatSelected(ds) {
+  const key = ds.key;
+  if (!app.smatSel[key]) {
+    app.smatSel[key] = {};
+    for (let j = 1; j <= ds.nports; j++) app.smatSel[key][`S1${j}`] = true;
+  }
+  return app.smatSel[key];
+}
+
+function renderSMatrix() {
+  const ds = smatDataset();
+  if (!ds || $('smatCard').hidden) return;
+  // frequency picker (kept on the same index across dataset switches)
+  const fsel = $('smatFreq');
+  const keepIdx = Math.min(parseInt(fsel.value, 10) || 0, ds.freq.length - 1);
+  fsel.innerHTML = '';
+  ds.freq.forEach((f, k) => {
+    const o = document.createElement('option');
+    o.value = k; o.textContent = (f / 1e9).toFixed(4) + ' GHz';
+    fsel.append(o);
+  });
+  fsel.value = String(keepIdx);
+  const view = $('smatView').value;
+  let info = `${ds.nports}×${ds.nports}, ${ds.freq.length} points, ${ds.r} Ω`;
+  if (view === 'smith') {
+    const drawn = smatPlotted(ds, 'smith').length;
+    info += drawn
+      ? ` · Smith shows the ${drawn} selected reflection entr${drawn === 1 ? 'y' : 'ies'} (Sᵢᵢ)`
+      : ' · select a diagonal entry (S₁₁, S₂₂ …) to plot on the Smith chart';
+  }
+  $('smatInfo').textContent = info;
+
+  const k = keepIdx;
+  const fmt = $('smatFmt').value;
+  const sel = smatSelected(ds);
+  const cell = label => {
+    const e = ds.entries[label];
+    const re = e.re[k], im = e.im[k];
+    if (fmt === 'ri') return `${re.toFixed(4)}<br>${im >= 0 ? '+' : '−'}${Math.abs(im).toFixed(4)}j`;
+    const mag = Math.hypot(re, im);
+    const ph = Math.atan2(im, re) * 180 / Math.PI;
+    const m = fmt === 'db'
+      ? `${(20 * Math.log10(Math.max(mag, 1e-12))).toFixed(2)} dB`
+      : mag.toFixed(4);
+    return `${m}<br>∠${ph.toFixed(1)}°`;
+  };
+  // header row + one row per i, entries clickable to toggle traces
+  const tbl = $('smatTable');
+  let html = '<thead><tr><th></th>';
+  for (let j = 1; j <= ds.nports; j++) html += `<th>j=${j}</th>`;
+  html += '</tr></thead><tbody>';
+  for (let i = 1; i <= ds.nports; i++) {
+    html += `<tr><th>i=${i}</th>`;
+    for (let j = 1; j <= ds.nports; j++) {
+      const label = `S${i}${j}`;
+      // selected but not drawn by this view (transmission under Smith)
+      const muted = sel[label] && view === 'smith' && !smatIsRefl(label);
+      const cls = sel[label] ? (muted ? 'on dim' : 'on') : '';
+      html += `<td class="${cls}" data-s="${label}" `
+        + `title="${label} — click to show/hide this trace`
+        + `${muted ? '; not shown on the Smith chart (transmission)' : ''}">`
+        + `<b>${label}</b><span>${cell(label)}</span></td>`;
+    }
+    html += '</tr>';
+  }
+  tbl.innerHTML = html + '</tbody>';
+  tbl.querySelectorAll('td[data-s]').forEach(td => {
+    td.onclick = () => {
+      sel[td.dataset.s] = !sel[td.dataset.s];
+      renderSMatrix();
+    };
+  });
+
+  if (smatChart) smatChart.destroy();
+  smatChart = makeSMatChart($('smatCanvas'), $('smatTip'));
+  // legend lists every entry picked in the table; chips hide traces
+  const sel2 = smatSelected(ds);
+  buildLegend($('smatLegend'), smatLabels(ds)
+    .map((label, i) => ({ label, key: `smat:${ds.key}:${label}`, ci: i }))
+    .filter(s => sel2[s.label] && !(view === 'smith' && !smatIsRefl(s.label))));
+}
+
+const smatIsRefl = label => label[1] === label[2];
+
+/* entries picked in the table (and not hidden via a legend chip) */
+function smatSeries(ds) {
+  const sel = smatSelected(ds);
+  return smatLabels(ds)
+    .map((label, i) => ({ label, key: `smat:${ds.key}:${label}`, ci: i, ...ds.entries[label] }))
+    .filter(s => sel[s.label] && !resultsPrefs.hidden[s.key]);
+}
+/* what the current view actually draws: the Smith chart is an impedance
+   chart, so it only takes the reflection entries S_ii */
+function smatPlotted(ds, view) {
+  const all = smatSeries(ds);
+  return view === 'smith' ? all.filter(s => smatIsRefl(s.label)) : all;
+}
+function makeSMatChart(canvas, tip) {
+  const ds = smatDataset();
+  const view = $('smatView').value;
+  const series = smatPlotted(ds, view);
+  if (view === 'smith') {
+    const ch = new SmithChart(canvas, tip);
+    ch.setData({ freq: ds.freq, z0: ds.r, series });
+    return ch;
+  }
+  if (view === 'polar') {
+    const ch = new PolarChart(canvas, tip);
+    ch.setData({ freq: ds.freq, series });
+    return ch;
+  }
+  const ch = new MagChart(canvas, tip);
+  ch.setData({
+    freq: ds.freq,
+    series: series.map(s => ({ label: s.label, values: dB(s.re, s.im), ci: s.ci })),
+  });
+  return ch;
+}
+function exportSMatrixCsv() {
+  const ds = smatDataset();
+  if (!ds) return;
+  const labels = smatLabels(ds);
+  let out = 'freq_Hz' + labels.map(l => `,${l}_re,${l}_im,${l}_dB`).join('') + '\n';
+  ds.freq.forEach((f, k) => {
+    out += f.toExponential(6);
+    for (const l of labels) {
+      const e = ds.entries[l];
+      const mag = Math.max(Math.hypot(e.re[k], e.im[k]), 1e-12);
+      out += `,${e.re[k].toExponential(6)},${e.im[k].toExponential(6)},${(20 * Math.log10(mag)).toFixed(4)}`;
+    }
+    out += '\n';
+  });
+  download(`${app.project.name || 'results'}_smatrix_${ds.key}.csv`, out, 'text/csv');
 }
 
 /* ---------- current density ---------- */
@@ -2850,13 +3039,22 @@ window.addEventListener('DOMContentLoaded', () => {
     Modal.open('Transmission', (c, t) => makeTransChart(c, t)));
   $('tdPop').addEventListener('click', () =>
     Modal.open('Time domain', (c, t) => makeTdChart(c, t)));
+  $('smatSet').addEventListener('change', renderSMatrix);
+  $('smatView').addEventListener('change', renderSMatrix);
+  $('smatFreq').addEventListener('change', renderSMatrix);
+  $('smatFmt').addEventListener('change', renderSMatrix);
+  $('smatCsv').addEventListener('click', exportSMatrixCsv);
+  $('smatPop').addEventListener('click', () => {
+    const ds = smatDataset();
+    Modal.open(ds ? ds.label : 'S-matrix', (c, t) => makeSMatChart(c, t));
+  });
   $('jInterp').addEventListener('change', e => {
     app.jview.smooth = e.target.checked;
     app.jview.render();
   });
 
   // results pane configuration + export
-  for (const key of ['refl', 'trans', 'td', 'j']) {
+  for (const key of ['refl', 'trans', 'td', 'j', 'smat']) {
     const cb = $('cfg_' + key);
     cb.checked = resultsPrefs[key];
     cb.addEventListener('change', () => {
@@ -2945,7 +3143,7 @@ window.addEventListener('DOMContentLoaded', () => {
     resultsPrefs.order = [];
     resultsPrefs.sizes = {};
     saveResultsPrefs();
-    for (const id of ['reflCard', 'transCard', 'tdCard', 'jCard']) {
+    for (const id of ['reflCard', 'transCard', 'tdCard', 'jCard', 'smatCard']) {
       const el = $(id);
       if (!el) continue;
       el.style.width = '';

@@ -126,3 +126,32 @@ def test_validate_devices_rejects_bad_mapping(tmp_path):
             server.validate_devices(m)
     finally:
         (server.DEV_ROOT / 'unit_thr2.s2p').unlink()
+
+
+def test_smatrix_endpoint_exposes_raw_matrix(tmp_path, monkeypatch):
+    """The raw-data viewer gets the full N×N board matrix, the folded
+    network, and the list of per-excitation stages."""
+    run = tmp_path / 'run_00000000_000002'
+    (run / 'exc_2').mkdir(parents=True)
+    (run / 'exc_3').mkdir(parents=True)
+    for d, exc in ((run / 'exc_2', 2), (run / 'exc_3', 3)):
+        write_stage(d, exc, {1: 0.1 + 0j, 2: 0.2 + 0j, 3: 0.3 + 0j})
+    (run / 'board_full.s3p').write_text(
+        '! test\n# GHz S RI R 50\n'
+        + '\n'.join(f'{f} ' + ' '.join(['0.5 0.25'] * 9) for f in (1, 2)) + '\n')
+    (run / 'combined.s2p').write_text(
+        '# GHz S RI R 50\n1 0 0 1 0 1 0 0 0\n2 0 0 1 0 1 0 0 0\n')
+    monkeypatch.setattr(server, 'SIM_ROOT', tmp_path)
+
+    with server.app.test_client() as c:
+        d = c.get(f'/api/results/{run.name}/smatrix').get_json()
+        keys = {x['key']: x for x in d['datasets']}
+        assert keys['board']['nports'] == 3
+        assert len(keys['board']['entries']) == 9          # every S_ij present
+        assert keys['board']['entries']['S23']['re'] == [0.5, 0.5]
+        assert keys['combined']['nports'] == 2
+        assert d['stages'] == [2, 3]
+        # per-excitation raw csv is served verbatim
+        r = c.get(f'/api/results/{run.name}/stage/3')
+        assert r.status_code == 200 and b'S33_re' in r.data
+        assert c.get('/api/results/no_such_run/smatrix').status_code == 404

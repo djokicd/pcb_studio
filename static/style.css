@@ -292,6 +292,27 @@ select.mini { font-size: 12px; padding: 2px 5px; }
 .jrow select { flex: 1; min-width: 0; }
 .mini-btn { padding: 2px 10px; font-size: 12px; }
 
+/* ---- raw S-matrix table ---- */
+.smat-wrap { overflow-x: auto; margin-bottom: 6px; }
+.smat { border-collapse: collapse; font-size: 11px; }
+.smat th {
+  color: var(--muted); font-weight: normal; padding: 3px 6px;
+  border-bottom: 1px solid var(--border-soft); white-space: nowrap;
+}
+.smat td {
+  padding: 4px 8px; border: 1px solid var(--border-soft); border-radius: 4px;
+  cursor: pointer; text-align: center; font-variant-numeric: tabular-nums;
+  color: var(--muted); line-height: 1.35; white-space: nowrap;
+}
+.smat td:hover { background: var(--row-hover); color: var(--text); }
+.smat td b { display: block; font-size: 10px; color: var(--muted); font-weight: 600; }
+.smat td.on { background: var(--accent-bg); color: #fff; border-color: var(--accent); }
+.smat td.on b { color: rgba(255,255,255,0.8); }
+/* picked, but the current view cannot plot it (transmission under Smith) */
+.smat td.on.dim { background: none; color: var(--muted); border-style: dashed; }
+.smat td.on.dim b { color: var(--muted); }
+.smat-note { font-size: 11px; margin-top: 6px; }
+
 /* ---- modal ---- */
 #modal {
   position: fixed; inset: 0; z-index: 50;
