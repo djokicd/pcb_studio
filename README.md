@@ -90,7 +90,15 @@ FDTD simulations of planar PCB structures via GNU Octave.
 - **Run from the GUI**: Octave/openEMS subprocess with a graphical run
   monitor — progress bar with ETA, stat tiles (timestep, speed, energy,
   cells), a live energy-decay chart with the end-criteria target line
-  and a solver-speed chart. All solver output is parsed: engine facts
+  and a solver-speed chart. Both charts autorange their x axis to the
+  timesteps actually solved (labelled `timesteps (0 – N)`) rather than
+  the configured limit. Multi-excitation runs get **one tab per
+  excitation**: every solver run restarts at timestep 0, so their
+  samples, engine facts and warnings are kept in separate records
+  instead of being concatenated into overlapping curves. The tab of a
+  stage is selected automatically as that stage starts, a manual
+  selection is then left alone, and tabs mark stages that produced
+  warnings or failed to converge. All solver output is parsed: engine facts
   (version, engine type, threads, FDTD size, timestep, Nyquist rate,
   excitation length, final speed) appear in an Engine table and every
   solver warning is surfaced in a highlighted box; non-converged runs

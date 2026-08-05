@@ -155,3 +155,32 @@ def test_smatrix_endpoint_exposes_raw_matrix(tmp_path, monkeypatch):
         r = c.get(f'/api/results/{run.name}/stage/3')
         assert r.status_code == 200 and b'S33_re' in r.data
         assert c.get('/api/results/no_such_run/smatrix').status_code == 404
+
+
+def test_run_status_keeps_stage_samples_separate():
+    """Each excitation restarts at timestep 0, so its samples/info/warnings
+    must land in its own record instead of one concatenated series."""
+    r = server.Runner()
+    r._reset()
+    r.nrts, r.end_db = 30000, -40.0
+    for exc in (2, 1):
+        r.stages.append({'exc': exc})
+        r.stage_data.append({'exc': exc, 'label': f'Exc {exc}', 'samples': [],
+                             'info': {}, 'warn': [], 'notConverged': False})
+        r.state = 'running'
+        r._parse(f'Timestep: 100 || Speed: 50.0 MC/s [@1s] Energy: ~0 (-{exc}.00dB)')
+        r._parse(f'Timestep: 200 || Speed: 60.0 MC/s [@2s] Energy: ~0 (-{exc * 5}.00dB)')
+    r._parse('Warning: something odd')
+
+    st = r.status()
+    assert st['stageCount'] == 2 and st['stageIdx'] == 1
+    labels = [s['label'] for s in st['stages']]
+    assert labels == ['Exc 2', 'Exc 1']
+    # two samples each, not four in one series
+    assert [len(s['samples']) for s in st['stages']] == [2, 2]
+    assert st['stages'][0]['samples'][0]['db'] == -2.0     # exc 2 record
+    assert st['stages'][1]['samples'][0]['db'] == -1.0     # exc 1 record
+    # the warning went to the stage in progress only
+    assert st['stages'][0]['warn'] == []
+    assert len(st['stages'][1]['warn']) == 1
+    assert st['samples'] is st['stages'][-1]['samples']    # top level = current

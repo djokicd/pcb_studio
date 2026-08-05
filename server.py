@@ -236,7 +236,6 @@ class Runner:
         self.state = 'idle'      # idle|starting|running|post|done|error|stopped
         self.percent = 0.0
         self.log = []
-        self.samples = []        # [{t, ts, speed, db}] parsed engine status lines
         self.mesh_cells = None
         self.error = None
         self.proc = None
@@ -247,6 +246,9 @@ class Runner:
         self.info = {}           # parsed engine facts (version, dt, ...)
         self.warn_msgs = []      # solver warnings, deduped
         self.stages = []
+        # one record per launched excitation: each Octave run restarts its
+        # timestep counter, so samples must not be concatenated
+        self.stage_data = []
         self.stage_idx = 0
         self.merge_only = False
         self.stage_info = ''
@@ -258,9 +260,17 @@ class Runner:
         n = max(1, len(self.stages))
         return (self.stage_idx * 100.0 + pct) / n
 
+    def _stage(self):
+        """Record of the excitation currently being solved."""
+        if not self.stage_data:
+            self.stage_data.append({'exc': None, 'label': 'Run', 'samples': [],
+                                    'info': {}, 'warn': [], 'notConverged': False})
+        return self.stage_data[-1]
+
     def status(self, offset=0):
         with self.lock:
             offset = max(0, min(int(offset), len(self.log)))
+            cur = self.stage_data[-1] if self.stage_data else None
             return {
                 'runId': self.run_id,
                 'state': self.state,
@@ -269,14 +279,22 @@ class Runner:
                 'lines': self.log[offset:],
                 'nextOffset': len(self.log),
                 'elapsed': round(time.time() - self.started_at, 1) if self.started_at else 0,
-                'samples': self.samples,
+                # top level mirrors the stage in progress; `stages` carries
+                # every excitation separately for the tabbed run view
+                'samples': cur['samples'] if cur else [],
                 'nrts': self.nrts,
                 'endDb': self.end_db,
                 'meshCells': self.mesh_cells,
                 'notConverged': self.not_converged,
-                'info': self.info,
-                'warnMsgs': self.warn_msgs,
+                'info': cur['info'] if cur else {},
+                'warnMsgs': cur['warn'] if cur else [],
                 'stageInfo': self.stage_info,
+                'stageIdx': len(self.stage_data) - 1,
+                'stageCount': max(len(self.stages), len(self.stage_data)),
+                'stages': [{'exc': s['exc'], 'label': s['label'],
+                            'samples': s['samples'], 'info': s['info'],
+                            'warn': s['warn'], 'notConverged': s['notConverged']}
+                           for s in self.stage_data],
             }
 
     def start(self, model):
@@ -351,8 +369,16 @@ class Runner:
         st = self.stages[self.stage_idx]
         st['dir'].mkdir(parents=True, exist_ok=True)
         (st['dir'] / 'pcb_sim.m').write_text(st['script'])
-        if len(self.stages) > 1:
+        multi = len(self.stages) > 1
+        if multi:
             self.stage_info = f'excitation {self.stage_idx + 1}/{len(self.stages)}'
+        # fresh sample/info record: this Octave run restarts at timestep 0
+        self.stage_data.append({
+            'exc': st.get('exc'),
+            'label': (f'Exc {st["exc"]}' if multi and st.get('exc') is not None
+                      else f'Run {self.stage_idx + 1}' if multi else 'Run'),
+            'samples': [], 'info': {}, 'warn': [], 'notConverged': False,
+        })
         self.proc = subprocess.Popen(
             ['stdbuf', '-oL', '-eL', 'octave', '--no-gui', '--no-window-system', 'pcb_sim.m'],
             cwd=st['dir'],
@@ -405,6 +431,9 @@ class Runner:
     ]
 
     def _parse(self, line):
+        stage = self._stage()
+        self.info = stage['info']
+        self.warn_msgs = stage['warn']
         for key, rx in self.INFO_PATTERNS:
             m = rx.search(line)
             if m:
@@ -426,6 +455,7 @@ class Runner:
                 self.mesh_cells = int(m.group(1))
         elif 'Max. number of timesteps was reached before the end-criteria' in line:
             self.not_converged = True
+            stage['notConverged'] = True
         elif 'GUI_MARKER: post-processing' in line:
             self.state = 'post'
             self.percent = max(self.percent, self._scaled(97.0))
@@ -453,9 +483,9 @@ class Runner:
                 m = WALL_RE.search(line)
                 if m:
                     sample['t'] = int(m.group(1))
-                self.samples.append(sample)
-                if len(self.samples) > 2000:
-                    del self.samples[:1000]
+                stage['samples'].append(sample)
+                if len(stage['samples']) > 2000:
+                    del stage['samples'][:1000]
             if pct is not None:
                 self.percent = max(self.percent, self._scaled(min(96.0, pct)))
 

@@ -214,6 +214,19 @@ main { flex: 1; display: flex; min-height: 0; }
 #propsBody .danger:hover { background: rgba(230,103,103,0.12); }
 
 /* ---- run tab ---- */
+.runtabs {
+  display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px;
+  border-bottom: 1px solid var(--border-soft); padding-bottom: 6px;
+}
+.runtabs button {
+  padding: 3px 10px; font-size: 11px; background: none;
+  border: 1px solid var(--border-soft); color: var(--muted);
+}
+.runtabs button:hover { color: var(--text); }
+.runtabs button.active { background: var(--accent-bg); border-color: var(--accent); color: #fff; }
+.runtabs button.running { border-color: var(--accent); color: var(--accent); }
+.runtabs button.warn::after { content: " ⚠"; color: var(--warn); }
+.runtabs button.active.warn::after { color: #ffd98a; }
 .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 10px; }
 .stat {
   background: var(--card); border: 1px solid var(--border-soft); border-radius: 6px;

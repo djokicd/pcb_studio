@@ -1159,8 +1159,52 @@ function fmtCount(n) {
   return String(n);
 }
 
+/* Run tab: one chart set per excitation. Each solver run restarts its
+   timestep counter, so concatenating stages would draw curves back over
+   each other — the tabs keep them apart. The newest stage is selected
+   automatically as it starts. */
+function buildRunTabs(st) {
+  const bar = $('runTabs');
+  const stages = st.stages || [];
+  bar.hidden = stages.length < 2;
+  if (bar.hidden) { app.runStageView = null; return; }
+  const active = st.stageIdx != null ? st.stageIdx : stages.length - 1;
+  const running = ['starting', 'running', 'post'].includes(st.state);
+  // follow the run: jump to a stage as it starts (and while it is the
+  // only one), but leave a manual selection alone afterwards
+  if (app._runStageSeen !== stages.length) {
+    app._runStageSeen = stages.length;
+    app.runStageView = active;
+  }
+  if (app.runStageView == null || app.runStageView >= stages.length)
+    app.runStageView = active;
+  bar.innerHTML = '';
+  stages.forEach((s, i) => {
+    const b = document.createElement('button');
+    b.textContent = s.label || `Run ${i + 1}`;
+    b.className = (i === app.runStageView ? 'active' : '')
+      + (running && i === active ? ' running' : '')
+      + ((s.warn && s.warn.length) || s.notConverged ? ' warn' : '');
+    b.title = `Excitation ${i + 1} of ${stages.length}`
+      + (s.exc != null ? ` — port ${s.exc} driven` : '')
+      + (s.notConverged ? ' — did not reach the end criteria' : '')
+      + (s.warn && s.warn.length ? ` — ${s.warn.length} solver warning(s)` : '');
+    b.onclick = () => {
+      app.runStageView = i;
+      updateRunStats(app._lastRunStat);
+    };
+    bar.append(b);
+  });
+}
+
 function updateRunStats(st) {
   app._lastRunStat = st;
+  buildRunTabs(st);
+  // show the selected excitation; top-level fields are the running one
+  const stages = st.stages || [];
+  const view = (stages.length > 1 && app.runStageView != null && stages[app.runStageView])
+    ? stages[app.runStageView] : null;
+  if (view) st = { ...st, samples: view.samples, info: view.info, warnMsgs: view.warn };
   const last = st.samples && st.samples.length ? st.samples[st.samples.length - 1] : null;
   $('stTs').textContent = last && last.ts != null ? `${fmtCount(last.ts)} / ${fmtCount(st.nrts)}` : '–';
   $('stSpeed').textContent = last && last.speed != null ? last.speed.toFixed(0) : '–';
@@ -1210,7 +1254,8 @@ function drawSpeedChart(canvas, samples, nrts) {
   const m = { l: 34, r: 8, t: 8, b: 16 };
   const pts = samples.filter(s => s.speed != null && s.ts != null);
   const vMax = Math.max(50, ...pts.map(s => s.speed)) * 1.15;
-  const xHi = Math.max(nrts || 1, pts.length ? pts[pts.length - 1].ts : 1);
+  // autorange on the timesteps actually solved, not the configured limit
+  const xHi = Math.max(1, pts.length ? pts[pts.length - 1].ts : (nrts || 1));
   const px = t => m.l + t / xHi * (w - m.l - m.r);
   const py = v => m.t + (1 - v / vMax) * (h - m.t - m.b);
   ctx.font = '10px system-ui';
@@ -1254,7 +1299,8 @@ function drawRunChart(canvas, samples, nrts, endDb) {
   const pts = samples.filter(s => s.db != null && s.ts != null);
   const yLo = Math.min(endDb - 5, pts.length ? Math.min(...pts.map(s => s.db)) - 3 : endDb - 5);
   const yHi = 0;
-  const xHi = Math.max(nrts || 1, pts.length ? pts[pts.length - 1].ts : 1);
+  // autorange on the timesteps actually solved, not the configured limit
+  const xHi = Math.max(1, pts.length ? pts[pts.length - 1].ts : (nrts || 1));
   const px = t => m.l + t / xHi * (w - m.l - m.r);
   const py = v => m.t + (yHi - v) / (yHi - yLo) * (h - m.t - m.b);
   ctx.font = '10px system-ui';
@@ -1278,7 +1324,7 @@ function drawRunChart(canvas, samples, nrts, endDb) {
   ctx.fillText(`target ${endDb} dB`, m.l + 4, py(endDb) - 2);
   ctx.fillStyle = CH.muted;
   ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
-  ctx.fillText('timesteps', w - m.r - 2, h - m.b - 2);
+  ctx.fillText(`timesteps (0 – ${fmtCount(Math.round(xHi))})`, w - m.r - 2, h - m.b - 2);
   if (pts.length) {
     ctx.strokeStyle = '#3987e5';
     ctx.lineWidth = 2;
@@ -1310,6 +1356,8 @@ async function startRun() {
     });
     app.currentRunId = runId;
     app.logOffset = 0;
+    app._runStageSeen = null;   // rebuild the excitation tabs for this run
+    app.runStageView = null;
     $('runLog').textContent = '';
     $('results').hidden = true;
     $('noResults').hidden = false;
