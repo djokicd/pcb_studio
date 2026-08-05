@@ -290,6 +290,28 @@ select.mini { font-size: 12px; padding: 2px 5px; }
 .runinfo td { padding: 3px 6px; border-bottom: 1px solid rgba(255,255,255,0.06); }
 .runinfo td:first-child { color: #898781; white-space: nowrap; }
 .runinfo td:last-child { text-align: right; font-variant-numeric: tabular-nums; color: #c3c2b7; }
+
+/* ---- tests view ---- */
+#testsView { overflow-y: auto; padding: 16px; }
+.tests-page { max-width: 860px; margin: 0 auto; }
+.tests-page .card { margin-bottom: 12px; }
+.tstatus {
+  font-size: 11px; padding: 2px 10px; border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.2); color: #898781;
+}
+.tstatus.pass { background: rgba(12,163,12,0.15); border-color: #0ca30c; color: #6fd66f; }
+.tstatus.fail, .tstatus.error { background: rgba(230,103,103,0.15); border-color: #e66767; color: #f0a0a0; }
+.tstatus.running { background: rgba(57,135,229,0.15); border-color: #3987e5; color: #8fbdf2; }
+.tmetrics { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+.tmetrics th {
+  text-align: left; color: #898781; font-weight: normal; font-size: 11px;
+  padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,0.12);
+}
+.tmetrics td { padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.tmetrics td.num { font-variant-numeric: tabular-nums; }
+.tmetrics .ok { color: #6fd66f; }
+.tmetrics .bad { color: #f0a0a0; font-weight: 600; }
+.tdesc { color: #898781; font-size: 12px; margin: 2px 0 0; }
 .legend-chip { background: none; border: none; padding: 2px 4px; cursor: pointer; color: #c3c2b7; font-size: 12px; }
 .legend-chip:hover { color: #fff; background: none; }
 .legend-chip.off { opacity: 0.35; text-decoration: line-through; }

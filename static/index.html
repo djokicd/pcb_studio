@@ -101,6 +101,7 @@
     <nav class="viewtabs">
       <button class="viewtab active" data-view="editor">Editor</button>
       <button class="viewtab" data-view="results">Results</button>
+      <button class="viewtab" data-view="tests">Tests</button>
     </nav>
     <div id="editorView" class="view active">
       <div id="warnBar" hidden></div>
@@ -211,6 +212,22 @@
         </div>
 
         <p class="muted"><a id="csvLink" href="#" download>Download sparams.csv</a> for the full data table.</p>
+      </div>
+    </div>
+    <div id="testsView" class="view">
+      <div class="tests-page">
+        <div class="rconfig">
+          <span><b>Verification tests</b> — canonical structures simulated and compared
+            against closed-form reference values.</span>
+          <span class="spacer"></span>
+          <button id="testsRunUnit" class="mini-btn" title="Code-level checks: parsers, mesh, script generation, API (~seconds)">Run fast checks</button>
+          <button id="testsRunAll" class="primary" title="Run every benchmark simulation (several minutes)">&#9654; Run all benchmarks</button>
+        </div>
+        <div id="testsUnit" class="card" hidden>
+          <div class="card-head"><span>Fast checks (unit tests)</span><span id="testsUnitStatus" class="tstatus"></span></div>
+          <pre id="testsUnitDetail" class="log" hidden></pre>
+        </div>
+        <div id="testsCases"></div>
       </div>
     </div>
   </section>

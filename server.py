@@ -11,6 +11,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -237,6 +238,118 @@ class Runner:
 runner = Runner()
 
 
+class TestRunner:
+    """Runs the verification suite (unit tier via pytest, benchmark cases
+    via scriptgen + octave) in a background thread and reports structured
+    reference-vs-obtained metrics."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self._reset()
+
+    def _reset(self):
+        self.state = 'idle'      # idle|running|done
+        self.current = None
+        self.unit = None         # {status, passed, failed, detail}
+        self.results = {}        # case_id -> {status, metrics, elapsed, error}
+        self.queue = []
+        self.started_at = None
+
+    def status(self):
+        with self.lock:
+            return {
+                'state': self.state,
+                'current': self.current,
+                'unit': self.unit,
+                'results': self.results,
+                'queue': self.queue,
+                'elapsed': round(time.time() - self.started_at, 1) if self.started_at else 0,
+            }
+
+    def start(self, run_unit, case_ids):
+        with self.lock:
+            if self.state == 'running':
+                raise RuntimeError('tests are already running')
+            if runner.state in ('starting', 'running', 'post'):
+                raise RuntimeError('a simulation is running - wait for it to finish')
+            self._reset()
+            self.state = 'running'
+            self.started_at = time.time()
+            self.queue = list(case_ids)
+            if run_unit:
+                self.unit = {'status': 'running'}
+            for cid in case_ids:
+                self.results[cid] = {'status': 'queued'}
+        threading.Thread(target=self._worker, args=(run_unit, case_ids), daemon=True).start()
+
+    def _worker(self, run_unit, case_ids):
+        if run_unit:
+            self._run_unit()
+        sys.path.insert(0, str(BASE_DIR / 'tests'))
+        try:
+            from cases import CASES
+            from helpers import run_sim
+        except Exception as e:
+            with self.lock:
+                for cid in case_ids:
+                    self.results[cid] = {'status': 'error', 'error': f'cannot load cases: {e}'}
+                self.state = 'done'
+                self.current = None
+            return
+        for cid in case_ids:
+            case = CASES.get(cid)
+            if case is None:
+                with self.lock:
+                    self.results[cid] = {'status': 'error', 'error': 'unknown case'}
+                continue
+            with self.lock:
+                self.current = cid
+                self.results[cid] = {'status': 'running'}
+            t0 = time.time()
+            try:
+                rows = run_sim(case['build'](), f'gui_{cid}', timeout=600)
+                metrics = case['evaluate'](rows)
+                ok = all(m['pass'] for m in metrics)
+                with self.lock:
+                    self.results[cid] = {
+                        'status': 'pass' if ok else 'fail',
+                        'metrics': metrics,
+                        'elapsed': round(time.time() - t0, 1),
+                    }
+            except Exception as e:
+                with self.lock:
+                    self.results[cid] = {
+                        'status': 'error',
+                        'error': str(e)[-600:],
+                        'elapsed': round(time.time() - t0, 1),
+                    }
+        with self.lock:
+            self.state = 'done'
+            self.current = None
+
+    def _run_unit(self):
+        try:
+            res = subprocess.run(
+                [sys.executable or 'python3', '-m', 'pytest', '-m', 'not sim', '--tb=line'],
+                cwd=BASE_DIR, capture_output=True, text=True, timeout=180)
+            out = res.stdout + res.stderr
+            m = re.search(r'(\d+) passed', out)
+            f = re.search(r'(\d+) failed', out)
+            with self.lock:
+                self.unit = {
+                    'status': 'pass' if res.returncode == 0 else 'fail',
+                    'passed': int(m.group(1)) if m else 0,
+                    'failed': int(f.group(1)) if f else 0,
+                    'detail': out[-1500:] if res.returncode != 0 else '',
+                }
+        except Exception as e:
+            with self.lock:
+                self.unit = {'status': 'error', 'detail': str(e)}
+
+
+test_runner = TestRunner()
+
+
 @app.get('/')
 def index():
     return send_from_directory(app.static_folder, 'index.html')
@@ -401,6 +514,33 @@ def api_jdump(run_id, layer, k):
     if d is None or not (d / fname).is_file():
         return jsonify({'error': 'no such dump'}), 404
     return send_from_directory(d, fname, mimetype='application/octet-stream')
+
+
+@app.get('/api/tests')
+def api_tests_list():
+    sys.path.insert(0, str(BASE_DIR / 'tests'))
+    try:
+        from cases import CASES
+    except Exception as e:
+        return jsonify({'error': f'cannot load test cases: {e}'}), 500
+    return jsonify({'cases': [
+        {'id': cid, 'title': c['title'], 'desc': c['desc'], 'minutes': c['minutes']}
+        for cid, c in CASES.items()]})
+
+
+@app.post('/api/tests/run')
+def api_tests_run():
+    data = request.get_json(force=True)
+    try:
+        test_runner.start(bool(data.get('unit')), list(data.get('cases') or []))
+    except RuntimeError as e:
+        return jsonify({'error': str(e)}), 409
+    return jsonify({'started': True})
+
+
+@app.get('/api/tests/status')
+def api_tests_status():
+    return jsonify(test_runner.status())
 
 
 @app.get('/api/projects')

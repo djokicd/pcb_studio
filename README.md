@@ -114,6 +114,13 @@ FDTD simulations of planar PCB structures via GNU Octave.
 - **Design rule warnings**: objects outside the board outline and
   z-ports that don't land on copper are flagged in the editor and
   before each run.
+- **Built-in verification tests**: the Tests tab in the main area runs
+  the test suite from the GUI — fast code-level checks (parsers, mesh,
+  script generation, API) and four benchmark simulations of canonical
+  structures (series resistor, microstrip Z₀/εeff, quarter-wave stub
+  notch, patch resonance), each showing a reference-vs-obtained
+  comparison table with acceptance windows. The same cases run headless
+  via `python3 -m pytest -m sim` (see `tests/README.md`).
 - **Editor conveniences**: Ctrl+C/X/V copy, cut and paste the selected
   object (repeated pastes cascade; Ctrl+D duplicates), the right panel
   is resizable via its drag handle, and all confirmations and notices

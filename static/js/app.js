@@ -856,6 +856,8 @@ function showView(name) {
   document.querySelectorAll('#center .view').forEach(v => v.classList.toggle('active', v.id === name + 'View'));
   if (name === 'editor') {
     app.editor.resize();
+  } else if (name === 'tests') {
+    initTestsView();
   } else {
     // canvases had zero width while hidden - render now that they are visible
     renderCharts();
@@ -1549,6 +1551,134 @@ async function importDrillFile(file) {
   }
 }
 
+/* ---------- verification tests ---------- */
+let testsCases = null;
+let testsPollT = null;
+
+async function initTestsView() {
+  if (!testsCases) {
+    try {
+      testsCases = (await apiJson('/api/tests')).cases;
+    } catch (e) {
+      $('testsCases').innerHTML = `<p class="muted">Failed to load test cases: ${e.message}</p>`;
+      return;
+    }
+  }
+  refreshTestsStatus();
+}
+
+async function refreshTestsStatus() {
+  try {
+    applyTestsStatus(await apiJson('/api/tests/status'));
+  } catch (e) { /* server gone - ignore */ }
+}
+
+function chip(status, extra = '') {
+  const s = document.createElement('span');
+  s.className = 'tstatus ' + (status || '');
+  s.textContent = (status || 'idle') + (extra ? ` ${extra}` : '');
+  return s;
+}
+
+function applyTestsStatus(st) {
+  const running = st.state === 'running';
+  $('testsRunAll').disabled = running;
+  $('testsRunUnit').disabled = running;
+  // unit tier card
+  const uc = $('testsUnit');
+  uc.hidden = !st.unit;
+  if (st.unit) {
+    const el = $('testsUnitStatus');
+    el.className = 'tstatus ' + st.unit.status;
+    el.textContent = st.unit.status === 'running' ? 'running…'
+      : `${st.unit.status} — ${st.unit.passed ?? 0} passed` +
+        (st.unit.failed ? `, ${st.unit.failed} failed` : '');
+    $('testsUnitDetail').hidden = !st.unit.detail;
+    $('testsUnitDetail').textContent = st.unit.detail || '';
+  }
+  renderTestsCases(st.results || {}, running);
+  if (running && !testsPollT) {
+    testsPollT = setTimeout(() => { testsPollT = null; refreshTestsStatus(); }, 1200);
+  }
+  if (!running && st.state === 'done' && !applyTestsStatus._toasted) {
+    applyTestsStatus._toasted = true;
+    const vals = Object.values(st.results || {});
+    const bad = vals.filter(r => r.status === 'fail' || r.status === 'error').length;
+    if (vals.length) {
+      uiNotice(bad ? `Verification finished: ${bad} of ${vals.length} benchmark(s) FAILED.`
+        : `Verification finished: all ${vals.length} benchmark(s) passed.`, bad ? 'warn' : 'info', 8000);
+    }
+  }
+  if (running) applyTestsStatus._toasted = false;
+}
+
+function renderTestsCases(results, running) {
+  const wrap = $('testsCases');
+  wrap.innerHTML = '';
+  for (const c of testsCases || []) {
+    const res = results[c.id] || {};
+    const card = document.createElement('div');
+    card.className = 'card';
+    const head = document.createElement('div');
+    head.className = 'card-head';
+    const title = document.createElement('span');
+    title.textContent = c.title;
+    head.append(title, chip(res.status || 'idle', res.elapsed ? `(${res.elapsed}s)` : ''));
+    const btn = document.createElement('button');
+    btn.className = 'mini-btn';
+    btn.textContent = `Run (~${c.minutes} min)`;
+    btn.disabled = !!running;
+    btn.onclick = () => startTests(false, [c.id]);
+    head.append(btn);
+    card.append(head);
+    const desc = document.createElement('p');
+    desc.className = 'tdesc';
+    desc.textContent = c.desc;
+    card.append(desc);
+    if (res.metrics) {
+      const tbl = document.createElement('table');
+      tbl.className = 'tmetrics';
+      tbl.innerHTML = '<thead><tr><th>Metric</th><th>Obtained</th>'
+        + '<th>Accepted range</th><th>Reference</th><th></th></tr></thead>';
+      const tb = document.createElement('tbody');
+      for (const m of res.metrics) {
+        const tr = document.createElement('tr');
+        const fmt = v => v <= -100 ? '−∞' : String(v);
+        tr.innerHTML =
+          `<td>${m.label}</td>` +
+          `<td class="num ${m.pass ? 'ok' : 'bad'}">${m.value} ${m.unit}</td>` +
+          `<td class="num">${fmt(m.lo)} … ${fmt(m.hi)} ${m.unit}</td>` +
+          `<td>${m.ref}</td>` +
+          `<td class="${m.pass ? 'ok' : 'bad'}">${m.pass ? '✓' : '✗'}</td>`;
+        tb.append(tr);
+      }
+      tbl.append(tb);
+      card.append(tbl);
+    }
+    if (res.error) {
+      const pre = document.createElement('pre');
+      pre.className = 'log';
+      pre.style.height = 'auto';
+      pre.style.maxHeight = '160px';
+      pre.textContent = res.error;
+      card.append(pre);
+    }
+    wrap.append(card);
+  }
+}
+
+async function startTests(unit, caseIds) {
+  try {
+    await apiJson('/api/tests/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unit, cases: caseIds }),
+    });
+    refreshTestsStatus();
+  } catch (e) {
+    uiNotice('Cannot start tests: ' + e.message, 'err', 6000);
+  }
+}
+
 /* ---------- server-side projects ---------- */
 async function saveProjectToServer() {
   let name = app.project.name;
@@ -1728,6 +1858,8 @@ window.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('mouseup', up);
   });
   $('btnResults').addEventListener('click', () => showView('results'));
+  $('testsRunAll').addEventListener('click', () => startTests(false, (testsCases || []).map(c => c.id)));
+  $('testsRunUnit').addEventListener('click', () => startTests(true, []));
   $('jScaleBar').style.background = `linear-gradient(to right, ${J_RAMP.join(', ')})`;
   $('btnMesh').addEventListener('click', () => {
     app.meshVisible = !app.meshVisible;

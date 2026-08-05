@@ -396,7 +396,9 @@ def generate_script(model):
                 dirn = 1
             margin = float(sim.get('airMargin', 20.0))
             feed_shift = min(margin / 3.0, length / 4.0)
-            meas_shift = max(length - mesh['edgeRes'], length * 0.75)
+            # S-parameter reference plane exactly at the port's inner edge
+            # (a mesh line always exists there, so the snap is exact)
+            meas_shift = length
             opts = f", 'MeasPlaneShift', {_fmt(meas_shift)}"
             if excite:
                 opts += f", 'ExcitePort', true, 'FeedShift', {_fmt(feed_shift)}"
