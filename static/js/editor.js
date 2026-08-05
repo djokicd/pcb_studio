@@ -552,11 +552,20 @@ class Editor {
     const [sx, sy] = this.toScreen(p.x, p.y + p.h);
     const w = p.w * this.view.scale, h = p.h * this.view.scale;
     const msl = p.ptype === 'msl';
-    ctx.fillStyle = msl ? 'rgba(12,163,120,0.30)' : 'rgba(12,163,12,0.30)';
+    const pin = this.app.devicePin ? this.app.devicePin(p.number) : null;
+    ctx.fillStyle = pin ? 'rgba(144,133,233,0.32)'
+      : msl ? 'rgba(12,163,120,0.30)' : 'rgba(12,163,12,0.30)';
     ctx.fillRect(sx, sy, w, h);
-    ctx.strokeStyle = msl ? '#0ca378' : ED.port;
+    ctx.strokeStyle = pin ? '#9085e9' : msl ? '#0ca378' : ED.port;
     ctx.lineWidth = p.excite ? 2 : 1;
     ctx.strokeRect(sx, sy, w, h);
+    if (pin && h > 10) {
+      ctx.fillStyle = '#b8b0f0';
+      ctx.font = `${Math.max(9, Math.min(11, h * 0.35))}px system-ui`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(`${pin.ref}.${pin.name}`, sx + w / 2, sy + h + 3);
+    }
     if (msl) {
       // chevrons pointing along the propagation direction (into the board)
       const cx = sx + w / 2, cy = sy + h / 2;
@@ -575,7 +584,7 @@ class Editor {
       ctx.stroke();
       ctx.restore();
     }
-    ctx.fillStyle = msl ? '#8fe8cf' : '#9fe89f';
+    ctx.fillStyle = pin ? '#b8b0f0' : msl ? '#8fe8cf' : '#9fe89f';
     ctx.font = `${Math.max(10, Math.min(13, h * 0.5))}px system-ui`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(`${msl ? 'M' : 'P'}${p.number}${p.excite ? '*' : ''}`,

@@ -125,11 +125,17 @@ FDTD simulations of planar PCB structures via GNU Octave.
   (`board_full.sNp`), the combined network (`combined.sNp`) and the
   device-less column (`sparams_board.csv`) downloadable. Device data is
   interpolated onto the sweep (clamped with a warning outside its
-  range); pin ports must match the file's reference impedance. Note
-  this is circuit-level embedding — EM coupling between the device
-  package and the board is not modelled, exactly as in standard
-  EM/circuit co-simulation flows. A synthetic `fet_demo.s3p` ships in
-  `devices/`.
+  range); pin ports must match the file's reference impedance. Device
+  rows offer a 👁 preview of the file's |S| curves, and each pad can be
+  named (gate/drain/source…) — pin ports are drawn violet in the editor
+  with their `ref.pad` label. Full-matrix runs (automatic with devices,
+  or opt-in via "Full S-matrix" in the Simulation tab) export every
+  external port's own reflection, and the Reflection card then shows
+  all S_ii together — legend chips toggle traces in both the dB view
+  and the multi-trace Smith chart. Note this is circuit-level
+  embedding — EM coupling between the device package and the board is
+  not modelled, exactly as in standard EM/circuit co-simulation flows.
+  A synthetic `fet_demo.s3p` ships in `devices/`.
 - **Built-in verification tests**: the Tests tab in the main area runs
   the test suite from the GUI — fast code-level checks (parsers, mesh,
   script generation, API) and four benchmark simulations of canonical

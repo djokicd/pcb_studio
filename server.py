@@ -6,6 +6,7 @@ Octave/openEMS as a subprocess and reports progress parsed from the
 solver output.
 """
 import json
+import math
 import os
 import re
 import shutil
@@ -159,7 +160,10 @@ def combine_devices(run_dir, model, stages, devices):
                     if int(p['number']) == exc).get('impedance', 50))
     if len(cur_nums) >= 2:
         _write_touchstone(run_dir / f'combined.s{len(cur_nums)}p', freq, mats)
+    # excited-port column plus every port's own reflection S_ii (the full
+    # matrix is available, so the GUI can show all external reflections)
     header = '#freq_Hz' + ''.join(f',S{i}{exc}_re,S{i}{exc}_im' for i in cur_nums)
+    header += ''.join(f',S{i}{i}_re,S{i}{i}_im' for i in cur_nums if i != exc)
     header += ',Zin_re,Zin_im'
     lines = [header]
     for k, f in enumerate(freq):
@@ -169,6 +173,11 @@ def combine_devices(run_dir, model, stages, devices):
         row = [f'{f:e}']
         for i, num in enumerate(cur_nums):
             s = mats[k][i][e]
+            row.append(f'{s.real:e},{s.imag:e}')
+        for i, num in enumerate(cur_nums):
+            if num == exc:
+                continue
+            s = mats[k][i][i]
             row.append(f'{s.real:e},{s.imag:e}')
         row.append(f'{zin.real:e},{zin.imag:e}')
         lines.append(','.join(row))
@@ -247,11 +256,13 @@ class Runner:
             sim_dir = SIM_ROOT / run_id
             sim_dir.mkdir(parents=True, exist_ok=True)
 
-            # with S-parameter devices the full board S-matrix is needed:
-            # one excitation run per port, the user's excited port last in
-            # the run root (that run also carries the field dumps)
+            # with S-parameter devices (or the full-S-matrix option) one
+            # excitation run per port is needed; the user's excited port
+            # runs last in the run root (that run carries the field dumps)
+            full_s = bool((model.get('sim') or {}).get('fullS')) \
+                and len(model.get('ports') or []) > 1
             stages = []
-            if devices:
+            if devices or full_s:
                 port_nums = sorted(int(p['number']) for p in model['ports'])
                 exc = next(int(p['number']) for p in model['ports'] if p.get('excite'))
                 for n in port_nums:
@@ -434,11 +445,12 @@ class Runner:
                     self.error = f'failed to start next excitation: {e}'
                 return
             # all stages finished
-            if self.devices:
+            if len(self.stages) > 1:
                 try:
                     combine_devices(SIM_ROOT / self.run_id, self.base_model,
                                     self.stages, self.devices)
-                    self._append_line('GUI_MARKER: device networks folded into results')
+                    self._append_line('GUI_MARKER: full S-matrix assembled'
+                                      + (' and device networks folded' if self.devices else ''))
                 except Exception as e:
                     self.state = 'error'
                     self.error = f'device combination failed: {e}'
@@ -760,6 +772,30 @@ def api_devices_upload():
     (DEV_ROOT / fname).write_text(content)
     return jsonify({'file': fname, 'nports': ts['nports'], 'r': ts['r'],
                     'fmin': ts['freq'][0], 'fmax': ts['freq'][-1]})
+
+
+@app.get('/api/devices/<name>/data')
+def api_devices_data(name):
+    """Touchstone preview data: |S_ij| in dB over frequency."""
+    fname = _safe_device_name(name)
+    if not fname or not (DEV_ROOT / fname).is_file():
+        return jsonify({'error': 'no such device file'}), 404
+    m = re.search(r'\.s(\d+)p$', fname, re.I)
+    try:
+        ts = parse_touchstone((DEV_ROOT / fname).read_text(), int(m.group(1)))
+    except TouchstoneError as e:
+        return jsonify({'error': str(e)}), 400
+    n = ts['nports']
+    series = []
+    for i in range(n):
+        for j in range(n):
+            series.append({
+                'label': f'S{i + 1}{j + 1}',
+                'values': [round(20 * math.log10(max(abs(mat[i][j]), 1e-12)), 3)
+                           for mat in ts['s']],
+            })
+    return jsonify({'file': fname, 'nports': n, 'r': ts['r'],
+                    'freq': ts['freq'], 'series': series})
 
 
 @app.delete('/api/devices/<name>')

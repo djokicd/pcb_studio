@@ -253,11 +253,11 @@ class MagChart extends ChartBase {
 
 MagChart.prototype.xzoom = true;
 
-/* data: {freq[], label, re[], im[], z0} — one reflection trace */
+/* data: {freq[], series: [{label, re[], im[], ci}], z0} — reflection traces */
 class SmithChart extends ChartBase {
   draw() {
     if (!this.data) return;
-    const { freq, re, im, label } = this.data;
+    const { freq, series } = this.data;
     const { w, h } = this.layout(0.8);
     const ctx = this.ctx;
     ctx.clearRect(0, 0, w, h);
@@ -289,49 +289,63 @@ class SmithChart extends ChartBase {
     ctx.textAlign = 'center'; ctx.textBaseline = 'top';
     for (const rn of [0, 0.2, 0.5, 1, 2, 5]) ctx.fillText(String(rn), X((rn - 1) / (rn + 1)) + 7, cy + 3);
 
-    const color = SERIES_COLORS[0];
-    ctx.strokeStyle = color; ctx.lineWidth = 2;
-    ctx.beginPath();
-    for (let k = 0; k < freq.length; k++) {
-      const x = X(re[k]), y = Y(im[k]);
-      k ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-    }
-    ctx.stroke();
-    // start / stop markers
-    ctx.fillStyle = color;
-    ctx.fillRect(X(re[0]) - 3, Y(im[0]) - 3, 6, 6);
-    ctx.beginPath(); ctx.arc(X(re[freq.length - 1]), Y(im[freq.length - 1]), 3.5, 0, 7); ctx.fill();
+    series.forEach((s, si) => {
+      const color = SERIES_COLORS[(s.ci != null ? s.ci : si) % SERIES_COLORS.length];
+      ctx.strokeStyle = color; ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let k = 0; k < freq.length; k++) {
+        const x = X(s.re[k]), y = Y(s.im[k]);
+        k ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.stroke();
+      // start / stop markers
+      ctx.fillStyle = color;
+      ctx.fillRect(X(s.re[0]) - 3, Y(s.im[0]) - 3, 6, 6);
+      ctx.beginPath();
+      ctx.arc(X(s.re[freq.length - 1]), Y(s.im[freq.length - 1]), 3.5, 0, 7);
+      ctx.fill();
+    });
     ctx.fillStyle = CH.muted; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
-    ctx.fillText(`${label}  (■ ${(freq[0] / 1e9).toFixed(2)} GHz, ● ${(freq[freq.length - 1] / 1e9).toFixed(2)} GHz)`, 6, h - 4);
-    if (this.hover !== null) {
-      ctx.fillStyle = '#fff'; ctx.strokeStyle = CH.surface; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(X(re[this.hover]), Y(im[this.hover]), 4.5, 0, 7);
-      ctx.fill(); ctx.stroke();
+    const names = series.map(s => s.label).join(', ');
+    ctx.fillText(`${names}  (■ ${(freq[0] / 1e9).toFixed(2)} GHz, ● ${(freq[freq.length - 1] / 1e9).toFixed(2)} GHz)`, 6, h - 4);
+    if (this.hover) {
+      const { si, k } = this.hover;
+      const s = series[si];
+      if (s) {
+        ctx.fillStyle = '#fff'; ctx.strokeStyle = CH.surface; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(X(s.re[k]), Y(s.im[k]), 4.5, 0, 7);
+        ctx.fill(); ctx.stroke();
+      }
     }
     this._geo = { X, Y };
   }
   onMove(e) {
     if (!this.data || !this._geo) return;
     const [mx, my] = this.mouse(e);
-    const { freq, re, im, z0 } = this.data;
-    let idx = -1, best = 14 * 14;
-    for (let k = 0; k < freq.length; k++) {
-      const dx = this._geo.X(re[k]) - mx, dy = this._geo.Y(im[k]) - my;
-      const d = dx * dx + dy * dy;
-      if (d < best) { best = d; idx = k; }
-    }
-    if (idx < 0) { this.clearHover(); return; }
-    this.hover = idx;
+    const { freq, series, z0 } = this.data;
+    let hit = null, best = 14 * 14;
+    series.forEach((s, si) => {
+      for (let k = 0; k < freq.length; k++) {
+        const dx = this._geo.X(s.re[k]) - mx, dy = this._geo.Y(s.im[k]) - my;
+        const d = dx * dx + dy * dy;
+        if (d < best) { best = d; hit = { si, k }; }
+      }
+    });
+    if (!hit) { this.clearHover(); return; }
+    this.hover = hit;
     this.draw();
-    const g = { re: re[idx], im: im[idx] };
+    const s = series[hit.si];
+    const g = { re: s.re[hit.k], im: s.im[hit.k] };
     const mag = Math.hypot(g.re, g.im);
     const ang = Math.atan2(g.im, g.re) * 180 / Math.PI;
     // Z = z0 (1+G)/(1-G)
     const d = (1 - g.re) ** 2 + g.im ** 2;
     const zr = z0 * (1 - g.re * g.re - g.im * g.im) / d;
     const zi = z0 * 2 * g.im / d;
+    const color = SERIES_COLORS[(s.ci != null ? s.ci : hit.si) % SERIES_COLORS.length];
     this.showTip(e,
-      `<div class="t-head">${(freq[idx] / 1e9).toFixed(3)} GHz</div>` +
+      `<div class="t-head">${(freq[hit.k] / 1e9).toFixed(3)} GHz</div>` +
+      `<div class="t-row"><span class="swatch" style="background:${color}"></span>${s.label}</div>` +
       `<div class="t-row">&Gamma; = ${mag.toFixed(3)} &ang; ${ang.toFixed(1)}&deg;</div>` +
       `<div class="t-row">Z = ${zr.toFixed(1)} ${zi >= 0 ? '+' : '−'} j${Math.abs(zi).toFixed(1)} &Omega;</div>`);
   }

@@ -66,6 +66,9 @@ def test_combine_through_device(tmp_path):
     for r in rows:
         assert abs(r['s'][1]) < 1e-9          # S11
         assert abs(r['s'][4] - 1) < 1e-9      # S41
+        # every external port's own reflection is exported too
+        assert abs(r['refl'][1]) < 1e-9       # S11
+        assert abs(r['refl'][4]) < 1e-9       # S44
     # artifacts exist
     assert (run / 'board_full.s4p').is_file()
     assert (run / 'combined.s2p').is_file()

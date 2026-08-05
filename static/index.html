@@ -273,6 +273,8 @@
         <label>f start (GHz) <input id="s_fStart" type="number" step="0.1" min="0.001"></label>
         <label>f stop (GHz) <input id="s_fStop" type="number" step="0.1" min="0.001"></label>
         <label>Frequency points <input id="s_points" type="number" step="1" min="2"></label>
+        <label class="check" title="Run one excitation per port to extract the full S-matrix — enables reflection display for every port (N ports = N runs). Automatic when S-parameter devices are present.">
+          <input id="s_fullS" type="checkbox"> Full S-matrix (all excitations)</label>
         <label>Boundary
           <select id="s_boundary">
             <option value="MUR">MUR (absorbing)</option>

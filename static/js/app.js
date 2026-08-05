@@ -31,6 +31,7 @@ function defaultProject() {
       fStart: 1, fStop: 3, points: 401, boundary: 'MUR', endCriteria: -40,
       maxTimesteps: 30000, meshDiv: 20, edgeRes: null, meshMerge: 0.1, airMargin: 25,
       dumpJ: false, dumpFreqs: '', dumpJt: false, jtStart: 0, jtStop: 3, jtSub: 2,
+      fullS: false,
     },
     nextId: 3,
   };
@@ -46,6 +47,7 @@ function migrate(p) {
     p.sim.dumpFreqs = p.sim.dumpFreqs || '';
     p.devices = p.devices || [];
     p.sim.dumpJt = p.sim.dumpJt || false;
+    p.sim.fullS = p.sim.fullS || false;
     if (p.sim.jtStart == null) p.sim.jtStart = 0;
     if (p.sim.jtStop == null) p.sim.jtStop = 3;
     if (!p.sim.jtSub) p.sim.jtSub = 2;
@@ -111,6 +113,15 @@ const app = {
     return [c.x - W / 2, c.y - L / 2, c.x + W / 2, c.y + L / 2];
   },
   compLabel(c) { return `${c.ref} ${c.value}${COMP_UNITS[c.ctype]}`; },
+  devicePin(number) {
+    for (const d of this.project.devices || []) {
+      const i = (d.pins || []).indexOf(number);
+      if (i >= 0) {
+        return { ref: d.ref || 'U?', name: (d.pinNames || [])[i] || String(i + 1) };
+      }
+    }
+    return null;
+  },
   stackupZ() {
     let z = 0;
     const cond = [], diel = [];
@@ -476,10 +487,14 @@ function renderObjList() {
     ul.append(li);
   };
   // ports/components/vias first so a large import cannot push them off the list
-  for (const p of app.project.ports)
-    add('port', p, p.ptype === 'msl' ? '#0ca378' : '#0ca30c',
+  for (const p of app.project.ports) {
+    const pin = app.devicePin(p.number);
+    add('port', p,
+      pin ? '#9085e9' : p.ptype === 'msl' ? '#0ca378' : '#0ca30c',
       `${p.ptype === 'msl' ? 'MSL port' : 'Port'} ${p.number}${p.excite ? ' *' : ''}`,
-      (p.ptype === 'msl' ? (p.orient || '+x') : p.direction) + (p.excite ? ' exc' : ''));
+      pin ? `${pin.ref}.${pin.name}`
+        : (p.ptype === 'msl' ? (p.orient || '+x') : p.direction) + (p.excite ? ' exc' : ''));
+  }
   for (const c of app.project.components)
     add('component', c, '#b9b9b3', app.compLabel(c), c.package);
   for (const v of app.project.vias)
@@ -821,6 +836,7 @@ function formsFromModel() {
   $('b_height').value = app.project.board.height;
   for (const f of SIM_FIELDS) $('s_' + f).value = app.project.sim[f] ?? '';
   $('s_boundary').value = app.project.sim.boundary;
+  $('s_fullS').checked = !!app.project.sim.fullS;
   $('s_dumpJ').checked = !!app.project.sim.dumpJ;
   $('s_dumpFreqs').value = app.project.sim.dumpFreqs || '';
   $('s_dumpJt').checked = !!app.project.sim.dumpJt;
@@ -838,6 +854,7 @@ function bindForms() {
       app.dirty();
     });
   $('s_boundary').addEventListener('change', e => { app.project.sim.boundary = e.target.value; app.dirty(); });
+  $('s_fullS').addEventListener('change', e => { app.project.sim.fullS = e.target.checked; app.dirty(); });
   $('s_dumpJ').addEventListener('change', e => { app.project.sim.dumpJ = e.target.checked; app.dirty(); });
   $('s_dumpFreqs').addEventListener('change', e => { app.project.sim.dumpFreqs = e.target.value; app.dirty(); });
   $('s_dumpJt').addEventListener('change', e => { app.project.sim.dumpJt = e.target.checked; app.dirty(); });
@@ -1171,8 +1188,11 @@ function excitedZ0() {
 }
 function splitSparams() {
   const { cols } = app.sparams;
-  const refl = cols.find(c => c.label.length >= 3 && c.label[1] === c.label[2]) || cols[0];
-  const trans = cols.filter(c => c !== refl);
+  const isRefl = c => c.label.length >= 3 && c.label[1] === c.label[2];
+  let refl = cols.filter(isRefl);
+  if (!refl.length && cols.length) refl = [cols[0]];
+  refl.sort((a, b) => a.label.localeCompare(b.label));
+  const trans = cols.filter(c => !refl.includes(c) && !isRefl(c));
   return { refl, trans };
 }
 const dB = (re, im) => re.map((r, k) => 20 * Math.log10(Math.max(Math.hypot(r, im[k]), 1e-12)));
@@ -1200,17 +1220,23 @@ function buildLegend(el, items) {
   }
 }
 
+function reflSeries() {
+  const { refl } = splitSparams();
+  return refl
+    .map((c, i) => ({ ...c, ci: i }))
+    .filter(c => !resultsPrefs.hidden[`refl:${c.label}`]);
+}
 function makeReflChart(canvas, tip) {
   const { freq } = app.sparams;
-  const { refl } = splitSparams();
+  const series = reflSeries();
   const view = $('reflView').value;
   let ch;
   if (view === 'smith') {
     ch = new SmithChart(canvas, tip);
-    ch.setData({ freq, label: refl.label, re: refl.re, im: refl.im, z0: excitedZ0() });
+    ch.setData({ freq, series, z0: excitedZ0() });
   } else {
     ch = new MagChart(canvas, tip);
-    ch.setData({ freq, series: [{ label: refl.label, values: dB(refl.re, refl.im) }] });
+    ch.setData({ freq, series: series.map(c => ({ label: c.label, values: dB(c.re, c.im), ci: c.ci })) });
   }
   return ch;
 }
@@ -1303,7 +1329,9 @@ function renderCharts() {
   if (!$('reflCard').hidden) {
     if (reflChart) reflChart.destroy();
     reflChart = makeReflChart($('reflCanvas'), $('reflTip'));
-    buildLegend($('reflLegend'), []);
+    const { refl } = splitSparams();
+    buildLegend($('reflLegend'),
+      refl.map((c, i) => ({ label: c.label, key: `refl:${c.label}`, ci: i })));
   }
   if (!$('transCard').hidden && trans.length) {
     if (transChart) transChart.destroy();
@@ -1618,28 +1646,51 @@ function renderDevices() {
         dev.file = v;
         const meta = lib.find(l => l.file === v);
         dev.pins = new Array(meta ? meta.nports : 0).fill(null);
+        dev.pinNames = new Array(meta ? meta.nports : 0).fill('');
         renderDevices();
+        app.editor.render();
         app.dirty();
       });
+    const prev = mkBtn('👁', () => previewDevice(dev.file));
+    prev.title = 'Preview the S-parameters of this file';
+    prev.disabled = !dev.file;
     const del = mkBtn('×', () => {
       app.project.devices = app.project.devices.filter(d => d !== dev);
       renderDevices();
+      app.editor.render();
       app.dirty();
     });
-    top.append(ref, fileSel, del);
+    top.append(ref, fileSel, prev, del);
     row.append(top);
     const meta = lib.find(l => l.file === dev.file);
     if (meta) {
+      dev.pinNames = dev.pinNames || new Array(meta.nports).fill('');
       const pins = document.createElement('div');
       pins.className = 'dev-pins';
-      pins.append(document.createTextNode('pins → ports: '));
       for (let k = 0; k < meta.nports; k++) {
+        const cell = document.createElement('span');
+        cell.append(document.createTextNode(`${k + 1}:`));
+        const nameI = textIn(dev.pinNames[k] || '', v => {
+          dev.pinNames[k] = v.trim();
+          renderObjList();
+          app.editor.render();
+          app.dirty();
+        });
+        nameI.placeholder = ['in', 'out', 'gnd', 'aux'][k] || 'pad';
+        nameI.title = `Name of device pad ${k + 1} (e.g. gate, drain, source)`;
+        nameI.style.width = '52px';
         const sel = selIn(
           [['', '—'], ...portNums.map(n => [String(n), 'P' + n])],
           dev.pins && dev.pins[k] != null ? String(dev.pins[k]) : '',
-          v => { dev.pins[k] = v ? parseInt(v, 10) : null; app.dirty(); });
-        sel.title = `Device port ${k + 1}`;
-        pins.append(sel);
+          v => {
+            dev.pins[k] = v ? parseInt(v, 10) : null;
+            renderObjList();
+            app.editor.render();
+            app.dirty();
+          });
+        sel.title = `Board port carrying device pad ${k + 1}`;
+        cell.append(nameI, document.createTextNode('→'), sel);
+        pins.append(cell);
       }
       row.append(pins);
       const info = document.createElement('div');
@@ -1649,6 +1700,21 @@ function renderDevices() {
       row.append(info);
     }
     wrap.append(row);
+  }
+}
+
+async function previewDevice(file) {
+  if (!file) return;
+  try {
+    const data = await apiJson(`/api/devices/${encodeURIComponent(file)}/data`);
+    Modal.open(`${data.file} — |S| (${data.nports}-port, ${data.r} Ω)`, (canvas, tip) => {
+      const ch = new MagChart(canvas, tip);
+      ch.setData({ freq: data.freq,
+        series: data.series.map((s, i) => ({ ...s, ci: i })) });
+      return ch;
+    });
+  } catch (e) {
+    uiNotice('Preview failed: ' + e.message, 'err', 6000);
   }
 }
 

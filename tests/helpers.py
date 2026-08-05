@@ -71,17 +71,23 @@ def run_sim(model, tag, timeout=420):
 
 
 def parse_sparams(path):
-    """Rows of {'f': Hz, 's': {portnum: complex}, 'zin': complex}."""
+    """Rows of {'f': Hz, 's': {portnum: S_port,exc}, 'refl': {portnum: S_ii},
+    'zin': complex}. The excited-port columns come first in the file, so
+    the first occurrence of a port number wins for 's'."""
     lines = Path(path).read_text().strip().split('\n')
     header = lines[0].lstrip('#').split(',')
     out = []
     for line in lines[1:]:
         v = [float(x) for x in line.split(',')]
-        row = {'f': v[0], 's': {}}
+        row = {'f': v[0], 's': {}, 'refl': {}}
         for ci in range(1, len(header) - 2, 2):
-            label = header[ci]           # e.g. S21_re
-            num = int(label[1])
-            row['s'][num] = complex(v[ci], v[ci + 1])
+            label = header[ci]           # e.g. S21_re / S22_re
+            i, j = int(label[1]), int(label[2])
+            val = complex(v[ci], v[ci + 1])
+            if i == j:
+                row['refl'][i] = val
+            if i not in row['s']:
+                row['s'][i] = val
         row['zin'] = complex(v[-2], v[-1])
         out.append(row)
     return out
