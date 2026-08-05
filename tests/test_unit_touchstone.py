@@ -122,3 +122,19 @@ def test_connect_reflective_feedback():
     out = connect(board, [[sd]], [1])
     expected = t * sd / (1 - scc * sd) * t
     assert abs(out[0][0] - expected) < 1e-12
+
+
+def test_header_info_captured():
+    """Leading '!' comments (bias point etc.) are exposed as `info`; the
+    real vendor files in devices/ carry their bias condition there."""
+    ts = parse_touchstone(
+        '! Part: XYZ\n! Bias condition: Vce=1V, Ic=1mA\n'
+        '# GHz S RI R 50\n1 0 0\n! trailing comment\n2 0 0\n', 1)
+    assert 'Bias condition: Vce=1V, Ic=1mA' in ts['info']
+    assert all('trailing' not in l for l in ts['info'])
+
+    from pathlib import Path
+    dev = Path(__file__).resolve().parent.parent / 'devices' / 'BFG25AWA.S2P'
+    if dev.is_file():
+        ts = parse_touchstone(dev.read_text(), 2)
+        assert any('Vce=1V, Ic=0.1mA' in l for l in ts['info'])

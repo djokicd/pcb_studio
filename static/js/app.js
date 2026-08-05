@@ -1941,6 +1941,7 @@ function renderDevices() {
     row.append(top);
     const meta = lib.find(l => l.file === dev.file);
     if (meta) {
+      const bias = deviceBias(meta.info);
       dev.pinNames = dev.pinNames || new Array(meta.nports).fill('');
       const pins = document.createElement('div');
       pins.className = 'dev-pins';
@@ -1973,23 +1974,49 @@ function renderDevices() {
       const info = document.createElement('div');
       info.className = 'dev-meta';
       info.textContent = `${(meta.fmin / 1e9).toFixed(2)}–${(meta.fmax / 1e9).toFixed(2)} GHz, `
-        + `${meta.points} pts, ${meta.r} Ω reference`;
+        + `${meta.points} pts, ${meta.r} Ω reference`
+        + (bias ? ` · ${bias}` : '');
+      if (bias) info.title = 'Measurement conditions from the touchstone file header — '
+        + 'make sure they match the operating point you are designing for';
       row.append(info);
     }
     wrap.append(row);
   }
 }
 
+/* the header line documenting the measurement conditions (bias point) */
+function deviceBias(info) {
+  return (info || []).find(l => /bias|vce\s*=|vds\s*=|vgs\s*=|ic\s*=|id\s*=/i.test(l)) || null;
+}
+
 async function previewDevice(file) {
   if (!file) return;
   try {
     const data = await apiJson(`/api/devices/${encodeURIComponent(file)}/data`);
-    Modal.open(`${data.file} — |S| (${data.nports}-port, ${data.r} Ω)`, (canvas, tip) => {
-      const ch = new MagChart(canvas, tip);
-      ch.setData({ freq: data.freq,
-        series: data.series.map((s, i) => ({ ...s, ci: i })) });
-      return ch;
-    });
+    const bias = deviceBias(data.info);
+    const show = view => {
+      const what = view === 'smith' ? 'reflection (Smith)' : '|S| (dB)';
+      Modal.open(`${data.file} — ${what} · ${data.nports}-port, ${data.r} Ω`
+        + (bias ? ` · ${bias}` : ''), (canvas, tip) => {
+        if (view === 'smith') {
+          // diagonals only: S11, S22, ... - directly comparable with
+          // datasheet Smith-chart figures
+          const refl = data.series.filter(s => s.label.length === 3 && s.label[1] === s.label[2]);
+          const ch = new SmithChart(canvas, tip);
+          ch.setData({ freq: data.freq, z0: data.r,
+            series: refl.map((s, i) => ({ label: s.label, re: s.re, im: s.im, ci: i })) });
+          return ch;
+        }
+        const ch = new MagChart(canvas, tip);
+        ch.setData({ freq: data.freq,
+          series: data.series.map((s, i) => ({ ...s, ci: i })) });
+        return ch;
+      });
+      const sel = selIn([['mag', 'Magnitude (dB)'], ['smith', 'Smith chart (Sii)']], view, show);
+      sel.className = 'mini';
+      $('modalCtl').append(sel);
+    };
+    show('mag');
   } catch (e) {
     uiNotice('Preview failed: ' + e.message, 'err', 6000);
   }

@@ -568,6 +568,8 @@ const Modal = {
   open(title, build) {
     const modal = document.getElementById('modal');
     document.getElementById('modalTitle').textContent = title;
+    // callers may populate this with view controls after open()
+    document.getElementById('modalCtl').innerHTML = '';
     modal.hidden = false;
     const canvas = document.getElementById('modalCanvas');
     const tip = document.getElementById('modalTip');

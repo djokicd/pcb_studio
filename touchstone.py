@@ -25,15 +25,22 @@ def parse_touchstone(text, nports=None):
     """Parse a Touchstone v1 file.
 
     Returns {'nports', 'r': ref impedance, 'freq': [Hz], 's': [matrix per
-    freq]} with s[k][i][j] = S(i+1)(j+1). The 2-port column order quirk
-    (S11 S21 S12 S22) is handled.
+    freq], 'info': [header comment lines]} with s[k][i][j] = S(i+1)(j+1).
+    The 2-port column order quirk (S11 S21 S12 S22) is handled. `info`
+    holds the leading '!' comments (before any data row) - vendor files
+    document the measurement conditions there, e.g. the bias point.
     """
     unit = 1e9
     fmt = 'MA'
     r = 50.0
     numbers = []
+    info = []
     for raw in text.splitlines():
         line = raw.split('!', 1)[0].strip()
+        if not numbers and len(info) < 8:
+            c = raw.split('!', 1)
+            if len(c) > 1 and not line and c[1].strip():
+                info.append(c[1].strip())
         if not line:
             continue
         if line.startswith('#'):
@@ -108,7 +115,7 @@ def parse_touchstone(text, nports=None):
         mats.append(m)
     if any(b <= a for a, b in zip(freq, freq[1:])):
         raise TouchstoneError('frequencies are not strictly increasing')
-    return {'nports': nports, 'r': r, 'freq': freq, 's': mats}
+    return {'nports': nports, 'r': r, 'freq': freq, 's': mats, 'info': info}
 
 
 def interpolate(ts, freq_hz):

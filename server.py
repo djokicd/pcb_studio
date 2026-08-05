@@ -818,7 +818,7 @@ def api_devices_list():
             ts = parse_touchstone(f.read_text(), int(m.group(1)))
             out.append({'file': f.name, 'nports': ts['nports'], 'r': ts['r'],
                         'fmin': ts['freq'][0], 'fmax': ts['freq'][-1],
-                        'points': len(ts['freq'])})
+                        'points': len(ts['freq']), 'info': ts.get('info') or []})
         except TouchstoneError as e:
             out.append({'file': f.name, 'error': str(e)})
     return jsonify({'devices': out})
@@ -843,7 +843,9 @@ def api_devices_upload():
 
 @app.get('/api/devices/<name>/data')
 def api_devices_data(name):
-    """Touchstone preview data: |S_ij| in dB over frequency."""
+    """Touchstone preview data: |S_ij| in dB plus re/im (so the GUI can
+    draw the reflection coefficients on a Smith chart for comparison
+    against datasheet figures)."""
     fname = _safe_device_name(name)
     if not fname or not (DEV_ROOT / fname).is_file():
         return jsonify({'error': 'no such device file'}), 404
@@ -860,9 +862,12 @@ def api_devices_data(name):
                 'label': f'S{i + 1}{j + 1}',
                 'values': [round(20 * math.log10(max(abs(mat[i][j]), 1e-12)), 3)
                            for mat in ts['s']],
+                're': [round(mat[i][j].real, 6) for mat in ts['s']],
+                'im': [round(mat[i][j].imag, 6) for mat in ts['s']],
             })
     return jsonify({'file': fname, 'nports': n, 'r': ts['r'],
-                    'freq': ts['freq'], 'series': series})
+                    'freq': ts['freq'], 'series': series,
+                    'info': ts.get('info') or []})
 
 
 @app.delete('/api/devices/<name>')

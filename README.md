@@ -187,9 +187,17 @@ FDTD simulations of planar PCB structures via GNU Octave.
   device-less column (`sparams_board.csv`) downloadable. Device data is
   interpolated onto the sweep (clamped with a warning outside its
   range); pin ports must match the file's reference impedance. Device
-  rows offer a 👁 preview of the file's |S| curves, and each pad can be
-  named (gate/drain/source…) — pin ports are drawn violet in the editor
-  with their `ref.pad` label. Full-matrix runs (automatic with devices,
+  rows offer a 👁 preview of the file switchable between the |S| dB
+  curves and a **Smith chart of the reflection coefficients** (S11,
+  S22, …) — directly comparable against datasheet Smith figures. The
+  file's leading `!` header comments are parsed and the **measurement /
+  bias condition line is shown** in the device row and the preview
+  title: vendor S-parameter sets ship one file per bias point (e.g.
+  BFG25A at Vce=1V/Ic=0.1mA vs 1V/1mA), and using the wrong-bias file
+  makes S11 look completely different from the datasheet curve while
+  the tool is parsing it perfectly. Each pad can be named
+  (gate/drain/source…) — pin ports are drawn violet in the editor with
+  their `ref.pad` label. Full-matrix runs (automatic with devices,
   or opt-in via "Full S-matrix" in the Simulation tab) export every
   external port's own reflection, and the Reflection card then shows
   all S_ii together — legend chips toggle traces in both the dB view
