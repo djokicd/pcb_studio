@@ -4,10 +4,18 @@
 'use strict';
 
 const SERIES_COLORS = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'];
-const CH = {
-  surface: '#1a1a19', grid: '#2c2c2a', axis: '#383835',
-  muted: '#898781', ink: '#e8e7e0', crosshair: '#52514e',
+/* chart palette; CH is mutated by applyTheme() */
+const CH_THEMES = {
+  dark: {
+    surface: '#1a1a19', grid: '#2c2c2a', axis: '#383835',
+    muted: '#898781', ink: '#e8e7e0', crosshair: '#52514e',
+  },
+  light: {
+    surface: '#ffffff', grid: '#eceae2', axis: '#c9c7bd',
+    muted: '#77756d', ink: '#1c1c1a', crosshair: '#a5a39a',
+  },
 };
+const CH = { ...CH_THEMES.dark };
 
 class ChartBase {
   constructor(canvas, tip) {
@@ -312,7 +320,7 @@ class SmithChart extends ChartBase {
       const { si, k } = this.hover;
       const s = series[si];
       if (s) {
-        ctx.fillStyle = '#fff'; ctx.strokeStyle = CH.surface; ctx.lineWidth = 2;
+        ctx.fillStyle = CH.ink; ctx.strokeStyle = CH.surface; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(X(s.re[k]), Y(s.im[k]), 4.5, 0, 7);
         ctx.fill(); ctx.stroke();
       }
@@ -408,7 +416,7 @@ class PolarChart extends ChartBase {
     if (this.hover) {
       const { si, k } = this.hover;
       const [x, y] = pt(series[si], k);
-      ctx.fillStyle = '#fff'; ctx.strokeStyle = CH.surface; ctx.lineWidth = 2;
+      ctx.fillStyle = CH.ink; ctx.strokeStyle = CH.surface; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(x, y, 4.5, 0, 7); ctx.fill(); ctx.stroke();
     }
     this._pt = pt;

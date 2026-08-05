@@ -154,7 +154,7 @@ def combine_devices(run_dir, model, stages, devices):
         mats = [connect(mats[k], dmats[k], pin_idx) for k in range(len(freq))]
         cur_nums = [x for i, x in enumerate(cur_nums) if i not in pin_idx]
 
-    exc = next(int(p['number']) for p in model['ports'] if p.get('excite'))
+    exc = min(int(p['number']) for p in model['ports'] if p.get('excite'))
     e = cur_nums.index(exc)
     z0 = float(next(p for p in model['ports']
                     if int(p['number']) == exc).get('impedance', 50))
@@ -180,6 +180,37 @@ def combine_devices(run_dir, model, stages, devices):
             s = mats[k][i][i]
             row.append(f'{s.real:e},{s.imag:e}')
         row.append(f'{zin.real:e},{zin.imag:e}')
+        lines.append(','.join(row))
+    (run_dir / 'sparams.csv').write_text('\n'.join(lines) + '\n')
+
+
+def merge_excitations(run_dir, model, stages):
+    """Merge the per-stage sparams.csv columns of a multi-excitation run
+    (a user-selected subset of ports, no devices) into one sparams.csv:
+    S_i,e for every excitation e, primary excitation's columns first."""
+    freq = None
+    parts = []                       # [(exc, {port: [complex]})] primary first
+    for st in reversed(stages):      # root (primary) stage is last in stages
+        f, cols = _read_column(st['dir'] / 'sparams.csv')
+        if freq is None:
+            freq = f
+        parts.append((st['exc'], cols))
+    # Zin of the primary excitation from the root csv (dropped by _read_column)
+    root_lines = (run_dir / 'sparams.csv').read_text().strip().split('\n')
+    zin = [line.split(',')[-2:] for line in root_lines[1:]]
+    shutil.copy2(run_dir / 'sparams.csv', run_dir / 'sparams_primary.csv')
+    header = '#freq_Hz'
+    for exc, cols in parts:
+        header += ''.join(f',S{i}{exc}_re,S{i}{exc}_im' for i in sorted(cols))
+    header += ',Zin_re,Zin_im'
+    lines = [header]
+    for k, f in enumerate(freq):
+        row = [f'{f:e}']
+        for exc, cols in parts:
+            for i in sorted(cols):
+                v = cols[i][k]
+                row.append(f'{v.real:e},{v.imag:e}')
+        row.extend(zin[k])
         lines.append(','.join(row))
     (run_dir / 'sparams.csv').write_text('\n'.join(lines) + '\n')
 
@@ -217,6 +248,7 @@ class Runner:
         self.warn_msgs = []      # solver warnings, deduped
         self.stages = []
         self.stage_idx = 0
+        self.merge_only = False
         self.stage_info = ''
         self._stage_done = False
         self.devices = []
@@ -261,22 +293,41 @@ class Runner:
             # runs last in the run root (that run carries the field dumps)
             full_s = bool((model.get('sim') or {}).get('fullS')) \
                 and len(model.get('ports') or []) > 1
-            stages = []
-            if devices or full_s:
-                port_nums = sorted(int(p['number']) for p in model['ports'])
-                exc = next(int(p['number']) for p in model['ports'] if p.get('excite'))
-                for n in port_nums:
-                    if n == exc:
-                        continue
-                    m2 = json.loads(json.dumps(model))
-                    for q in m2['ports']:
-                        q['excite'] = (int(q['number']) == n)
+            excited = sorted(int(p['number']) for p in (model.get('ports') or [])
+                             if p.get('excite'))
+            if not excited:
+                raise ValidationError('No excited port - mark at least one '
+                                      'port as the excitation source')
+
+            def stage_model(n, dumps):
+                m2 = json.loads(json.dumps(model))
+                for q in m2['ports']:
+                    q['excite'] = (int(q['number']) == n)
+                if not dumps:
                     m2['sim']['dumpJ'] = False
                     m2['sim']['dumpJt'] = False
-                    stages.append({'dir': sim_dir / f'exc_{n}', 'model': m2, 'exc': n})
-                stages.append({'dir': sim_dir, 'model': model, 'exc': exc})
+                return m2
+
+            # stage list; the primary excitation runs last in the run root
+            # (that run carries the field dumps)
+            stages = []
+            exc = excited[0]
+            if devices or full_s:
+                # devices / full S-matrix: one excitation run per port
+                sweep = sorted(int(p['number']) for p in model['ports'])
+            elif len(excited) > 1:
+                # user-selected subset of excitations
+                sweep = excited
             else:
-                stages.append({'dir': sim_dir, 'model': model, 'exc': None})
+                sweep = [exc]
+            for n in sweep:
+                if n == exc:
+                    continue
+                stages.append({'dir': sim_dir / f'exc_{n}',
+                               'model': stage_model(n, False), 'exc': n})
+            stages.append({'dir': sim_dir, 'model': stage_model(exc, True),
+                           'exc': exc if len(sweep) > 1 else None})
+            merge_only = not (devices or full_s) and len(sweep) > 1
             # validate every stage before anything runs
             for st in stages:
                 st['script'] = generate_script(st['model'])
@@ -289,6 +340,7 @@ class Runner:
             self.base_model = model
             self.stages = stages
             self.stage_idx = 0
+            self.merge_only = merge_only
             sim = model.get('sim') or {}
             self.nrts = max(1, int(sim.get('maxTimesteps') or 30000))
             self.end_db = float(sim.get('endCriteria') or -40.0)
@@ -447,13 +499,18 @@ class Runner:
             # all stages finished
             if len(self.stages) > 1:
                 try:
-                    combine_devices(SIM_ROOT / self.run_id, self.base_model,
-                                    self.stages, self.devices)
-                    self._append_line('GUI_MARKER: full S-matrix assembled'
-                                      + (' and device networks folded' if self.devices else ''))
+                    if self.merge_only:
+                        merge_excitations(SIM_ROOT / self.run_id,
+                                          self.base_model, self.stages)
+                        self._append_line('GUI_MARKER: excitation columns merged')
+                    else:
+                        combine_devices(SIM_ROOT / self.run_id, self.base_model,
+                                        self.stages, self.devices)
+                        self._append_line('GUI_MARKER: full S-matrix assembled'
+                                          + (' and device networks folded' if self.devices else ''))
                 except Exception as e:
                     self.state = 'error'
-                    self.error = f'device combination failed: {e}'
+                    self.error = f'combining the excitation runs failed: {e}'
                     return
             self.percent = 100.0
             self.state = 'done'
@@ -581,11 +638,21 @@ def index():
 
 @app.post('/api/script')
 def api_script():
+    model = request.get_json(force=True)
+    # a script can only excite one port - keep the primary (lowest-numbered)
+    excited = sorted(int(p['number']) for p in (model.get('ports') or [])
+                     if p.get('excite'))
+    note = None
+    if len(excited) > 1:
+        for p in model['ports']:
+            p['excite'] = (int(p['number']) == excited[0])
+        note = (f'{len(excited)} ports are marked excited - the exported '
+                f'script excites port {excited[0]} only')
     try:
-        script = generate_script(request.get_json(force=True))
+        script = generate_script(model)
     except ValidationError as e:
         return jsonify({'error': str(e)}), 400
-    return jsonify({'script': script})
+    return jsonify({'script': script, 'note': note})
 
 
 @app.post('/api/run')

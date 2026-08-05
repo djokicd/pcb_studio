@@ -77,9 +77,12 @@ function migrate(p) {
 const app = {
   project: defaultProject(),
   selection: null,
+  multi: [],            // [{kind,id}] marquee multi-selection
   tool: 'select',
   activeLayer: 'top',
   snapStep: 0.5,
+  snapMode: 'xy',       // 'xy' | 'x' | 'y'
+  snapCorners: false,
   editor: null,
   meshVisible: false,
   meshData: null,
@@ -140,9 +143,36 @@ const app = {
   /* ---------- selection / creation ---------- */
   select(kind, id) {
     this.selection = kind ? { kind, id } : null;
+    this.multi = [];
     renderObjList();
     renderProps();
     this.editor.render();
+  },
+  selectMulti(items) {
+    this.selection = null;
+    this.multi = items || [];
+    renderObjList();
+    renderProps();
+    this.editor.render();
+  },
+  isMulti(kind, id) {
+    return this.multi.some(m => m.kind === kind && m.id === id);
+  },
+  multiObjs() {
+    const lists = { shape: 'shapes', via: 'vias', component: 'components', port: 'ports' };
+    return this.multi
+      .map(m => ({ kind: m.kind, obj: this.project[lists[m.kind]].find(o => o.id === m.id) }))
+      .filter(x => x.obj);
+  },
+  selectAllObjects() {
+    const items = [
+      ...this.project.shapes.map(o => ({ kind: 'shape', id: o.id })),
+      ...this.project.vias.map(o => ({ kind: 'via', id: o.id })),
+      ...this.project.components.map(o => ({ kind: 'component', id: o.id })),
+      ...this.project.ports.map(o => ({ kind: 'port', id: o.id })),
+    ];
+    if (items.length === 1) this.select(items[0].kind, items[0].id);
+    else if (items.length) this.selectMulti(items);
   },
 
   ensureActiveLayer() {
@@ -220,9 +250,18 @@ const app = {
   },
 
   deleteSelection() {
+    const lists = { shape: 'shapes', via: 'vias', component: 'components', port: 'ports' };
+    if (this.multi.length) {
+      for (const m of this.multi) {
+        const key = lists[m.kind];
+        this.project[key] = this.project[key].filter(o => o.id !== m.id);
+      }
+      this.select(null);
+      this.dirty();
+      return;
+    }
     const sel = this.selection;
     if (!sel) return;
-    const lists = { shape: 'shapes', via: 'vias', component: 'components', port: 'ports' };
     const key = lists[sel.kind];
     this.project[key] = this.project[key].filter(o => o.id !== sel.id);
     this.select(null);
@@ -237,39 +276,49 @@ const app = {
   /* ---------- clipboard ---------- */
   clipboard: null,
   copySelection(cut = false) {
-    const sel = this.editor.selectedObj();
-    if (!sel) { uiNotice('Nothing selected to copy.', 'warn', 2500); return false; }
-    this.clipboard = { kind: sel.kind, data: JSON.parse(JSON.stringify(sel.obj)) };
+    const items = this.multi.length
+      ? this.multiObjs()
+      : (this.editor.selectedObj() ? [this.editor.selectedObj()] : []);
+    if (!items.length) { uiNotice('Nothing selected to copy.', 'warn', 2500); return false; }
+    this.clipboard = {
+      items: items.map(s => ({ kind: s.kind, data: JSON.parse(JSON.stringify(s.obj)) })),
+    };
     if (cut) this.deleteSelection();
-    uiNotice((cut ? 'Cut' : 'Copied') + ' — Ctrl+V pastes.', 'info', 2000);
+    uiNotice((cut ? 'Cut' : 'Copied')
+      + (items.length > 1 ? ` ${items.length} objects` : '') + ' — Ctrl+V pastes.', 'info', 2000);
     return true;
   },
   pasteClipboard() {
     const cb = this.clipboard;
-    if (!cb) { uiNotice('Clipboard is empty.', 'warn', 2500); return; }
+    if (!cb || !cb.items || !cb.items.length) { uiNotice('Clipboard is empty.', 'warn', 2500); return; }
     const p = this.project;
-    const obj = JSON.parse(JSON.stringify(cb.data));
-    obj.id = p.nextId++;
     const off = Math.max(this.snapStep || 0.5, 1);
-    this.editor.translate({ kind: cb.kind, obj }, off, -off);
-    if (cb.kind === 'port') {
-      obj.number = p.ports.length ? Math.max(...p.ports.map(q => q.number)) + 1 : 1;
-      obj.excite = false;
-      p.ports.push(obj);
-    } else if (cb.kind === 'component') {
-      let n = p.components.length + 1;
-      while (p.components.some(c => c.ref === obj.ctype + n)) n++;
-      obj.ref = obj.ctype + n;
-      p.components.push(obj);
-    } else if (cb.kind === 'via') {
-      p.vias.push(obj);
-    } else {
-      obj.name = (obj.name || obj.type || 'shape') + '_copy';
-      p.shapes.push(obj);
+    const pasted = [];
+    for (const it of cb.items) {
+      const obj = JSON.parse(JSON.stringify(it.data));
+      obj.id = p.nextId++;
+      this.editor.translate({ kind: it.kind, obj }, off, -off);
+      if (it.kind === 'port') {
+        obj.number = p.ports.length ? Math.max(...p.ports.map(q => q.number)) + 1 : 1;
+        obj.excite = false;
+        p.ports.push(obj);
+      } else if (it.kind === 'component') {
+        let n = p.components.length + 1;
+        while (p.components.some(c => c.ref === obj.ctype + n)) n++;
+        obj.ref = obj.ctype + n;
+        p.components.push(obj);
+      } else if (it.kind === 'via') {
+        p.vias.push(obj);
+      } else {
+        obj.name = (obj.name || obj.type || 'shape') + '_copy';
+        p.shapes.push(obj);
+      }
+      // keep the clipboard source position so repeated pastes cascade
+      it.data = JSON.parse(JSON.stringify(obj));
+      pasted.push({ kind: it.kind, id: obj.id });
     }
-    // keep the clipboard source position so repeated pastes cascade
-    cb.data = JSON.parse(JSON.stringify(obj));
-    this.select(cb.kind, obj.id);
+    if (pasted.length === 1) this.select(pasted[0].kind, pasted[0].id);
+    else this.selectMulti(pasted);
     this.dirty();
   },
 
@@ -376,6 +425,23 @@ function validateProject() {
       w.push(`${dev.ref}: sweep exceeds the touchstone range `
         + `(${(lib.fmin / 1e9).toFixed(2)}–${(lib.fmax / 1e9).toFixed(2)} GHz) — data will be clamped`);
   }
+  // layers referenced by objects must exist as conductors (e.g. after
+  // applying a different stackup from the manager)
+  const condIds = new Set(app.conductorLayers().map(l => l.id));
+  for (const sh of p.shapes) {
+    if (!condIds.has(sh.layer)) {
+      w.push(`"${sh.name || sh.type}" references a missing conductor layer "${sh.layer}"`);
+      break;   // one report is enough for a bulk stackup change
+    }
+  }
+  for (const c of p.components) {
+    if (!condIds.has(c.layer)) { w.push(`${c.ref} references a missing conductor layer`); break; }
+  }
+  for (const v of p.vias) {
+    if (!condIds.has(v.from) || !condIds.has(v.to)) { w.push('a via references a missing conductor layer'); break; }
+  }
+  if (p.ports.length && !p.ports.some(q => q.excite))
+    w.push('No port is excited — mark at least one port as the excitation source');
   const s = p.sim;
   if (s.fStart && s.fStop && s.fStart < s.fStop / 10) {
     w.push(`Very wide band (${s.fStart}–${s.fStop} GHz): the pulse then contains near-DC energy `
@@ -450,6 +516,7 @@ function uiPrompt(msg, value = '', okLabel = 'OK') {
     inp.value = value;
     $('uiConfirmWrap').hidden = false;
     inp.focus();
+    inp.select();   // typing replaces the prefilled suggestion
     const done = v => {
       $('uiConfirmWrap').hidden = true;
       inp.hidden = true;
@@ -473,7 +540,8 @@ function renderObjList() {
   const add = (kind, obj, color, label, tag) => {
     if (++count > MAX_LIST) return;
     const li = document.createElement('li');
-    if (app.selection && app.selection.kind === kind && app.selection.id === obj.id) li.classList.add('selected');
+    if ((app.selection && app.selection.kind === kind && app.selection.id === obj.id) ||
+        app.isMulti(kind, obj.id)) li.classList.add('selected');
     const chip = document.createElement('span');
     chip.className = 'chip';
     chip.style.background = color;
@@ -490,15 +558,15 @@ function renderObjList() {
   for (const p of app.project.ports) {
     const pin = app.devicePin(p.number);
     add('port', p,
-      pin ? '#9085e9' : p.ptype === 'msl' ? '#0ca378' : '#0ca30c',
+      pin ? ED.pin : p.ptype === 'msl' ? ED.msl : ED.port,
       `${p.ptype === 'msl' ? 'MSL port' : 'Port'} ${p.number}${p.excite ? ' *' : ''}`,
       pin ? `${pin.ref}.${pin.name}`
         : (p.ptype === 'msl' ? (p.orient || '+x') : p.direction) + (p.excite ? ' exc' : ''));
   }
   for (const c of app.project.components)
-    add('component', c, '#b9b9b3', app.compLabel(c), c.package);
+    add('component', c, ED.compCap, app.compLabel(c), c.package);
   for (const v of app.project.vias)
-    add('via', v, '#c3c2b7', `via (${v.x.toFixed(1)}, ${v.y.toFixed(1)})`, `${app.layerName(v.from)}→${app.layerName(v.to)}`);
+    add('via', v, ED.via, `via (${v.x.toFixed(1)}, ${v.y.toFixed(1)})`, `${app.layerName(v.from)}→${app.layerName(v.to)}`);
   for (const s of app.project.shapes)
     add('shape', s, app.layerColor(s.layer), s.name || s.type, app.layerName(s.layer));
   if (total > MAX_LIST) {
@@ -545,6 +613,24 @@ function layerSel(value, onchange) {
 
 function renderProps() {
   const body = $('propsBody');
+  if (app.multi.length) {
+    const objs = app.multiObjs();
+    const byKind = {};
+    for (const o of objs) byKind[o.kind] = (byKind[o.kind] || 0) + 1;
+    const kinds = { shape: 'shape', via: 'via', component: 'component', port: 'port' };
+    body.innerHTML = '';
+    const p = document.createElement('p');
+    p.innerHTML = `<b>${objs.length} objects selected</b><br><span class="muted">`
+      + Object.entries(byKind).map(([k, n]) => `${n} ${kinds[k]}${n > 1 ? 's' : ''}`).join(', ')
+      + '</span><br><span class="muted">Drag to move together · arrows nudge · Ctrl+C copies</span>';
+    body.append(p);
+    const del = document.createElement('button');
+    del.className = 'danger';
+    del.textContent = `Delete ${objs.length} objects`;
+    del.onclick = () => app.deleteSelection();
+    body.append(del);
+    return;
+  }
   const sel = app.editor && app.editor.selectedObj();
   if (!sel) {
     body.innerHTML = '<p class="muted">Nothing selected.<br>Click an object or draw a new one.</p>';
@@ -561,11 +647,11 @@ function renderProps() {
   chip.className = 'chip';
   const heads = {
     shape: () => [app.layerColor(obj.layer), obj.name || obj.type],
-    via: () => ['#c3c2b7', 'Via'],
-    component: () => ['#b9b9b3', app.compLabel(obj)],
+    via: () => [ED.via, 'Via'],
+    component: () => [ED.compCap, app.compLabel(obj)],
     port: () => obj.ptype === 'msl'
-      ? ['#0ca378', `MSL port ${obj.number}`]
-      : ['#0ca30c', `Lumped port ${obj.number}`],
+      ? [ED.msl, `MSL port ${obj.number}`]
+      : [ED.port, `Lumped port ${obj.number}`],
   };
   const [color, txt] = heads[kind]();
   chip.style.background = color;
@@ -649,13 +735,11 @@ function renderProps() {
     form.append(note);
     const excI0 = document.createElement('input');
     excI0.type = 'checkbox'; excI0.checked = !!obj.excite;
-    excI0.addEventListener('change', () => {
-      if (excI0.checked) app.project.ports.forEach(q => { q.excite = (q === obj); });
-      else obj.excite = false;
-      rerender();
-    });
+    excI0.addEventListener('change', () => { obj.excite = excI0.checked; rerender(); });
     const excL0 = document.createElement('label');
     excL0.className = 'check';
+    excL0.title = 'With several excited ports the run launches one excitation per '
+      + 'port and merges the S-parameter columns';
     excL0.append(excI0, document.createTextNode(' Excited port (source)'));
     form.append(excL0);
     F('x (mm)', numIn(obj.x, 0.1, v => { obj.x = v; upd(); }));
@@ -675,13 +759,11 @@ function renderProps() {
     F('Impedance (Ω)', numIn(obj.impedance, 1, v => { obj.impedance = v; upd(); }));
     const excI = document.createElement('input');
     excI.type = 'checkbox'; excI.checked = !!obj.excite;
-    excI.addEventListener('change', () => {
-      if (excI.checked) app.project.ports.forEach(q => { q.excite = (q === obj); });
-      else obj.excite = false;
-      rerender();
-    });
+    excI.addEventListener('change', () => { obj.excite = excI.checked; rerender(); });
     const excL = document.createElement('label');
     excL.className = 'check';
+    excL.title = 'With several excited ports the run launches one excitation per '
+      + 'port and merges the S-parameter columns';
     excL.append(excI, document.createTextNode(' Excited port (source)'));
     form.append(excL);
     F('x (mm)', numIn(obj.x, 0.1, v => { obj.x = v; upd(); }));
@@ -979,15 +1061,15 @@ function drawSpeedChart(canvas, samples, nrts) {
   ctx.lineWidth = 1;
   for (const f of [0.5, 1]) {
     const v = Math.round(vMax * f / 1.15);
-    ctx.strokeStyle = '#2c2c2a';
+    ctx.strokeStyle = CH.grid;
     ctx.beginPath(); ctx.moveTo(m.l, py(v)); ctx.lineTo(w - m.r, py(v)); ctx.stroke();
-    ctx.fillStyle = '#898781';
+    ctx.fillStyle = CH.muted;
     ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
     ctx.fillText(String(v), m.l - 4, py(v));
   }
-  ctx.strokeStyle = '#383835';
+  ctx.strokeStyle = CH.axis;
   ctx.strokeRect(m.l, m.t, w - m.l - m.r, h - m.t - m.b);
-  ctx.fillStyle = '#898781';
+  ctx.fillStyle = CH.muted;
   ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
   ctx.fillText('MCells/s vs timestep', w - m.r - 2, h - m.b - 2);
   if (pts.length) {
@@ -1022,13 +1104,13 @@ function drawRunChart(canvas, samples, nrts, endDb) {
   ctx.font = '10px system-ui';
   ctx.lineWidth = 1;
   for (const v of [0, -20, -40, -60, -80].filter(v => v >= yLo)) {
-    ctx.strokeStyle = '#2c2c2a';
+    ctx.strokeStyle = CH.grid;
     ctx.beginPath(); ctx.moveTo(m.l, py(v)); ctx.lineTo(w - m.r, py(v)); ctx.stroke();
-    ctx.fillStyle = '#898781';
+    ctx.fillStyle = CH.muted;
     ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
     ctx.fillText(String(v), m.l - 4, py(v));
   }
-  ctx.strokeStyle = '#383835';
+  ctx.strokeStyle = CH.axis;
   ctx.strokeRect(m.l, m.t, w - m.l - m.r, h - m.t - m.b);
   // end-criteria target
   ctx.strokeStyle = '#0ca30c';
@@ -1038,7 +1120,7 @@ function drawRunChart(canvas, samples, nrts, endDb) {
   ctx.fillStyle = '#0ca30c';
   ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
   ctx.fillText(`target ${endDb} dB`, m.l + 4, py(endDb) - 2);
-  ctx.fillStyle = '#898781';
+  ctx.fillStyle = CH.muted;
   ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
   ctx.fillText('timesteps', w - m.r - 2, h - m.b - 2);
   if (pts.length) {
@@ -1163,7 +1245,7 @@ async function loadResults(runId) {
     const nAll = app.project.ports.length;
     const nExt = nAll - (app.project.devices || [])
       .reduce((a, d) => a + (d.pins ? d.pins.length : 0), 0);
-    for (const name of [`board_full.s${nAll}p`, `combined.s${nExt}p`, 'sparams_board.csv']) {
+    for (const name of [`board_full.s${nAll}p`, `combined.s${nExt}p`, 'sparams_board.csv', 'sparams_primary.csv']) {
       const r = await fetch(`/api/results/${runId}/file/${name}`, { method: 'GET' });
       if (r.ok) {
         const a = document.createElement('a');
@@ -1953,13 +2035,281 @@ async function openProjectsModal() {
   }
 }
 
+/* ---------- ui settings: theme, colors, snap (persisted) ---------- */
+const uiSettings = (() => {
+  let s = { theme: 'dark', colors: {}, snapStep: 0.5, snapMode: 'xy', snapCorners: false };
+  try { s = { ...s, ...JSON.parse(localStorage.getItem('openems_ui') || '{}') }; } catch (e) { /* defaults */ }
+  s.colors = s.colors || {};
+  return s;
+})();
+function saveUiSettings() {
+  try { localStorage.setItem('openems_ui', JSON.stringify(uiSettings)); } catch (e) { /* ignore */ }
+}
+
+function applyColorPrefs() {
+  const c = uiSettings.colors || {};
+  LAYER_COLORS_DEFAULT.forEach((v, i) => { LAYER_COLORS[i] = v; });
+  (c.layers || []).forEach((v, i) => { if (v && i < LAYER_COLORS.length) LAYER_COLORS[i] = v; });
+  for (const k of ['port', 'msl', 'pin']) if (c[k]) ED[k] = c[k];
+}
+function redrawAll() {
+  if (!app.editor) return;
+  app.editor.render();
+  renderStackup();
+  renderObjList();
+  renderProps();
+  if (app.sparams && !$('results').hidden) renderCharts();
+  if (app.jview && app.jview.data) app.jview.render();
+  if (app._lastRunStat) updateRunStats(app._lastRunStat);
+}
+function applyTheme() {
+  const light = uiSettings.theme === 'light';
+  document.body.classList.toggle('light', light);
+  Object.assign(ED, ED_THEMES[light ? 'light' : 'dark']);
+  Object.assign(CH, CH_THEMES[light ? 'light' : 'dark']);
+  applyColorPrefs();
+  redrawAll();
+}
+function toggleTheme() {
+  uiSettings.theme = uiSettings.theme === 'light' ? 'dark' : 'light';
+  saveUiSettings();
+  applyTheme();
+}
+
+/* ---------- colors modal ---------- */
+const COLOR_FIELDS = [
+  ...LAYER_COLORS_DEFAULT.map((c, i) => ({ key: `layer${i}`, label: `Layer color ${i + 1}`,
+    get: () => LAYER_COLORS[i], set: v => { uiSettings.colors.layers = uiSettings.colors.layers || []; uiSettings.colors.layers[i] = v; } })),
+  { key: 'port', label: 'Lumped port', get: () => ED.port, set: v => { uiSettings.colors.port = v; } },
+  { key: 'msl', label: 'MSL port', get: () => ED.msl, set: v => { uiSettings.colors.msl = v; } },
+  { key: 'pin', label: 'Device pin', get: () => ED.pin, set: v => { uiSettings.colors.pin = v; } },
+];
+function openColorsModal() {
+  const body = $('colorsBody');
+  body.innerHTML = '';
+  for (const f of COLOR_FIELDS) {
+    const lab = document.createElement('label');
+    const inp = document.createElement('input');
+    inp.type = 'color';
+    inp.value = f.get();
+    inp.addEventListener('input', () => {
+      f.set(inp.value);
+      saveUiSettings();
+      applyColorPrefs();
+      redrawAll();
+    });
+    lab.append(document.createTextNode(f.label + ' '), inp);
+    body.append(lab);
+  }
+  $('colorsModal').hidden = false;
+}
+
+/* ---------- stackup manager ---------- */
+function stackLib() {
+  try { return JSON.parse(localStorage.getItem('openems_stackups') || '[]'); } catch (e) { return []; }
+}
+function saveStackLib(lib) {
+  try { localStorage.setItem('openems_stackups', JSON.stringify(lib)); } catch (e) { /* ignore */ }
+}
+function defaultStackup() {
+  try {
+    const d = JSON.parse(localStorage.getItem('openems_default_stackup') || 'null');
+    return Array.isArray(d) && d.length ? d : null;
+  } catch (e) { return null; }
+}
+function stackupSummary(st) {
+  const c = st.filter(l => l.type === 'conductor').length;
+  return `${st.length} layers (${c} cond, ${st.length - c} diel)`;
+}
+async function applyStackup(st) {
+  if (!(await uiConfirm('Replace the current stackup?\n\nObjects that reference '
+      + 'layers missing from the new stackup are flagged as design-rule warnings.', 'Replace'))) return;
+  app.project.stackup = JSON.parse(JSON.stringify(st));
+  stackChanged();
+  $('stackModal').hidden = true;
+  uiNotice('Stackup applied.');
+}
+function renderStackupManager() {
+  const list = $('stackList');
+  const lib = stackLib();
+  const def = JSON.stringify(defaultStackup());
+  list.innerHTML = '';
+  if (!lib.length) {
+    list.innerHTML = '<li class="muted">No saved stackups yet — use "Save current as…".</li>';
+    return;
+  }
+  for (const entry of lib) {
+    const li = document.createElement('li');
+    const star = document.createElement('button');
+    const isDef = JSON.stringify(entry.stackup) === def;
+    star.className = 'pdel star' + (isDef ? ' on' : '');
+    star.textContent = isDef ? '★' : '☆';
+    star.title = isDef ? 'Default stackup for new projects — click to unset'
+      : 'Use this stackup for new projects';
+    star.onclick = e => {
+      e.stopPropagation();
+      try {
+        if (isDef) localStorage.removeItem('openems_default_stackup');
+        else localStorage.setItem('openems_default_stackup', JSON.stringify(entry.stackup));
+      } catch (err) { /* ignore */ }
+      renderStackupManager();
+    };
+    const nm = document.createElement('span');
+    nm.className = 'pname';
+    nm.textContent = entry.name;
+    const meta = document.createElement('span');
+    meta.className = 'pmeta';
+    meta.textContent = stackupSummary(entry.stackup);
+    const del = document.createElement('button');
+    del.className = 'pdel';
+    del.textContent = '✕';
+    del.title = 'Remove from the library';
+    del.onclick = e => {
+      e.stopPropagation();
+      saveStackLib(stackLib().filter(x => x.name !== entry.name));
+      renderStackupManager();
+    };
+    li.title = 'Click to apply this stackup to the current project';
+    li.onclick = () => applyStackup(entry.stackup);
+    li.append(star, nm, meta, del);
+    list.append(li);
+  }
+}
+function openStackupManager() {
+  renderStackupManager();
+  $('stackModal').hidden = false;
+}
+async function stackupSaveAs() {
+  const name = await uiPrompt('Save the current stackup as:',
+    (app.project.name || 'stackup'), 'Save');
+  if (!name) return;
+  const lib = stackLib().filter(x => x.name !== name);
+  lib.push({ name, stackup: JSON.parse(JSON.stringify(app.project.stackup)) });
+  saveStackLib(lib);
+  renderStackupManager();
+  uiNotice(`Stackup "${name}" saved to the library.`);
+}
+function stackupExport() {
+  download((app.project.name || 'stackup') + '.stackup.json',
+    JSON.stringify({ stackup: app.project.stackup }, null, 2), 'application/json');
+}
+async function stackupImportFile(file) {
+  try {
+    const data = JSON.parse(await file.text());
+    const st = Array.isArray(data) ? data : data.stackup;
+    if (!Array.isArray(st) || !st.length || !st.every(l => l.id && l.type))
+      throw new Error('not a stackup file (expected {stackup:[…]} or a layer array)');
+    const name = file.name.replace(/\.stackup\.json$|\.json$/i, '');
+    const lib = stackLib().filter(x => x.name !== name);
+    lib.push({ name, stackup: st });
+    saveStackLib(lib);
+    renderStackupManager();
+    uiNotice(`Imported stackup "${name}" — click it in the list to apply.`);
+  } catch (e) {
+    uiNotice('Stackup import failed: ' + e.message, 'err', 8000);
+  }
+}
+
+/* ---------- menu bar ---------- */
+function initMenus() {
+  const bar = $('menubar');
+  let open = null;
+  const closeAll = () => {
+    bar.querySelectorAll('.menu.open').forEach(m => m.classList.remove('open'));
+    open = null;
+  };
+  const openMenu = m => {
+    closeAll();
+    m.classList.add('open');
+    open = m;
+    updateMenuChecks();
+  };
+  bar.querySelectorAll('.menu').forEach(m => {
+    const btn = m.querySelector('.menu-btn');
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      m.classList.contains('open') ? closeAll() : openMenu(m);
+    });
+    btn.addEventListener('mouseenter', () => { if (open && open !== m) openMenu(m); });
+  });
+  window.addEventListener('click', closeAll);
+  window.addEventListener('keydown', e => { if (e.key === 'Escape') closeAll(); });
+  bar.addEventListener('click', e => {
+    const item = e.target.closest('[data-action]');
+    if (!item) return;
+    e.stopPropagation();
+    closeAll();
+    const fn = MENU_ACTIONS[item.dataset.action];
+    if (fn) fn();
+  });
+}
+function updateMenuChecks() {
+  const set = (name, on) => {
+    const el = $('menubar').querySelector(`[data-check="${name}"]`);
+    if (el) el.classList.toggle('checked', !!on);
+  };
+  set('grid', app.gridVisible);
+  set('mesh', app.meshVisible);
+  set('light', uiSettings.theme === 'light');
+}
+
+async function newProject() {
+  if (!(await uiConfirm('Start a new empty project?\n\nThe current project is replaced (save it first if you want to keep it).', 'New project'))) return;
+  const p = defaultProject();
+  p.name = '';   // shows as "Unsaved" until saved or opened from a file
+  p.shapes = []; p.ports = []; p.vias = []; p.components = [];
+  const def = defaultStackup();
+  if (def) p.stackup = JSON.parse(JSON.stringify(def));
+  loadProject(p);
+  uiNotice('New empty project started' + (def ? ' with your default stackup.' : '.'));
+}
+async function saveProjectAs() {
+  const name = await uiPrompt('Save the project on the server as:',
+    app.project.name || '', 'Save');
+  if (!name) return;
+  app.project.name = name;
+  formsFromModel();
+  await saveProjectToServer();
+}
+
+const MENU_ACTIONS = {
+  new: newProject,
+  open: openProjectsModal,
+  save: saveProjectToServer,
+  saveAs: saveProjectAs,
+  importJson: () => $('fileInput').click(),
+  exportCfg: () => download((app.project.name || 'unsaved') + '.json',
+    JSON.stringify(app.project, null, 2), 'application/json'),
+  exportM: () => exportScript(),
+  run: () => startRun(),
+  stop: () => stopRun(),
+  copy: () => app.copySelection(false),
+  cut: () => app.copySelection(true),
+  paste: () => app.pasteClipboard(),
+  duplicate: () => { if (app.copySelection(false)) app.pasteClipboard(); },
+  delete: () => app.deleteSelection(),
+  selectAll: () => app.selectAllObjects(),
+  grid: () => $('btnGrid').click(),
+  mesh: () => $('btnMesh').click(),
+  fit: () => app.editor.zoomFit(),
+  theme: toggleTheme,
+  colors: openColorsModal,
+  toolSelect: () => app.setTool('select'),
+  toolMeasure: () => app.setTool('measure'),
+  stackman: openStackupManager,
+  shortcuts: () => { $('helpModal').hidden = false; },
+  about: () => uiNotice('OpenEMS PCB Studio — a browser GUI for openEMS FDTD '
+    + 'simulations of PCB structures via GNU Octave.', 'info', 8000),
+};
+
 /* ---------- export / save / open ---------- */
 async function exportScript() {
   try {
-    const { script } = await apiJson('/api/script', {
+    const { script, note } = await apiJson('/api/script', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(app.project),
     });
+    if (note) uiNotice(note, 'warn', 7000);
     download((app.project.name || 'pcb_sim') + '.m', script, 'text/plain');
   } catch (e) {
     uiNotice('Cannot generate script:\n' + e.message, 'err', 8000);
@@ -1992,20 +2342,47 @@ window.addEventListener('DOMContentLoaded', () => {
   app.jview = new JView($('jCanvas'), $('jInfo'), $('jMax'));
   Modal.init();
   initTabs();
+  initMenus();
   bindForms();
+  applyTheme();
   loadProject(saved || defaultProject());
   requestAnimationFrame(() => app.editor.zoomFit());
 
   // tools
   const setTool = t => {
     if (app.tool === 'poly' && t !== 'poly') app.editor.cancelPoly();
+    if (app.tool === 'measure' && t !== 'measure') { app.editor.measure = null; app.editor.render(); }
     app.tool = t;
     document.querySelectorAll('#toolButtons .tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
   };
+  app.setTool = setTool;
   document.querySelectorAll('#toolButtons .tool').forEach(btn =>
     btn.addEventListener('click', () => setTool(btn.dataset.tool)));
   $('activeLayer').addEventListener('change', e => { app.activeLayer = e.target.value; });
-  $('snapSel').addEventListener('change', e => { app.snapStep = parseFloat(e.target.value); });
+  // snap: arbitrary resolution, axis mode, corner snapping (persisted)
+  app.snapStep = parseFloat(uiSettings.snapStep) || 0;
+  if (uiSettings.snapStep === 0) app.snapStep = 0;
+  app.snapMode = uiSettings.snapMode || 'xy';
+  app.snapCorners = !!uiSettings.snapCorners;
+  $('snapStep').value = app.snapStep;
+  $('snapMode').value = app.snapMode;
+  $('snapCorners').checked = app.snapCorners;
+  $('snapStep').addEventListener('change', e => {
+    const v = parseFloat(e.target.value);
+    app.snapStep = isFinite(v) && v > 0 ? v : 0;
+    uiSettings.snapStep = app.snapStep;
+    saveUiSettings();
+  });
+  $('snapMode').addEventListener('change', e => {
+    app.snapMode = e.target.value;
+    uiSettings.snapMode = app.snapMode;
+    saveUiSettings();
+  });
+  $('snapCorners').addEventListener('change', e => {
+    app.snapCorners = e.target.checked;
+    uiSettings.snapCorners = app.snapCorners;
+    saveUiSettings();
+  });
   $('btnFit').addEventListener('click', () => app.editor.zoomFit());
   $('btnGrid').addEventListener('click', () => {
     app.gridVisible = !app.gridVisible;
@@ -2016,10 +2393,7 @@ window.addEventListener('DOMContentLoaded', () => {
     btn.addEventListener('click', () => showView(btn.dataset.view)));
 
   // resizable right panel
-  const uiPrefs = (() => {
-    try { return JSON.parse(localStorage.getItem('openems_ui') || '{}'); } catch (e) { return {}; }
-  })();
-  if (uiPrefs.rightW) $('right').style.width = uiPrefs.rightW + 'px';
+  if (uiSettings.rightW) $('right').style.width = uiSettings.rightW + 'px';
   $('rightSplit').addEventListener('mousedown', e => {
     e.preventDefault();
     $('rightSplit').classList.add('active');
@@ -2031,8 +2405,8 @@ window.addEventListener('DOMContentLoaded', () => {
       $('rightSplit').classList.remove('active');
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
-      uiPrefs.rightW = parseInt($('right').style.width, 10) || 320;
-      try { localStorage.setItem('openems_ui', JSON.stringify(uiPrefs)); } catch (err) { /* ignore */ }
+      uiSettings.rightW = parseInt($('right').style.width, 10) || 320;
+      saveUiSettings();
       if (app._lastRunStat) updateRunStats(app._lastRunStat);
     };
     window.addEventListener('mousemove', move);
@@ -2062,21 +2436,7 @@ window.addEventListener('DOMContentLoaded', () => {
     else { $('meshInfo').textContent = ''; app.editor.render(); }
   });
 
-  // top bar
-  $('btnNew').addEventListener('click', async () => {
-    if (!(await uiConfirm('Start a new empty project?\n\nThe current project is replaced (save it as JSON first if you want to keep it).', 'New project'))) return;
-    const p = defaultProject();
-    p.name = '';   // shows as "Unsaved" until saved or opened from a file
-    p.shapes = []; p.ports = []; p.vias = []; p.components = [];
-    loadProject(p);
-    uiNotice('New empty project started.');
-  });
-  $('btnSave').addEventListener('click', saveProjectToServer);
-  $('btnExportCfg').addEventListener('click', () => {
-    download((app.project.name || 'unsaved') + '.json',
-      JSON.stringify(app.project, null, 2), 'application/json');
-  });
-  $('btnOpen').addEventListener('click', openProjectsModal);
+  // top bar + modals
   $('projClose').addEventListener('click', () => { $('projModal').hidden = true; });
   $('projModal').addEventListener('click', e => {
     if (e.target === $('projModal')) $('projModal').hidden = true;
@@ -2095,9 +2455,38 @@ window.addEventListener('DOMContentLoaded', () => {
     } catch (err) { uiNotice('Not a valid project file: ' + err.message, 'err', 8000); }
     e.target.value = '';
   });
-  $('btnExport').addEventListener('click', exportScript);
   $('btnRun').addEventListener('click', startRun);
   $('btnStop').addEventListener('click', stopRun);
+
+  // stackup manager / colors / help modals
+  $('stackClose').addEventListener('click', () => { $('stackModal').hidden = true; });
+  $('stackModal').addEventListener('click', e => {
+    if (e.target === $('stackModal')) $('stackModal').hidden = true;
+  });
+  $('stackSaveAs').addEventListener('click', stackupSaveAs);
+  $('stackExport').addEventListener('click', stackupExport);
+  $('stackImport').addEventListener('click', () => $('stackFileInput').click());
+  $('stackFileInput').addEventListener('change', async e => {
+    const f = e.target.files[0];
+    if (f) await stackupImportFile(f);
+    e.target.value = '';
+  });
+  $('btnStackMan').addEventListener('click', openStackupManager);
+  $('colorsClose').addEventListener('click', () => { $('colorsModal').hidden = true; });
+  $('colorsOk').addEventListener('click', () => { $('colorsModal').hidden = true; });
+  $('colorsModal').addEventListener('click', e => {
+    if (e.target === $('colorsModal')) $('colorsModal').hidden = true;
+  });
+  $('colorsReset').addEventListener('click', () => {
+    uiSettings.colors = {};
+    saveUiSettings();
+    applyTheme();
+    openColorsModal();   // rebuild the inputs with the defaults
+  });
+  $('helpClose').addEventListener('click', () => { $('helpModal').hidden = true; });
+  $('helpModal').addEventListener('click', e => {
+    if (e.target === $('helpModal')) $('helpModal').hidden = true;
+  });
 
   // fabrication data import
   $('gerberInput').addEventListener('change', async e => {
@@ -2281,13 +2670,15 @@ window.addEventListener('DOMContentLoaded', () => {
       else if (k === 'x') { app.copySelection(true); e.preventDefault(); }
       else if (k === 'v') { app.pasteClipboard(); e.preventDefault(); }
       else if (k === 'd') { if (app.copySelection(false)) app.pasteClipboard(); e.preventDefault(); }
+      else if (k === 'a') { app.selectAllObjects(); e.preventDefault(); }
       return;   // never treat ctrl-combos as tool shortcuts
     }
     const nudge = app.snapStep || 0.1;
-    const sel = app.editor.selectedObj();
+    const sels = app.multi.length ? app.multiObjs()
+      : (app.editor.selectedObj() ? [app.editor.selectedObj()] : []);
     const move = (dx, dy) => {
-      if (!sel) return;
-      app.editor.translate(sel, dx, dy);
+      if (!sels.length) return;
+      for (const s of sels) app.editor.translate(s, dx, dy);
       app.onObjectChanged(true);
       app.editor.render();
       e.preventDefault();
@@ -2297,12 +2688,16 @@ window.addEventListener('DOMContentLoaded', () => {
       case 'r': case 'R': setTool('rect'); break;
       case 'c': case 'C': setTool('circle'); break;
       case 'p': case 'P': setTool('port'); break;
+      case 'x': case 'X': setTool('measure'); break;
       case 'm': case 'M': $('btnMesh').click(); break;
       case 'g': case 'G': $('btnGrid').click(); break;
       case 'f': case 'F': app.editor.zoomFit(); break;
       case 'Enter': if (app.tool === 'poly') { app.editor.finishPoly(); e.preventDefault(); } break;
       case 'Escape':
+        // Esc backs out of the current tool state, then falls back to Select
         if (app.editor.pendingPoly) app.editor.cancelPoly();
+        else if (app.tool === 'measure' && app.editor.measure) { app.editor.measure = null; app.editor.render(); }
+        else if (app.tool !== 'select') setTool('select');
         else app.select(null);
         break;
       case 'Delete': case 'Backspace': app.deleteSelection(); e.preventDefault(); break;

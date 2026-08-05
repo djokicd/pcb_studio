@@ -8,21 +8,47 @@ FDTD simulations of planar PCB structures via GNU Octave.
 - **2D canvas editor** (top view, mm units) with pictogram tools:
   rectangle, circle, circle segment (pie sector), arc (curved trace),
   polygon (click points, Enter/double-click closes), via, discrete
-  component and lumped port. Objects can be moved, resized via drag
-  handles (rects, circle radius, polygon vertices) or edited numerically.
-  Grid snapping, zoom/pan, keyboard shortcuts.
+  component, lumped port and a **measure tool** (X — drag between two
+  points to read Δx, Δy and the distance; Esc clears). Objects can be
+  moved, resized via drag handles (rects, circle radius, polygon
+  vertices) or edited numerically. Zoom/pan, keyboard shortcuts.
+- **Menu bar** (File / Edit / View / Tools / Help) with the usual
+  project, clipboard and view commands, keyboard-shortcut hints and a
+  shortcuts reference under Help.
+- **Snapping**: arbitrary snap-grid resolution (any mm value, 0 = off),
+  restrictable to x-only or y-only grid ticks, plus optional snapping
+  to corners/vertices of existing objects.
+- **Multi-selection**: with the Select tool, dragging on empty canvas
+  box-selects every object fully inside; the group moves/nudges/
+  copies/deletes together (Ctrl+A selects everything). Esc in any
+  other tool returns to Select.
+- **Themes & colors**: dark (default) and light theme
+  (View → Light theme) covering the whole UI including the canvas and
+  charts, and a configurable palette (View → Colors…) for the
+  conductor-layer, port, MSL-port and device-pin colors — both stored
+  per browser.
 - **Stackup editor**: arbitrary layer stack (top→bottom) of conductor and
   dielectric layers — thickness, εr, tan δ per dielectric, optional full
   copper plane per conductor. Shapes/ports/components reference conductor
   layers; conductors are modelled as zero-thickness PEC sheets at their
   stackup interface.
+- **Stackup manager** (Tools menu or the Manager… button in the Stackup
+  tab): save the current stackup to a browser library, apply a saved
+  one to the project, export/import stackups as JSON files, and star
+  one as the **default stackup for new projects** (used by
+  File → New project).
 - **Vias**: drill/pad diameter, connecting any two conductor layers
   (metal barrel + pads on every crossed conductor layer).
 - **Discrete components**: R / L / C lumped elements in 0402, 0603, 0805
   or custom footprints, 0°/90° rotation, values in Ω / pF / nH
   (openEMS `AddLumpedElement` with end caps).
 - **Lumped ports**: z-directed between two conductor layers or in-plane
-  (x/y) sheet ports; per-port impedance; exactly one excited port.
+  (x/y) sheet ports; per-port impedance. **Any subset of ports can be
+  excited**: with several excited ports the run launches one excitation
+  per port (the lowest-numbered one carries the field dumps) and merges
+  the resulting S-parameter columns into one result set, so e.g. S11,
+  S21, S12 and S22 come from a single Run click without a full
+  S-matrix sweep. The exported .m script excites the primary port only.
 - **Mesh preview**: toggleable overlay of the exact simulation mesh with
   live cell count, plus a stackup cross-section strip showing the z mesh
   lines, dielectric slabs and conductor sheets. The mesh is computed in

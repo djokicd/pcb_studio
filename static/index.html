@@ -9,14 +9,65 @@
 <body>
 <header id="topbar">
   <span class="brand">OpenEMS <b>PCB Studio</b></span>
+  <nav id="menubar">
+    <div class="menu">
+      <button class="menu-btn">File</button>
+      <div class="menu-drop">
+        <button data-action="new">New project</button>
+        <button data-action="open">Open&hellip;</button>
+        <button data-action="save">Save</button>
+        <button data-action="saveAs">Save as&hellip;</button>
+        <div class="menu-sep"></div>
+        <button data-action="importJson">Import project JSON&hellip;</button>
+        <button data-action="exportCfg">Export cfg (JSON)</button>
+        <button data-action="exportM">Export Octave script (.m)</button>
+        <div class="menu-sep"></div>
+        <button data-action="run">Run simulation</button>
+        <button data-action="stop">Stop simulation</button>
+      </div>
+    </div>
+    <div class="menu">
+      <button class="menu-btn">Edit</button>
+      <div class="menu-drop">
+        <button data-action="copy">Copy <kbd>Ctrl+C</kbd></button>
+        <button data-action="cut">Cut <kbd>Ctrl+X</kbd></button>
+        <button data-action="paste">Paste <kbd>Ctrl+V</kbd></button>
+        <button data-action="duplicate">Duplicate <kbd>Ctrl+D</kbd></button>
+        <button data-action="delete">Delete <kbd>Del</kbd></button>
+        <div class="menu-sep"></div>
+        <button data-action="selectAll">Select all <kbd>Ctrl+A</kbd></button>
+      </div>
+    </div>
+    <div class="menu">
+      <button class="menu-btn">View</button>
+      <div class="menu-drop">
+        <button data-action="grid" data-check="grid">Grid <kbd>G</kbd></button>
+        <button data-action="mesh" data-check="mesh">Mesh preview <kbd>M</kbd></button>
+        <button data-action="fit">Fit view <kbd>F</kbd></button>
+        <div class="menu-sep"></div>
+        <button data-action="theme" data-check="light">Light theme</button>
+        <button data-action="colors">Colors&hellip;</button>
+      </div>
+    </div>
+    <div class="menu">
+      <button class="menu-btn">Tools</button>
+      <div class="menu-drop">
+        <button data-action="toolSelect">Select tool <kbd>V</kbd></button>
+        <button data-action="toolMeasure">Measure tool <kbd>X</kbd></button>
+        <div class="menu-sep"></div>
+        <button data-action="stackman">Stackup manager&hellip;</button>
+      </div>
+    </div>
+    <div class="menu">
+      <button class="menu-btn">Help</button>
+      <div class="menu-drop">
+        <button data-action="shortcuts">Keyboard shortcuts&hellip;</button>
+        <button data-action="about">About</button>
+      </div>
+    </div>
+  </nav>
   <input id="projName" class="proj-name" placeholder="Unsaved" spellcheck="false" title="Project name — set from the JSON file name on open/save">
   <span class="spacer"></span>
-  <button id="btnNew" title="New empty project">New</button>
-  <button id="btnOpen" title="Open a project stored on the server (or import a JSON file)">Open</button>
-  <button id="btnSave" title="Save the project on the server, together with the latest results">Save</button>
-  <button id="btnExportCfg" title="Download the project configuration as a JSON file">Export cfg</button>
-  <span class="sep"></span>
-  <button id="btnExport" title="Download the generated Octave script">Export .m</button>
   <button id="btnRun" class="primary" title="Run the simulation with Octave/openEMS">&#9654; Run</button>
   <button id="btnStop" disabled title="Stop the running simulation">&#9632; Stop</button>
   <input id="fileInput" type="file" accept=".json,application/json" hidden>
@@ -57,6 +108,9 @@
         <button class="tool" data-tool="mslport" title="MSL port — matched microstrip-line port with de-embedded reference plane; drag at a line end, chevrons point into the board">
           <svg viewBox="0 0 16 16"><path d="M1.5 8 h5 M8 4.5 L11.5 8 L8 11.5 M11 4.5 L14.5 8 L11 11.5"/></svg>
         </button>
+        <button class="tool" data-tool="measure" title="Measure (X) — drag between two points to read Δx, Δy and the distance; Esc clears">
+          <svg viewBox="0 0 16 16"><path d="M2.5 13.5 L13.5 2.5 M4.5 11.5 l1.6 1.6 M7 9 l1.6 1.6 M9.5 6.5 l1.6 1.6 M12 4 l1.6 1.6"/></svg>
+        </button>
       </div>
       <div class="tools">
         <button id="btnGrid" class="tool wide active" title="Toggle background grid (G)">
@@ -78,13 +132,18 @@
       </div>
       <div class="row">
         <label>Snap</label>
-        <select id="snapSel">
-          <option value="0">off</option>
-          <option value="0.1">0.1 mm</option>
-          <option value="0.25">0.25 mm</option>
-          <option value="0.5" selected>0.5 mm</option>
-          <option value="1">1 mm</option>
+        <input id="snapStep" type="number" min="0" step="0.05" value="0.5" class="snapnum"
+               title="Snap grid resolution in mm — any value, 0 turns snapping off">
+        <select id="snapMode" class="mini" title="Which axes snap to the grid ticks">
+          <option value="xy">x+y</option>
+          <option value="x">x only</option>
+          <option value="y">y only</option>
         </select>
+      </div>
+      <div class="row">
+        <label></label>
+        <label class="mini-check" title="Snap drawn/placed points to corners and vertices of existing objects">
+          <input id="snapCorners" type="checkbox"> snap to corners</label>
       </div>
     </div>
     <div class="panel grow">
@@ -92,7 +151,8 @@
       <ul id="objList" class="obj-list"></ul>
     </div>
     <div class="panel hint">
-      V/R/C/P tools &middot; M mesh &middot; F fit &middot; Del deletes &middot; arrows nudge &middot;
+      V/R/C/P/X tools &middot; Esc back to select &middot; drag on empty = box select &middot;
+      M mesh &middot; F fit &middot; Del deletes &middot; arrows nudge &middot;
       wheel zooms &middot; middle/right-drag pans &middot; polygon: click points, Enter closes
     </div>
   </aside>
@@ -256,6 +316,7 @@
       <div class="stackup-add">
         <button id="addCond">+ Conductor</button>
         <button id="addDiel">+ Dielectric</button>
+        <button id="btnStackMan" title="Save/load stackups, export to file, pick the default for new projects">Manager&hellip;</button>
       </div>
       <h3 style="margin-top:16px">Import fabrication data</h3>
       <p class="muted" style="margin:4px 0 8px">
@@ -375,6 +436,58 @@
     <div class="uic-btns">
       <button id="projImport">Import JSON file…</button>
     </div>
+  </div>
+</div>
+
+<div id="stackModal" hidden>
+  <div class="uic-box proj-box">
+    <div class="modal-head"><span>Stackup manager</span><button id="stackClose">&#10005;</button></div>
+    <p class="muted" style="margin:6px 0 0">
+      Click a saved stackup to apply it to the current project. The
+      &#9733; marks the default stackup used by File &rarr; New project.
+    </p>
+    <ul id="stackList" class="proj-list"></ul>
+    <div class="uic-btns" style="justify-content:flex-start; flex-wrap:wrap">
+      <button id="stackSaveAs" title="Store the current stackup in the browser library">Save current as&hellip;</button>
+      <button id="stackExport" title="Download the current stackup as a JSON file">Export to file</button>
+      <button id="stackImport" title="Import a stackup JSON file into the library">Import file&hellip;</button>
+    </div>
+  </div>
+</div>
+<input id="stackFileInput" type="file" accept=".json" hidden>
+
+<div id="colorsModal" hidden>
+  <div class="uic-box">
+    <div class="modal-head"><span>Colors</span><button id="colorsClose">&#10005;</button></div>
+    <p class="muted" style="margin:6px 0 10px">
+      Palette for the editor: conductor-layer slots are assigned to the
+      stackup layers top &rarr; bottom. Changes are saved in this browser.
+    </p>
+    <div id="colorsBody" class="colors-grid"></div>
+    <div class="uic-btns">
+      <button id="colorsReset">Reset defaults</button>
+      <button id="colorsOk" class="primary">Done</button>
+    </div>
+  </div>
+</div>
+
+<div id="helpModal" hidden>
+  <div class="uic-box">
+    <div class="modal-head"><span>Keyboard shortcuts</span><button id="helpClose">&#10005;</button></div>
+    <table class="shortcuts">
+      <tr><td><kbd>V</kbd> / <kbd>Esc</kbd></td><td>select tool (Esc also clears the selection)</td></tr>
+      <tr><td><kbd>R</kbd> <kbd>C</kbd> <kbd>P</kbd></td><td>rectangle / circle / lumped-port tool</td></tr>
+      <tr><td><kbd>X</kbd></td><td>measure tool — drag between two points</td></tr>
+      <tr><td><kbd>G</kbd> / <kbd>M</kbd> / <kbd>F</kbd></td><td>toggle grid / mesh preview / fit view</td></tr>
+      <tr><td><kbd>Ctrl+C/X/V</kbd></td><td>copy / cut / paste the selection</td></tr>
+      <tr><td><kbd>Ctrl+D</kbd></td><td>duplicate</td></tr>
+      <tr><td><kbd>Ctrl+A</kbd></td><td>select all objects</td></tr>
+      <tr><td><kbd>Del</kbd></td><td>delete the selection</td></tr>
+      <tr><td>arrows</td><td>nudge the selection by one snap step</td></tr>
+      <tr><td>drag on empty</td><td>box-select every object inside</td></tr>
+      <tr><td>wheel / mid-drag</td><td>zoom / pan the canvas</td></tr>
+      <tr><td><kbd>Enter</kbd></td><td>close the polygon being drawn</td></tr>
+    </table>
   </div>
 </div>
 

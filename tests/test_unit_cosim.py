@@ -75,6 +75,37 @@ def test_combine_through_device(tmp_path):
     assert (run / 'sparams_board.csv').is_file()
 
 
+def test_merge_excitations(tmp_path):
+    """User-selected subset of excitations (no devices): the per-stage
+    columns are merged into one sparams.csv, primary excitation first."""
+    run = tmp_path / 'run_00000000_000001'
+    run.mkdir()
+    cols = {
+        1: {1: 0.1 + 0j, 2: 0.5 + 0j, 3: 0.2 + 0j},
+        3: {1: 0.2 + 0j, 2: 0.4 + 0j, 3: 0.15 + 0j},
+    }
+    stages = []
+    d = run / 'exc_3'
+    write_stage(d, 3, cols[3])
+    stages.append({'dir': d, 'exc': 3})
+    write_stage(run, 1, cols[1])
+    stages.append({'dir': run, 'exc': 1})
+
+    model = {'ports': [{'number': n, 'impedance': 50, 'excite': n in (1, 3)}
+                       for n in (1, 2, 3)]}
+    server.merge_excitations(run, model, stages)
+
+    rows = parse_sparams(run / 'sparams.csv')
+    for r in rows:
+        assert abs(r['s'][1] - 0.1) < 1e-9      # S11 (primary column first)
+        assert abs(r['s'][2] - 0.5) < 1e-9      # S21
+        assert abs(r['s'][3] - 0.2) < 1e-9      # S31
+        assert abs(r['refl'][1] - 0.1) < 1e-9   # S11
+        assert abs(r['refl'][3] - 0.15) < 1e-9  # S33 from the exc-3 stage
+        assert abs(r['zin'] - 50) < 1e-9        # primary-stage Zin kept
+    assert (run / 'sparams_primary.csv').is_file()
+
+
 def test_validate_devices_rejects_bad_mapping(tmp_path):
     (server.DEV_ROOT / 'unit_thr2.s2p').write_text(
         '# GHz S RI R 50\n1 0 0 1 0 1 0 0 0\n')

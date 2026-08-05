@@ -4,11 +4,34 @@
 'use strict';
 
 const LAYER_COLORS = ['#e07840', '#4a90d9', '#c9b458', '#9085e9', '#d55181', '#199e70'];
-const ED = {
-  port: '#0ca30c', substrate: '#1f4030', boardEdge: '#5c8a6e',
-  grid: '#20201f', gridMajor: '#2c2c2a', select: '#ffffff', bg: '#141413',
-  via: '#c3c2b7', comp: '#3a3a38', compCap: '#b9b9b3', mesh: 'rgba(120,180,255,0.20)',
+const LAYER_COLORS_DEFAULT = [...LAYER_COLORS];
+/* editor canvas palettes; ED is mutated by applyTheme()/applyColorPrefs() */
+const ED_THEMES = {
+  dark: {
+    port: '#0ca30c', msl: '#0ca378', pin: '#9085e9',
+    substrate: '#1f4030', boardEdge: '#5c8a6e',
+    grid: '#20201f', gridMajor: '#2c2c2a', select: '#ffffff', bg: '#141413',
+    via: '#c3c2b7', comp: '#3a3a38', compCap: '#b9b9b3',
+    mesh: 'rgba(120,180,255,0.20)', text: '#898781', ink: '#e8e7e0',
+    measure: '#f2c94c', overlay: 'rgba(13,13,13,0.82)',
+    overlayEdge: 'rgba(255,255,255,0.14)', selectFill: 'rgba(57,135,229,0.12)',
+  },
+  light: {
+    port: '#0a8a0a', msl: '#0a8a66', pin: '#6a5bd8',
+    substrate: '#dcebdd', boardEdge: '#7fae8e',
+    grid: '#e9e7df', gridMajor: '#d9d7cc', select: '#1c1c1a', bg: '#f7f6f1',
+    via: '#6f6e66', comp: '#c9c7bd', compCap: '#6f6e66',
+    mesh: 'rgba(40,110,220,0.30)', text: '#77756d', ink: '#1c1c1a',
+    measure: '#a9770a', overlay: 'rgba(255,255,255,0.90)',
+    overlayEdge: 'rgba(0,0,0,0.15)', selectFill: 'rgba(47,111,202,0.10)',
+  },
 };
+const ED = { ...ED_THEMES.dark };
+
+function hexRgba(hex, a) {
+  const v = parseInt(hex.slice(1), 16);
+  return `rgba(${(v >> 16) & 255},${(v >> 8) & 255},${v & 255},${a})`;
+}
 
 function arcPts(cx, cy, r, a0, a1, n) {
   while (a1 <= a0) a1 += 360;
@@ -63,6 +86,7 @@ class Editor {
     this.drag = null;
     this.pendingPoly = null;   // [[x,y],...] while the polygon tool collects points
     this.mouse = null;
+    this.measure = null;       // {x0,y0,x1,y1} of the measure tool
 
     canvas.addEventListener('mousedown', e => this.onDown(e));
     canvas.addEventListener('dblclick', e => this.onDblClick(e));
@@ -93,6 +117,46 @@ class Editor {
   snap(v) {
     const s = this.app.snapStep;
     return s > 0 ? Math.round(v / s) * s : Math.round(v * 1000) / 1000;
+  }
+  /* axis-aware grid snap: the snap mode restricts snapping to x or y ticks */
+  snapAxis(v, axis) {
+    const s = this.app.snapStep;
+    const mode = this.app.snapMode || 'xy';
+    const on = s > 0 && (mode === 'xy' || mode === axis);
+    return on ? Math.round(v / s) * s : Math.round(v * 1000) / 1000;
+  }
+  /* point snap: object corners win (when enabled), then the grid */
+  snapPt(wx, wy) {
+    if (this.app.snapCorners) {
+      const c = this.nearestCorner(wx, wy, 9 / this.view.scale);
+      if (c) return c;
+    }
+    return [this.snapAxis(wx, 'x'), this.snapAxis(wy, 'y')];
+  }
+  nearestCorner(wx, wy, tol) {
+    let best = null, bd = tol;
+    let n = 0;
+    const consider = (x, y) => {
+      const d = Math.hypot(x - wx, y - wy);
+      if (d < bd) { bd = d; best = [x, y]; }
+    };
+    for (const { kind, obj } of this.objects()) {
+      if (++n > 4000) break;
+      if (kind === 'via') { consider(obj.x, obj.y); continue; }
+      if (kind === 'component') {
+        const [x0, y0, x1, y1] = this.app.compBody(obj);
+        consider(x0, y0); consider(x1, y0); consider(x1, y1); consider(x0, y1);
+        consider(obj.x, obj.y);
+        continue;
+      }
+      if (kind === 'port') {
+        consider(obj.x, obj.y); consider(obj.x + obj.w, obj.y);
+        consider(obj.x + obj.w, obj.y + obj.h); consider(obj.x, obj.y + obj.h);
+        continue;
+      }
+      for (const [x, y] of outlinePts(obj)) consider(x, y);
+    }
+    return best;
   }
 
   zoomFit() {
@@ -214,28 +278,44 @@ class Editor {
       }
       const hit = this.hitTest(wx, wy);
       if (hit) {
-        this.app.select(hit.kind, hit.obj.id);
-        this.drag = { type: 'move', sel: hit, wx, wy, lx: wx, ly: wy };
+        let sels;
+        if (this.app.isMulti(hit.kind, hit.obj.id)) {
+          sels = this.app.multiObjs();   // drag the whole multi-selection
+        } else {
+          this.app.select(hit.kind, hit.obj.id);
+          sels = [hit];
+        }
+        this.drag = { type: 'move', sels, wx, wy };
       } else {
-        this.app.select(null);
+        // marquee: select every object fully inside the dragged box
+        this.drag = { type: 'box', x0: wx, y0: wy, x1: wx, y1: wy };
       }
       this.render();
       return;
     }
 
+    if (tool === 'measure') {
+      const [x, y] = this.snapPt(wx, wy);
+      this.measure = { x0: x, y0: y, x1: x, y1: y };
+      this.drag = { type: 'measure' };
+      this.render();
+      return;
+    }
+
     if (tool === 'poly') {
-      const x = this.snap(wx), y = this.snap(wy);
+      const [x, y] = this.snapPt(wx, wy);
       if (!this.pendingPoly) this.pendingPoly = [];
       this.pendingPoly.push([x, y]);
       this.render();
       return;
     }
 
-    if (tool === 'via') { this.app.createVia(this.snap(wx), this.snap(wy)); return; }
-    if (tool === 'comp') { this.app.createComp(this.snap(wx), this.snap(wy)); return; }
+    if (tool === 'via') { const [x, y] = this.snapPt(wx, wy); this.app.createVia(x, y); return; }
+    if (tool === 'comp') { const [x, y] = this.snapPt(wx, wy); this.app.createComp(x, y); return; }
 
     // drag-to-draw tools: rect, circle, segment, arc, port
-    this.drag = { type: 'draw', tool, x0: this.snap(wx), y0: this.snap(wy), x1: this.snap(wx), y1: this.snap(wy) };
+    const [x0, y0] = this.snapPt(wx, wy);
+    this.drag = { type: 'draw', tool, x0, y0, x1: x0, y1: y0 };
   }
 
   onDblClick(e) {
@@ -277,17 +357,22 @@ class Editor {
       this.view.ox = d.ox + (sx - d.sx);
       this.view.oy = d.oy + (sy - d.sy);
     } else if (d.type === 'move') {
-      const nx = this.snap(d.lx + (wx - d.wx)), nyy = this.snap(d.ly + (wy - d.wy));
-      // translate by snapped delta from original grab point
-      const bx = this.snap(d.wx), by = this.snap(d.wy);
-      this.translate(d.sel, nx - bx - (d.movedX || 0), nyy - by - (d.movedY || 0));
+      // translate by snapped delta from the original grab point
+      const bx = this.snapAxis(d.wx, 'x'), by = this.snapAxis(d.wy, 'y');
+      const nx = this.snapAxis(wx, 'x'), nyy = this.snapAxis(wy, 'y');
+      const ddx = nx - bx - (d.movedX || 0), ddy = nyy - by - (d.movedY || 0);
+      for (const s of d.sels) this.translate(s, ddx, ddy);
       d.movedX = nx - bx; d.movedY = nyy - by;
       this.app.onObjectChanged(false);
     } else if (d.type === 'handle') {
       this.applyHandle(d, wx, wy);
       this.app.onObjectChanged(false);
     } else if (d.type === 'draw') {
-      d.x1 = this.snap(wx); d.y1 = this.snap(wy);
+      [d.x1, d.y1] = this.snapPt(wx, wy);
+    } else if (d.type === 'box') {
+      d.x1 = wx; d.y1 = wy;
+    } else if (d.type === 'measure') {
+      [this.measure.x1, this.measure.y1] = this.snapPt(wx, wy);
     }
     this.render();
   }
@@ -300,15 +385,15 @@ class Editor {
     }
     if (d.handle.startsWith('v')) {
       const i = parseInt(d.handle.slice(1), 10);
-      obj.pts[i] = [this.snap(wx), this.snap(wy)];
+      obj.pts[i] = this.snapPt(wx, wy);
       return;
     }
     const o = d.orig;
     let x0 = o.x, y0 = o.y, x1 = o.x + o.w, y1 = o.y + o.h;
-    if (d.handle.includes('w')) x0 = this.snap(wx);
-    if (d.handle.includes('e')) x1 = this.snap(wx);
-    if (d.handle.includes('s')) y0 = this.snap(wy);
-    if (d.handle.includes('n')) y1 = this.snap(wy);
+    if (d.handle.includes('w')) x0 = this.snapAxis(wx, 'x');
+    if (d.handle.includes('e')) x1 = this.snapAxis(wx, 'x');
+    if (d.handle.includes('s')) y0 = this.snapAxis(wy, 'y');
+    if (d.handle.includes('n')) y1 = this.snapAxis(wy, 'y');
     obj.x = Math.min(x0, x1); obj.y = Math.min(y0, y1);
     obj.w = Math.max(0.05, Math.abs(x1 - x0));
     obj.h = Math.max(0.05, Math.abs(y1 - y0));
@@ -320,7 +405,24 @@ class Editor {
     if (!d) return;
     if (d.type === 'draw') this.finishDraw(d);
     else if (d.type === 'move' || d.type === 'handle') this.app.onObjectChanged(true);
+    else if (d.type === 'box') this.finishBox(d);
     this.render();
+  }
+
+  finishBox(d) {
+    if (Math.hypot(d.x1 - d.x0, d.y1 - d.y0) * this.view.scale < 4) {
+      this.app.select(null);   // just a click on empty space
+      return;
+    }
+    const r = [Math.min(d.x0, d.x1), Math.min(d.y0, d.y1),
+               Math.max(d.x0, d.x1), Math.max(d.y0, d.y1)];
+    const items = this.objects().filter(it => {
+      const b = this.selBounds(it);
+      return b[0] >= r[0] && b[1] >= r[1] && b[2] <= r[2] && b[3] <= r[3];
+    }).map(it => ({ kind: it.kind, id: it.obj.id }));
+    if (!items.length) this.app.select(null);
+    else if (items.length === 1) this.app.select(items[0].kind, items[0].id);
+    else this.app.selectMulti(items);
   }
 
   finishDraw(d) {
@@ -423,8 +525,61 @@ class Editor {
     this.drawDragPreview();
     this.drawPendingPoly();
     this.drawSelection();
+    this.drawBox();
+    this.drawMeasure();
     this.drawAxes();
     this.drawZStrip(w, h);
+  }
+
+  drawBox() {
+    const d = this.drag;
+    if (!d || d.type !== 'box') return;
+    const ctx = this.ctx;
+    const [sx, sy] = this.toScreen(Math.min(d.x0, d.x1), Math.max(d.y0, d.y1));
+    const w = Math.abs(d.x1 - d.x0) * this.view.scale;
+    const h = Math.abs(d.y1 - d.y0) * this.view.scale;
+    ctx.fillStyle = ED.selectFill;
+    ctx.fillRect(sx, sy, w, h);
+    ctx.strokeStyle = ED.select;
+    ctx.setLineDash([4, 3]);
+    ctx.lineWidth = 1;
+    ctx.strokeRect(sx, sy, w, h);
+    ctx.setLineDash([]);
+  }
+
+  drawMeasure() {
+    const m = this.measure;
+    if (!m) return;
+    const ctx = this.ctx;
+    const [x0, y0] = this.toScreen(m.x0, m.y0);
+    const [x1, y1] = this.toScreen(m.x1, m.y1);
+    ctx.strokeStyle = ED.measure;
+    ctx.fillStyle = ED.measure;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+    // dx / dy legs
+    ctx.setLineDash([3, 3]);
+    ctx.globalAlpha = 0.6;
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y0); ctx.lineTo(x1, y1); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
+    for (const [px, py] of [[x0, y0], [x1, y1]]) {
+      ctx.beginPath(); ctx.arc(px, py, 3, 0, 7); ctx.fill();
+    }
+    const dx = m.x1 - m.x0, dy = m.y1 - m.y0;
+    const len = Math.hypot(dx, dy);
+    const txt = `L ${len.toFixed(3)} mm   Δx ${dx.toFixed(3)}   Δy ${dy.toFixed(3)}`;
+    ctx.font = '11px system-ui';
+    const tw = ctx.measureText(txt).width;
+    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2 - 14;
+    ctx.fillStyle = ED.overlay;
+    ctx.strokeStyle = ED.overlayEdge;
+    ctx.beginPath();
+    ctx.roundRect(mx - tw / 2 - 6, my - 9, tw + 12, 18, 4);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = ED.measure;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(txt, mx, my);
   }
 
   /* stackup cross-section with the z mesh lines, shown while mesh preview is on */
@@ -436,8 +591,8 @@ class Editor {
     const z0 = m.z[0], z1 = m.z[m.z.length - 1];
     const zy = z => sy + (z1 - z) / (z1 - z0) * sh;   // z up
 
-    ctx.fillStyle = 'rgba(13,13,13,0.82)';
-    ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+    ctx.fillStyle = ED.overlay;
+    ctx.strokeStyle = ED.overlayEdge;
     ctx.beginPath();
     ctx.roundRect(sx - 8, sy - 22, sw + 16, sh + 56, 6);
     ctx.fill(); ctx.stroke();
@@ -445,7 +600,7 @@ class Editor {
     // dielectric slabs + conductor sheets from the stackup
     const zinfo = this.app.stackupZ();
     for (const d of zinfo.diel) {
-      ctx.fillStyle = 'rgba(31,64,48,0.9)';
+      ctx.fillStyle = ED.substrate;
       ctx.fillRect(sx, zy(d.z1), sw, Math.max(1, zy(d.z0) - zy(d.z1)));
     }
     // z mesh lines
@@ -459,7 +614,7 @@ class Editor {
       ctx.lineWidth = 2;
       ctx.beginPath(); ctx.moveTo(sx, zy(c.z)); ctx.lineTo(sx + sw, zy(c.z)); ctx.stroke();
     }
-    ctx.fillStyle = '#898781';
+    ctx.fillStyle = ED.text;
     ctx.font = '10px system-ui';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
@@ -514,7 +669,7 @@ class Editor {
     ctx.beginPath(); ctx.arc(sx, sy, v.pad / 2 * this.view.scale, 0, 7); ctx.fill();
     ctx.fillStyle = ED.bg;
     ctx.beginPath(); ctx.arc(sx, sy, v.drill / 2 * this.view.scale, 0, 7); ctx.fill();
-    ctx.strokeStyle = '#898781';
+    ctx.strokeStyle = ED.text;
     ctx.lineWidth = 1;
     ctx.beginPath(); ctx.arc(sx, sy, v.pad / 2 * this.view.scale, 0, 7); ctx.stroke();
   }
@@ -536,11 +691,11 @@ class Editor {
       ctx.fillRect(sx, sy, w, cap);
       ctx.fillRect(sx, sy + h - cap, w, cap);
     }
-    ctx.strokeStyle = '#898781';
+    ctx.strokeStyle = ED.text;
     ctx.lineWidth = 1;
     ctx.strokeRect(sx, sy, w, h);
     if (Math.max(w, h) > 26) {
-      ctx.fillStyle = '#e8e7e0';
+      ctx.fillStyle = ED.ink;
       ctx.font = '10px system-ui';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(this.app.compLabel(c), sx + w / 2, sy + h / 2 - (horiz ? 0 : 0));
@@ -553,14 +708,14 @@ class Editor {
     const w = p.w * this.view.scale, h = p.h * this.view.scale;
     const msl = p.ptype === 'msl';
     const pin = this.app.devicePin ? this.app.devicePin(p.number) : null;
-    ctx.fillStyle = pin ? 'rgba(144,133,233,0.32)'
-      : msl ? 'rgba(12,163,120,0.30)' : 'rgba(12,163,12,0.30)';
+    ctx.fillStyle = pin ? hexRgba(ED.pin, 0.32)
+      : msl ? hexRgba(ED.msl, 0.30) : hexRgba(ED.port, 0.30);
     ctx.fillRect(sx, sy, w, h);
-    ctx.strokeStyle = pin ? '#9085e9' : msl ? '#0ca378' : ED.port;
+    ctx.strokeStyle = pin ? ED.pin : msl ? ED.msl : ED.port;
     ctx.lineWidth = p.excite ? 2 : 1;
     ctx.strokeRect(sx, sy, w, h);
     if (pin && h > 10) {
-      ctx.fillStyle = '#b8b0f0';
+      ctx.fillStyle = ED.pin;
       ctx.font = `${Math.max(9, Math.min(11, h * 0.35))}px system-ui`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
@@ -584,7 +739,7 @@ class Editor {
       ctx.stroke();
       ctx.restore();
     }
-    ctx.fillStyle = pin ? '#b8b0f0' : msl ? '#8fe8cf' : '#9fe89f';
+    ctx.fillStyle = pin ? ED.pin : msl ? ED.msl : ED.port;
     ctx.font = `${Math.max(10, Math.min(13, h * 0.5))}px system-ui`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(`${msl ? 'M' : 'P'}${p.number}${p.excite ? '*' : ''}`,
@@ -596,8 +751,8 @@ class Editor {
     if (!d || d.type !== 'draw') return;
     const ctx = this.ctx;
     const color = d.tool === 'port' ? ED.port
-      : d.tool === 'mslport' ? '#0ca378'
-      : (this.app.layerColor(this.app.activeLayer) || '#fff');
+      : d.tool === 'mslport' ? ED.msl
+      : (this.app.layerColor(this.app.activeLayer) || ED.select);
     ctx.strokeStyle = color;
     ctx.setLineDash([4, 3]);
     ctx.lineWidth = 1.5;
@@ -641,19 +796,27 @@ class Editor {
   }
 
   drawSelection() {
+    const ctx = this.ctx;
+    const outline = sel => {
+      const [x0, y0, x1, y1] = this.selBounds(sel);
+      const [sx, sy] = this.toScreen(x0, y1);
+      ctx.strokeStyle = ED.select;
+      ctx.setLineDash([5, 4]);
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(sx, sy, (x1 - x0) * this.view.scale, (y1 - y0) * this.view.scale);
+      ctx.setLineDash([]);
+    };
+    const multi = this.app.multiObjs ? this.app.multiObjs() : [];
+    if (multi.length) {
+      for (const s of multi) outline(s);
+      return;
+    }
     const s = this.selectedObj();
     if (!s) return;
-    const ctx = this.ctx;
-    const [x0, y0, x1, y1] = this.selBounds(s);
-    const [sx, sy] = this.toScreen(x0, y1);
-    ctx.strokeStyle = ED.select;
-    ctx.setLineDash([5, 4]);
-    ctx.lineWidth = 1.2;
-    ctx.strokeRect(sx, sy, (x1 - x0) * this.view.scale, (y1 - y0) * this.view.scale);
-    ctx.setLineDash([]);
+    outline(s);
     for (const hd of this.handles()) {
-      ctx.fillStyle = '#fff';
-      ctx.strokeStyle = '#0d0d0d';
+      ctx.fillStyle = ED.select;
+      ctx.strokeStyle = ED.bg;
       ctx.fillRect(hd.x - 3.5, hd.y - 3.5, 7, 7);
       ctx.strokeRect(hd.x - 3.5, hd.y - 3.5, 7, 7);
     }
@@ -662,8 +825,8 @@ class Editor {
   drawAxes() {
     const ctx = this.ctx;
     const [ox, oy] = this.toScreen(0, 0);
-    ctx.strokeStyle = '#898781';
-    ctx.fillStyle = '#898781';
+    ctx.strokeStyle = ED.text;
+    ctx.fillStyle = ED.text;
     ctx.lineWidth = 1.2;
     ctx.font = '11px system-ui';
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
