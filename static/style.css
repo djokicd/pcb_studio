@@ -291,6 +291,18 @@ select.mini { font-size: 12px; padding: 2px 5px; }
 .runinfo td:first-child { color: #898781; white-space: nowrap; }
 .runinfo td:last-child { text-align: right; font-variant-numeric: tabular-nums; color: #c3c2b7; }
 
+/* ---- s-parameter devices ---- */
+.dev-row {
+  border: 1px solid rgba(255,255,255,0.10); border-radius: 6px;
+  padding: 8px; margin-bottom: 8px; background: #111110;
+}
+.dev-row .dr-top { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.dev-row .dr-top input { width: 52px; }
+.dev-row .dr-top select { flex: 1; min-width: 0; }
+.dev-pins { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 11px; color: #898781; }
+.dev-pins select { width: 58px; }
+.dev-meta { font-size: 10px; color: #898781; margin-top: 4px; }
+
 /* ---- tests view ---- */
 #testsView { overflow-y: auto; padding: 16px; }
 .tests-page { max-width: 860px; margin: 0 auto; }

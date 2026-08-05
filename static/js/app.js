@@ -22,6 +22,7 @@ function defaultProject() {
     ],
     vias: [],
     components: [],
+    devices: [],
     ports: [
       { id: 2, number: 1, x: 23.5, y: 29.5, w: 1, h: 1, direction: 'z',
         layerFrom: 'bot', layerTo: 'top', impedance: 50, excite: true },
@@ -43,6 +44,7 @@ function migrate(p) {
     p.components = p.components || [];
     p.sim.dumpJ = p.sim.dumpJ || false;
     p.sim.dumpFreqs = p.sim.dumpFreqs || '';
+    p.devices = p.devices || [];
     p.sim.dumpJt = p.sim.dumpJt || false;
     if (p.sim.jtStart == null) p.sim.jtStart = 0;
     if (p.sim.jtStop == null) p.sim.jtStop = 3;
@@ -346,6 +348,23 @@ function validateProject() {
     if (!(lo > d0 + 1e-9 && hi < d1 - 1e-9))
       w.push(`${c.ref}: body ends do not touch copper — the R/L/C will not be connected`);
   }
+  for (const dev of p.devices || []) {
+    const lib = (app.devLib || []).find(l => l.file === dev.file);
+    if (!dev.file) { w.push(`${dev.ref}: no touchstone file selected`); continue; }
+    if (!lib) { w.push(`${dev.ref}: file "${dev.file}" not in the server library`); continue; }
+    const pins = dev.pins || [];
+    if (pins.some(x => x == null) || new Set(pins).size !== lib.nports)
+      w.push(`${dev.ref}: assign ${lib.nports} distinct ports to the device pins`);
+    for (const n of pins) {
+      const q = p.ports.find(q => q.number === n);
+      if (q && q.excite) w.push(`${dev.ref}: excited port ${n} cannot be a device pin`);
+      if (q && Math.abs((q.impedance || 50) - lib.r) > lib.r * 0.01)
+        w.push(`${dev.ref}: port ${n} impedance must be ${lib.r} Ω (touchstone reference)`);
+    }
+    if (p.sim.fStart * 1e9 < lib.fmin * 0.999 || p.sim.fStop * 1e9 > lib.fmax * 1.001)
+      w.push(`${dev.ref}: sweep exceeds the touchstone range `
+        + `(${(lib.fmin / 1e9).toFixed(2)}–${(lib.fmax / 1e9).toFixed(2)} GHz) — data will be clamped`);
+  }
   const s = p.sim;
   if (s.fStart && s.fStop && s.fStart < s.fStop / 10) {
     w.push(`Very wide band (${s.fStart}–${s.fStop} GHz): the pulse then contains near-DC energy `
@@ -473,6 +492,7 @@ function renderObjList() {
     li.textContent = `… ${total - MAX_LIST} more objects (select in the editor)`;
     ul.append(li);
   }
+  if (typeof renderDevices === 'function' && $('devList')) renderDevices();
 }
 
 /* ---------- properties panel ---------- */
@@ -866,8 +886,9 @@ function showView(name) {
 }
 
 /* ---------- run control ---------- */
-function setRunUI(state, percent, elapsed) {
-  $('runState').textContent = state + (percent ? ` — ${percent}%` : '');
+function setRunUI(state, percent, elapsed, stageInfo) {
+  $('runState').textContent = state + (percent ? ` — ${percent}%` : '')
+    + (stageInfo ? ` · ${stageInfo}` : '');
   $('runElapsed').textContent = elapsed ? `${elapsed}s` : '';
   $('progFill').style.width = (percent || 0) + '%';
   $('progFill').style.background = state === 'error' ? '#e66767' : state === 'done' ? '#0ca30c' : '#3987e5';
@@ -1056,7 +1077,7 @@ function poll() {
       const st = await apiJson(`/api/status?offset=${app.logOffset}`);
       app.logOffset = st.nextOffset;
       appendLog(st.lines);
-      setRunUI(st.state, st.percent, st.elapsed);
+      setRunUI(st.state, st.percent, st.elapsed, st.stageInfo);
       updateRunStats(st);
       if (['starting', 'running', 'post'].includes(st.state)) poll();
       else if (st.state === 'done') {
@@ -1119,6 +1140,24 @@ async function loadResults(runId) {
     $('noResults').hidden = true;
     $('btnResults').hidden = false;
     $('csvLink').href = `/api/results/${runId}/sparams.csv`;
+    // extra downloads when a device co-simulation produced them
+    const extras = $('csvLink').parentElement;
+    extras.querySelectorAll('.xlink').forEach(el => el.remove());
+    const nAll = app.project.ports.length;
+    const nExt = nAll - (app.project.devices || [])
+      .reduce((a, d) => a + (d.pins ? d.pins.length : 0), 0);
+    for (const name of [`board_full.s${nAll}p`, `combined.s${nExt}p`, 'sparams_board.csv']) {
+      const r = await fetch(`/api/results/${runId}/file/${name}`, { method: 'GET' });
+      if (r.ok) {
+        const a = document.createElement('a');
+        a.className = 'xlink';
+        a.style.marginLeft = '10px';
+        a.href = `/api/results/${runId}/file/${name}`;
+        a.download = name;
+        a.textContent = name;
+        extras.append(a);
+      }
+    }
     await loadJDumps(runId);
     showView('results');
   } catch (e) {
@@ -1551,6 +1590,82 @@ async function importDrillFile(file) {
   }
 }
 
+/* ---------- S-parameter devices (touchstone) ---------- */
+async function loadDevLib() {
+  try {
+    app.devLib = (await apiJson('/api/devices')).devices.filter(d => !d.error);
+  } catch (e) {
+    app.devLib = [];
+  }
+  renderDevices();
+}
+
+function renderDevices() {
+  const wrap = $('devList');
+  wrap.innerHTML = '';
+  const lib = app.devLib || [];
+  const portNums = app.project.ports.map(p => p.number).sort((a, b) => a - b);
+  for (const dev of app.project.devices) {
+    const row = document.createElement('div');
+    row.className = 'dev-row';
+    const top = document.createElement('div');
+    top.className = 'dr-top';
+    const ref = textIn(dev.ref || 'Q1', v => { dev.ref = v; app.dirty(); });
+    const fileSel = selIn(
+      [['', '— pick file —'], ...lib.map(l => [l.file, `${l.file} (${l.nports}p)`])],
+      dev.file || '',
+      v => {
+        dev.file = v;
+        const meta = lib.find(l => l.file === v);
+        dev.pins = new Array(meta ? meta.nports : 0).fill(null);
+        renderDevices();
+        app.dirty();
+      });
+    const del = mkBtn('×', () => {
+      app.project.devices = app.project.devices.filter(d => d !== dev);
+      renderDevices();
+      app.dirty();
+    });
+    top.append(ref, fileSel, del);
+    row.append(top);
+    const meta = lib.find(l => l.file === dev.file);
+    if (meta) {
+      const pins = document.createElement('div');
+      pins.className = 'dev-pins';
+      pins.append(document.createTextNode('pins → ports: '));
+      for (let k = 0; k < meta.nports; k++) {
+        const sel = selIn(
+          [['', '—'], ...portNums.map(n => [String(n), 'P' + n])],
+          dev.pins && dev.pins[k] != null ? String(dev.pins[k]) : '',
+          v => { dev.pins[k] = v ? parseInt(v, 10) : null; app.dirty(); });
+        sel.title = `Device port ${k + 1}`;
+        pins.append(sel);
+      }
+      row.append(pins);
+      const info = document.createElement('div');
+      info.className = 'dev-meta';
+      info.textContent = `${(meta.fmin / 1e9).toFixed(2)}–${(meta.fmax / 1e9).toFixed(2)} GHz, `
+        + `${meta.points} pts, ${meta.r} Ω reference`;
+      row.append(info);
+    }
+    wrap.append(row);
+  }
+}
+
+async function uploadTouchstone(file) {
+  try {
+    const res = await apiJson('/api/devices/upload', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: file.name, content: await file.text() }),
+    });
+    uiNotice(`Uploaded "${res.file}" (${res.nports}-port, `
+      + `${(res.fmin / 1e9).toFixed(2)}–${(res.fmax / 1e9).toFixed(2)} GHz).`);
+    await loadDevLib();
+  } catch (e) {
+    uiNotice('Upload failed: ' + e.message, 'err', 8000);
+  }
+}
+
 /* ---------- verification tests ---------- */
 let testsCases = null;
 let testsPollT = null;
@@ -1860,6 +1975,19 @@ window.addEventListener('DOMContentLoaded', () => {
   $('btnResults').addEventListener('click', () => showView('results'));
   $('testsRunAll').addEventListener('click', () => startTests(false, (testsCases || []).map(c => c.id)));
   $('testsRunUnit').addEventListener('click', () => startTests(true, []));
+  $('btnAddDevice').addEventListener('click', () => {
+    app.project.devices.push({ id: app.project.nextId++,
+      ref: 'Q' + (app.project.devices.length + 1), file: '', pins: [] });
+    renderDevices();
+    app.dirty();
+  });
+  $('btnUploadTs').addEventListener('click', () => $('tsInput').click());
+  $('tsInput').addEventListener('change', async e => {
+    const f = e.target.files[0];
+    if (f) await uploadTouchstone(f);
+    e.target.value = '';
+  });
+  loadDevLib();
   $('jScaleBar').style.background = `linear-gradient(to right, ${J_RAMP.join(', ')})`;
   $('btnMesh').addEventListener('click', () => {
     app.meshVisible = !app.meshVisible;

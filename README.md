@@ -114,6 +114,22 @@ FDTD simulations of planar PCB structures via GNU Octave.
 - **Design rule warnings**: objects outside the board outline and
   z-ports that don't land on copper are flagged in the editor and
   before each run.
+- **S-parameter devices (Touchstone)**: black-box multiport devices —
+  e.g. a transistor .s3p — placed in the circuit via EM/circuit
+  co-simulation. Put a lumped port at each device pad, upload the .sNp
+  to the server library (Simulation tab) and map device pins to port
+  numbers. The run then performs one excitation per port to extract the
+  full board S-matrix and folds the device networks in circuit space
+  (S_ext = See + Sec·Sd·(I−Scc·Sd)⁻¹·Sce); the Results tab shows the
+  combined external S-parameters, with the raw board matrix
+  (`board_full.sNp`), the combined network (`combined.sNp`) and the
+  device-less column (`sparams_board.csv`) downloadable. Device data is
+  interpolated onto the sweep (clamped with a warning outside its
+  range); pin ports must match the file's reference impedance. Note
+  this is circuit-level embedding — EM coupling between the device
+  package and the board is not modelled, exactly as in standard
+  EM/circuit co-simulation flows. A synthetic `fet_demo.s3p` ships in
+  `devices/`.
 - **Built-in verification tests**: the Tests tab in the main area runs
   the test suite from the GUI — fast code-level checks (parsers, mesh,
   script generation, API) and four benchmark simulations of canonical

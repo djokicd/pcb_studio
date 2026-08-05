@@ -289,6 +289,19 @@
           Merge lines &lt; (mm) <input id="s_meshMerge" type="number" step="0.01" min="0" placeholder="0.1"></label>
         <label>Air margin (mm) <input id="s_airMargin" type="number" step="1" min="0"></label>
       </div>
+      <h3 style="margin-top:16px">S-parameter devices</h3>
+      <p class="muted" style="margin:4px 0 8px">
+        Black-box devices (e.g. a transistor .s3p) connected at lumped-port
+        locations. The run then sweeps every port excitation to extract the
+        full board S-matrix and folds the devices in circuit space.
+      </p>
+      <div id="devList"></div>
+      <div class="stackup-add">
+        <button id="btnAddDevice">+ Add device</button>
+        <button id="btnUploadTs" title="Upload a Touchstone file to the server library">&#8686; Upload .sNp</button>
+      </div>
+      <input id="tsInput" type="file" accept=".s1p,.s2p,.s3p,.s4p,.snp" hidden>
+
       <h3 style="margin-top:16px">Current density recording</h3>
       <div class="form">
         <label class="check"><input id="s_dumpJ" type="checkbox"> Phasor dump (frequency domain)</label>
