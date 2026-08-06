@@ -172,9 +172,20 @@ class MagChart extends ChartBase {
     for (const s of series) s.values.forEach((v, k) => {
       if (isFinite(v) && visible(k)) { vLo = Math.min(vLo, v); vHi = Math.max(vHi, v); }
     });
-    if (!isFinite(vLo)) { vLo = -40; vHi = 0; }
-    vLo = Math.floor((vLo - 2) / 5) * 5;
-    vHi = Math.ceil((vHi + 2) / 5) * 5;
+    const unit = this.data.unit || 'dB';
+    if (!isFinite(vLo)) { vLo = this.data.yMin != null ? this.data.yMin : -40; vHi = vLo + 1; }
+    if (unit === 'dB') {
+      vLo = Math.floor((vLo - 2) / 5) * 5;
+      vHi = Math.ceil((vHi + 2) / 5) * 5;
+    } else {
+      // linear quantity (e.g. VSWR): honour a floor and a soft ceiling so
+      // one near-unity reflection cannot flatten the whole plot
+      if (this.data.yMax != null) vHi = Math.min(vHi, this.data.yMax);
+      if (this.data.yMin != null) vLo = this.data.yMin;
+      const pad = Math.max((vHi - vLo) * 0.06, 1e-6);
+      vHi += pad;
+      if (this.data.yMin == null) vLo -= pad;
+    }
     const px = f => m.l + (f - fLo) / (fHi - fLo) * (w - m.l - m.r);
     const py = v => m.t + (vHi - v) / (vHi - vLo) * (h - m.t - m.b);
     ctx.font = '11px system-ui';
@@ -183,7 +194,7 @@ class MagChart extends ChartBase {
       ctx.strokeStyle = CH.grid;
       ctx.beginPath(); ctx.moveTo(m.l, py(v)); ctx.lineTo(w - m.r, py(v)); ctx.stroke();
       ctx.fillStyle = CH.muted; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-      ctx.fillText(String(Math.round(v)), m.l - 6, py(v));
+      ctx.fillText(String(+v.toFixed(2)), m.l - 6, py(v));
     }
     for (const f of this.ticks(fLo, fHi, 6)) {
       ctx.strokeStyle = CH.grid;
@@ -197,7 +208,7 @@ class MagChart extends ChartBase {
     ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
     ctx.fillText('GHz', w - m.r - 2, h - m.b - 3);
     ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-    ctx.fillText('dB', m.l + 4, m.t + 2);
+    ctx.fillText(unit, m.l + 4, m.t + 2);
     if (this.hover !== null) {
       const f = freq[this.hover] / 1e9;
       ctx.strokeStyle = CH.crosshair;
@@ -252,9 +263,11 @@ class MagChart extends ChartBase {
     this.hover = idx;
     this.draw();
     const co = this.colorOffset || 0;
+    const tipUnit = this.data.tipUnit || this.data.unit || 'dB';
     const rows = series.map((s, i) =>
       `<div class="t-row"><span class="swatch" style="background:${SERIES_COLORS[(s.ci != null ? s.ci : i + co) % SERIES_COLORS.length]}"></span>` +
-      `${s.label}<span class="t-val">${s.values[idx].toFixed(2)} dB</span></div>`).join('');
+      `${s.label}<span class="t-val">` +
+      `${isFinite(s.values[idx]) ? s.values[idx].toFixed(2) : '∞'} ${tipUnit}</span></div>`).join('');
     this.showTip(e, `<div class="t-head">${(freq[idx] / 1e9).toFixed(3)} GHz</div>${rows}`);
   }
 }

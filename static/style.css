@@ -319,6 +319,7 @@ select.mini { font-size: 12px; padding: 2px 5px; }
 }
 .smat td:hover { background: var(--row-hover); color: var(--text); }
 .smat td b { display: block; font-size: 10px; color: var(--muted); font-weight: 600; }
+.smat td .na { opacity: 0.45; }
 .smat td.on { background: var(--accent-bg); color: #fff; border-color: var(--accent); }
 .smat td.on b { color: rgba(255,255,255,0.8); }
 /* picked, but the current view cannot plot it (transmission under Smith) */

@@ -116,8 +116,12 @@ FDTD simulations of planar PCB structures via GNU Octave.
 - **Results** open in a dedicated Results tab in the main area (the GUI
   switches to it when a run finishes), all interactive (hover tooltips)
   and pop-out-able to a large modal:
-  - Reflection: magnitude (dB) plot or **Smith chart** (Γ and denormalised
-    impedance readout on hover)
+  - Reflection: magnitude (dB) plot, **Smith chart** (Γ and denormalised
+    impedance readout on hover) or **VSWR** — the standing-wave ratio
+    (1+|Γ|)/(1−|Γ|), floored at 1:1 with a soft 20:1 ceiling so one
+    near-total reflection cannot flatten the rest; a port with |Γ| ≥ 1
+    (active or unstable) reads ∞. The reflection CSV export carries a
+    VSWR column alongside re/im/dB.
   - Transmission: magnitude (dB) plot or **polar plot** (|S| dB vs phase)
   - **Time domain**: the raw port signals of every port (lumped and
     MSL — for MSL ports the measurement-plane probes are used). Any
@@ -133,10 +137,11 @@ FDTD simulations of planar PCB structures via GNU Octave.
     mag∠deg or real/imag. Clicking a cell toggles that S_ij as a trace
     on the chart below, so any subset (a whole row, the diagonal, a
     reciprocity pair) can be compared directly, in **magnitude (dB), on
-    a Smith chart or on a polar plot**. The Smith chart is an impedance
-    chart, so it draws the selected reflection entries S_ii only —
-    transmission entries stay listed but are greyed out with a note;
-    the polar plot takes any entry, reflection or transmission. A
+    a Smith chart, as VSWR or on a polar plot**; the table cells
+    themselves also switch to VSWR. Smith and VSWR describe a
+    reflection coefficient, so they use the diagonal entries S_ii only
+    — transmission entries stay listed but are greyed out with a note
+    (and show "—" in the VSWR table); the polar plot takes any entry. A
     selector switches
     between the **raw board matrix** (before device networks are folded
     in) and the **resulting network**, the whole matrix exports to CSV,

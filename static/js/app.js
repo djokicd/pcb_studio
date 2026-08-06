@@ -1486,6 +1486,19 @@ function splitSparams(sp = app.sparams) {
   return { refl, trans };
 }
 const dB = (re, im) => re.map((r, k) => 20 * Math.log10(Math.max(Math.hypot(r, im[k]), 1e-12)));
+/* Voltage standing-wave ratio of a reflection coefficient. |Γ| ≥ 1 (an
+   active or unstable port) has no finite standing-wave ratio. */
+const vswr = (re, im) => re.map((r, k) => {
+  const g = Math.hypot(r, im[k]);
+  return g >= 1 ? Infinity : (1 + g) / (1 - g);
+});
+/* axis settings for a VSWR plot: floor at 1:1, soft ceiling so a single
+   near-total reflection cannot flatten everything else */
+const VSWR_AXIS = { unit: 'VSWR', tipUnit: ': 1', yMin: 1, yMax: 20 };
+const vswrAt = (re, im, k) => {
+  const g = Math.hypot(re[k], im[k]);
+  return g >= 1 ? Infinity : (1 + g) / (1 - g);
+};
 
 let reflChart = null, transChart = null, tdChart = null, smatChart = null;
 
@@ -1565,6 +1578,10 @@ function makeReflChart(canvas, tip) {
   if (view === 'smith') {
     ch = new SmithChart(canvas, tip);
     ch.setData({ freq, series, z0: excitedZ0() });
+  } else if (view === 'vswr') {
+    ch = new MagChart(canvas, tip);
+    ch.setData({ freq, ...VSWR_AXIS,
+      series: series.map(c => ({ label: c.label, values: vswr(c.re, c.im), ci: c.ci })) });
   } else {
     ch = new MagChart(canvas, tip);
     ch.setData({ freq, series: series.map(c => ({ label: c.label, values: dB(c.re, c.im), ci: c.ci })) });
@@ -1691,14 +1708,21 @@ function exportCSVFor(kind) {
   if (kind === 'refl' || kind === 'trans') {
     if (!app.sparams) return;
     const { refl, trans } = splitSparams();
-    const cols = kind === 'refl' ? [refl] : trans;
+    const cols = kind === 'refl' ? refl : trans;   // both are column lists
     if (!cols.length) return;
-    let out = 'freq_Hz' + cols.map(c => `,${c.label}_re,${c.label}_im,${c.label}_dB`).join('') + '\n';
+    // reflection columns also carry VSWR, the other display format
+    const isR = kind === 'refl';
+    let out = 'freq_Hz' + cols.map(c =>
+      `,${c.label}_re,${c.label}_im,${c.label}_dB` + (isR ? `,${c.label}_VSWR` : '')).join('') + '\n';
     app.sparams.freq.forEach((f, k) => {
       out += f.toExponential(6);
       for (const c of cols) {
         const mag = Math.max(Math.hypot(c.re[k], c.im[k]), 1e-12);
         out += `,${c.re[k].toExponential(6)},${c.im[k].toExponential(6)},${(20 * Math.log10(mag)).toFixed(4)}`;
+        if (isR) {
+          const v = vswrAt(c.re, c.im, k);
+          out += `,${isFinite(v) ? v.toFixed(4) : 'inf'}`;
+        }
       }
       out += '\n';
     });
@@ -1789,11 +1813,12 @@ function renderSMatrix() {
   fsel.value = String(keepIdx);
   const view = $('smatView').value;
   let info = `${ds.nports}×${ds.nports}, ${ds.freq.length} points, ${ds.r} Ω`;
-  if (view === 'smith') {
-    const drawn = smatPlotted(ds, 'smith').length;
+  if (SMAT_REFL_VIEWS.includes(view)) {
+    const what = view === 'smith' ? 'Smith' : 'VSWR';
+    const drawn = smatPlotted(ds, view).length;
     info += drawn
-      ? ` · Smith shows the ${drawn} selected reflection entr${drawn === 1 ? 'y' : 'ies'} (Sᵢᵢ)`
-      : ' · select a diagonal entry (S₁₁, S₂₂ …) to plot on the Smith chart';
+      ? ` · ${what} shows the ${drawn} selected reflection entr${drawn === 1 ? 'y' : 'ies'} (Sᵢᵢ)`
+      : ` · select a diagonal entry (S₁₁, S₂₂ …) to plot as ${what}`;
   }
   $('smatInfo').textContent = info;
 
@@ -1803,6 +1828,12 @@ function renderSMatrix() {
   const cell = label => {
     const e = ds.entries[label];
     const re = e.re[k], im = e.im[k];
+    if (fmt === 'vswr') {
+      // a standing-wave ratio exists only for a reflection coefficient
+      if (!smatIsRefl(label)) return '<span class="na">—</span>';
+      const v = vswrAt(e.re, e.im, k);
+      return isFinite(v) ? `${v.toFixed(3)}<br>: 1` : '∞<br>: 1';
+    }
     if (fmt === 'ri') return `${re.toFixed(4)}<br>${im >= 0 ? '+' : '−'}${Math.abs(im).toFixed(4)}j`;
     const mag = Math.hypot(re, im);
     const ph = Math.atan2(im, re) * 180 / Math.PI;
@@ -1820,12 +1851,12 @@ function renderSMatrix() {
     html += `<tr><th>i=${i}</th>`;
     for (let j = 1; j <= ds.nports; j++) {
       const label = `S${i}${j}`;
-      // selected but not drawn by this view (transmission under Smith)
-      const muted = sel[label] && view === 'smith' && !smatIsRefl(label);
+      // selected but not drawn by this view (transmission under Smith/VSWR)
+      const muted = sel[label] && SMAT_REFL_VIEWS.includes(view) && !smatIsRefl(label);
       const cls = sel[label] ? (muted ? 'on dim' : 'on') : '';
       html += `<td class="${cls}" data-s="${label}" `
         + `title="${label} — click to show/hide this trace`
-        + `${muted ? '; not shown on the Smith chart (transmission)' : ''}">`
+        + `${muted ? `; transmission has no ${view === 'smith' ? 'Smith' : 'VSWR'} trace` : ''}">`
         + `<b>${label}</b><span>${cell(label)}</span></td>`;
     }
     html += '</tr>';
@@ -1844,7 +1875,8 @@ function renderSMatrix() {
   const sel2 = smatSelected(ds);
   buildLegend($('smatLegend'), smatLabels(ds)
     .map((label, i) => ({ label, key: `smat:${ds.key}:${label}`, ci: i }))
-    .filter(s => sel2[s.label] && !(view === 'smith' && !smatIsRefl(s.label))));
+    .filter(s => sel2[s.label]
+      && !(SMAT_REFL_VIEWS.includes(view) && !smatIsRefl(s.label))));
 }
 
 const smatIsRefl = label => label[1] === label[2];
@@ -1856,11 +1888,13 @@ function smatSeries(ds) {
     .map((label, i) => ({ label, key: `smat:${ds.key}:${label}`, ci: i, ...ds.entries[label] }))
     .filter(s => sel[s.label] && !resultsPrefs.hidden[s.key]);
 }
-/* what the current view actually draws: the Smith chart is an impedance
-   chart, so it only takes the reflection entries S_ii */
+/* views that only make sense for a reflection coefficient: the Smith
+   chart is an impedance chart and VSWR is a standing-wave ratio, so
+   both take the diagonal entries S_ii only */
+const SMAT_REFL_VIEWS = ['smith', 'vswr'];
 function smatPlotted(ds, view) {
   const all = smatSeries(ds);
-  return view === 'smith' ? all.filter(s => smatIsRefl(s.label)) : all;
+  return SMAT_REFL_VIEWS.includes(view) ? all.filter(s => smatIsRefl(s.label)) : all;
 }
 function makeSMatChart(canvas, tip) {
   const ds = smatDataset();
@@ -1869,6 +1903,12 @@ function makeSMatChart(canvas, tip) {
   if (view === 'smith') {
     const ch = new SmithChart(canvas, tip);
     ch.setData({ freq: ds.freq, z0: ds.r, series });
+    return ch;
+  }
+  if (view === 'vswr') {
+    const ch = new MagChart(canvas, tip);
+    ch.setData({ freq: ds.freq, ...VSWR_AXIS,
+      series: series.map(s => ({ label: s.label, values: vswr(s.re, s.im), ci: s.ci })) });
     return ch;
   }
   if (view === 'polar') {
@@ -2231,17 +2271,25 @@ async function previewDevice(file) {
   try {
     const data = await apiJson(`/api/devices/${encodeURIComponent(file)}/data`);
     const bias = deviceBias(data.info);
+    const isRefl = s => s.label.length === 3 && s.label[1] === s.label[2];
     const show = view => {
-      const what = view === 'smith' ? 'reflection (Smith)' : '|S| (dB)';
+      const what = { smith: 'reflection (Smith)', vswr: 'VSWR (Sii)' }[view] || '|S| (dB)';
       Modal.open(`${data.file} — ${what} · ${data.nports}-port, ${data.r} Ω`
         + (bias ? ` · ${bias}` : ''), (canvas, tip) => {
         if (view === 'smith') {
           // diagonals only: S11, S22, ... - directly comparable with
           // datasheet Smith-chart figures
-          const refl = data.series.filter(s => s.label.length === 3 && s.label[1] === s.label[2]);
+          const refl = data.series.filter(isRefl);
           const ch = new SmithChart(canvas, tip);
           ch.setData({ freq: data.freq, z0: data.r,
             series: refl.map((s, i) => ({ label: s.label, re: s.re, im: s.im, ci: i })) });
+          return ch;
+        }
+        if (view === 'vswr') {
+          const refl = data.series.filter(isRefl);
+          const ch = new MagChart(canvas, tip);
+          ch.setData({ freq: data.freq, ...VSWR_AXIS,
+            series: refl.map((s, i) => ({ label: s.label, values: vswr(s.re, s.im), ci: i })) });
           return ch;
         }
         const ch = new MagChart(canvas, tip);
@@ -2249,7 +2297,8 @@ async function previewDevice(file) {
           series: data.series.map((s, i) => ({ ...s, ci: i })) });
         return ch;
       });
-      const sel = selIn([['mag', 'Magnitude (dB)'], ['smith', 'Smith chart (Sii)']], view, show);
+      const sel = selIn([['mag', 'Magnitude (dB)'], ['smith', 'Smith chart (Sii)'],
+                         ['vswr', 'VSWR (Sii)']], view, show);
       sel.className = 'mini';
       $('modalCtl').append(sel);
     };
