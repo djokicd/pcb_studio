@@ -120,10 +120,12 @@ const app = {
       .map(l => ({ ...l, color: LAYER_COLORS[i++ % LAYER_COLORS.length] }));
   },
   layerColor(id) {
+    if (id === REF_LAYER) return ED.ref;
     const l = this.conductorLayers().find(l => l.id === id);
     return l ? l.color : '#fff';
   },
   layerName(id) {
+    if (id === REF_LAYER) return 'Reference';
     const l = this.project.stackup.find(l => l.id === id);
     return l ? (l.name || id) : id;
   },
@@ -195,10 +197,17 @@ const app = {
   },
 
   ensureActiveLayer() {
+    if (this.activeLayer === REF_LAYER) return REF_LAYER;   // comments layer
     const layers = this.conductorLayers();
     if (!layers.find(l => l.id === this.activeLayer) && layers.length)
       this.activeLayer = layers[0].id;
     return this.activeLayer;
+  },
+  /* objects that must sit on copper (components, in-plane ports) fall
+     back to the first conductor when the comments layer is active */
+  condLayerFor() {
+    const layers = this.conductorLayers();
+    return layers.find(l => l.id === this.activeLayer) ? this.activeLayer : layers[0].id;
   },
 
   createShape(type, geom) {
@@ -225,7 +234,7 @@ const app = {
     const n = this.project.components.length + 1;
     this.project.components.push({
       id, ref: 'R' + n, ctype: 'R', value: 50, package: '0603',
-      x, y, rot: 0, layer: this.ensureActiveLayer(),
+      x, y, rot: 0, layer: this.condLayerFor(),
     });
     this.select('component', id);
     this.dirty();
@@ -254,7 +263,7 @@ const app = {
     p.ports.push({
       id, number, x, y, w, h, direction: 'z',
       layerFrom: layers[layers.length - 1].id, layerTo: layers[0].id,
-      layer: this.ensureActiveLayer(),
+      layer: this.condLayerFor(),
       impedance: 50, excite: p.ports.length === 0,
     });
     this.select('port', id);
@@ -364,6 +373,7 @@ const app = {
   },
 
   dirty() {
+    pushHistory();
     clearTimeout(this._saveT);
     this._saveT = setTimeout(() => {
       try { localStorage.setItem('openems_pcb_project', JSON.stringify(this.project)); } catch (e) { /* ignore */ }
@@ -394,6 +404,53 @@ const app = {
   },
 };
 
+/* ---------- undo / redo ----------
+   Snapshot history: every committed mutation funnels through app.dirty(),
+   which pushes the full project state (deduplicated). The top of the
+   stack is always the current state; undo restores the one below it. */
+const editHistory = { stack: [], redo: [], cap: 80 };
+function pushHistory() {
+  if (app._restoring) return;
+  const snap = JSON.stringify(app.project);
+  if (editHistory.stack.length &&
+      editHistory.stack[editHistory.stack.length - 1] === snap) return;
+  editHistory.stack.push(snap);
+  if (editHistory.stack.length > editHistory.cap) editHistory.stack.shift();
+  editHistory.redo.length = 0;
+}
+function resetHistory() {
+  editHistory.stack = [JSON.stringify(app.project)];
+  editHistory.redo = [];
+}
+function restoreSnapshot(snap) {
+  app._restoring = true;
+  try {
+    app.project = migrate(JSON.parse(snap));
+    app.selection = null;
+    app.multi = [];
+    formsFromModel();
+    renderStackup();
+    updateLayerSelect();
+    renderObjList();
+    renderProps();
+    app.editor.render();
+    app.dirty();   // autosave + warnings; history push is suppressed
+  } finally {
+    app._restoring = false;
+  }
+}
+function undoEdit() {
+  if (editHistory.stack.length < 2) { uiNotice('Nothing to undo.', 'info', 1500); return; }
+  editHistory.redo.push(editHistory.stack.pop());
+  restoreSnapshot(editHistory.stack[editHistory.stack.length - 1]);
+}
+function redoEdit() {
+  if (!editHistory.redo.length) { uiNotice('Nothing to redo.', 'info', 1500); return; }
+  const snap = editHistory.redo.pop();
+  editHistory.stack.push(snap);
+  restoreSnapshot(snap);
+}
+
 /* ---------- design rule warnings ---------- */
 function bboxOf(pts) {
   const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
@@ -408,6 +465,7 @@ function validateProject() {
   const B = [0, 0, p.board.width, p.board.height];
   const inside = bb => bb[0] >= -1e-6 && bb[1] >= -1e-6 && bb[2] <= B[2] + 1e-6 && bb[3] <= B[3] + 1e-6;
   for (const s of p.shapes) {
+    if (s.layer === REF_LAYER) continue;   // reference geometry may sit anywhere
     if (!inside(bboxOf(outlinePts(s)))) w.push(`"${s.name || s.type}" extends outside the board outline`);
   }
   for (const v of p.vias) {
@@ -464,6 +522,7 @@ function validateProject() {
   // layers referenced by objects must exist as conductors (e.g. after
   // applying a different stackup from the manager)
   const condIds = new Set(app.conductorLayers().map(l => l.id));
+  condIds.add(REF_LAYER);
   for (const sh of p.shapes) {
     if (!condIds.has(sh.layer)) {
       w.push(`"${sh.name || sh.type}" references a missing conductor layer "${sh.layer}"`);
@@ -659,8 +718,10 @@ function selIn(options, value, onchange) {
   s.addEventListener('change', () => onchange(s.value));
   return s;
 }
-function layerSel(value, onchange) {
-  return selIn(app.conductorLayers().map(l => [l.id, l.name || l.id]), value, onchange);
+function layerSel(value, onchange, withRef = false) {
+  const opts = app.conductorLayers().map(l => [l.id, l.name || l.id]);
+  if (withRef) opts.push([REF_LAYER, '✎ Reference (not simulated)']);
+  return selIn(opts, value, onchange);
 }
 
 function renderProps() {
@@ -720,7 +781,7 @@ function renderProps() {
 
   if (kind === 'shape') {
     F('Name', textIn(obj.name || '', v => { obj.name = v; upd(); }));
-    F('Layer', layerSel(obj.layer, v => { obj.layer = v; upd(); }));
+    F('Layer', layerSel(obj.layer, v => { obj.layer = v; upd(); }, true));
     const t = obj.type || 'rect';
     if (t === 'rect') {
       F('x (mm)', numIn(obj.x, 0.1, v => { obj.x = v; upd(); }));
@@ -1061,6 +1122,12 @@ function updateLayerSelect() {
     o.value = l.id; o.textContent = l.name || l.id;
     sel.append(o);
   }
+  const ref = document.createElement('option');
+  ref.value = REF_LAYER;
+  ref.textContent = '✎ Reference';
+  ref.title = 'Comments layer: geometry drawn here is a visual reference only '
+    + '— it is never meshed, simulated or exported to Gerber';
+  sel.append(ref);
   app.ensureActiveLayer();
   sel.value = app.activeLayer;
 }
@@ -2776,27 +2843,91 @@ function showLeftTab(name) {
     p.classList.toggle('active', p.id === 'ltab-' + name));
   if (name === 'projects') refreshProjPane();
 }
+/* drop handler shared by folder rows and the pane background:
+   'proj:<name>' assigns a project, 'folder:<id>' re-parents a folder */
+async function folderDrop(data, targetFid) {
+  try {
+    if (data.startsWith('proj:')) {
+      await apiJson('/api/folders/assign', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: data.slice(5), folder: targetFid }),
+      });
+    } else if (data.startsWith('folder:')) {
+      const fid = data.slice(7);
+      if (fid === targetFid) return;
+      await apiJson(`/api/folders/${fid}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent: targetFid }),
+      });
+    } else {
+      return;
+    }
+    refreshProjPane();
+  } catch (e) {
+    uiNotice('Move failed: ' + e.message, 'err', 5000);
+  }
+}
+function makeDroppable(el, targetFid) {
+  el.addEventListener('dragover', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    el.classList.add('drophover');
+  });
+  el.addEventListener('dragleave', () => el.classList.remove('drophover'));
+  el.addEventListener('drop', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    el.classList.remove('drophover');
+    folderDrop(e.dataTransfer.getData('text/plain'), targetFid);
+  });
+}
+
 async function refreshProjPane() {
   const ul = $('projPane');
   ul.innerHTML = '<li class="muted">loading…</li>';
   let projects = [];
+  let fdata = { folders: [], assign: {} };
   try {
-    projects = (await apiJson('/api/projects')).projects;
+    [projects, fdata] = await Promise.all([
+      apiJson('/api/projects').then(d => d.projects),
+      apiJson('/api/folders').catch(() => ({ folders: [], assign: {} })),
+    ]);
   } catch (e) {
     ul.innerHTML = '<li class="muted">failed to list projects</li>';
     return;
   }
-  ul.innerHTML = '';
-  if (!projects.length) {
-    ul.innerHTML = '<li class="muted">No server projects yet — use File → Save.</li>';
-    return;
-  }
+  app.folders = fdata;
+  uiSettings.folderOpen = uiSettings.folderOpen || {};
+  const isOpen = fid => uiSettings.folderOpen[fid] !== false;   // default open
+  const byParent = {};
+  for (const f of fdata.folders)
+    (byParent[f.parent || ''] = byParent[f.parent || ''] || []).push(f);
+  const projByFolder = {};
   for (const pr of projects) {
+    const fid = fdata.assign[pr.name] || '';
+    (projByFolder[fid] = projByFolder[fid] || []).push(pr);
+  }
+  ul.innerHTML = '';
+
+  const foldBtn = (txt, title, onclick) => {
+    const b = document.createElement('button');
+    b.className = 'pdel fbtn';
+    b.textContent = txt;
+    b.title = title;
+    b.onclick = e => { e.stopPropagation(); onclick(); };
+    return b;
+  };
+
+  const addProjectRow = (pr, depth) => {
     const li = document.createElement('li');
+    li.style.paddingLeft = (6 + depth * 14) + 'px';
     if (pr.name === app.project.name) li.classList.add('selected');
+    li.draggable = true;
+    li.addEventListener('dragstart', e =>
+      e.dataTransfer.setData('text/plain', 'proj:' + pr.name));
     const nm = document.createElement('span');
     nm.textContent = pr.name;
-    nm.title = 'Open this project in the editor';
+    nm.title = 'Open this project in the editor — drag onto a folder to move it';
     li.append(nm);
     if (pr.runCount) {
       const rb = document.createElement('button');
@@ -2820,6 +2951,94 @@ async function refreshProjPane() {
     }
     li.onclick = () => openServerProject(pr.name).then(refreshProjPane);
     ul.append(li);
+  };
+
+  const addFolderRow = (f, depth) => {
+    const li = document.createElement('li');
+    li.className = 'fold-row';
+    li.style.paddingLeft = (6 + depth * 14) + 'px';
+    li.draggable = true;
+    li.addEventListener('dragstart', e =>
+      e.dataTransfer.setData('text/plain', 'folder:' + f.id));
+    makeDroppable(li, f.id);
+    const tog = document.createElement('span');
+    tog.className = 'ftog';
+    tog.textContent = isOpen(f.id) ? '▾' : '▸';
+    const nm = document.createElement('span');
+    nm.className = 'fname';
+    nm.textContent = f.name;
+    li.append(tog, nm);
+    for (const t of f.tags || []) {
+      const tc = document.createElement('span');
+      tc.className = 'tagchip';
+      tc.textContent = t;
+      li.append(tc);
+    }
+    const btns = document.createElement('span');
+    btns.className = 'fbtns';
+    btns.append(
+      foldBtn('＋', 'New subfolder', async () => {
+        const name = await uiPrompt('New subfolder name:', '', 'Create');
+        if (!name) return;
+        try {
+          await apiJson('/api/folders', { method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, parent: f.id }) });
+          refreshProjPane();
+        } catch (e) { uiNotice(e.message, 'err', 5000); }
+      }),
+      foldBtn('✎', 'Rename folder', async () => {
+        const name = await uiPrompt('Folder name:', f.name, 'Rename');
+        if (!name || name === f.name) return;
+        try {
+          await apiJson(`/api/folders/${f.id}`, { method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name }) });
+          refreshProjPane();
+        } catch (e) { uiNotice(e.message, 'err', 5000); }
+      }),
+      foldBtn('🏷', 'Edit tags (comma-separated)', async () => {
+        const raw = await uiPrompt('Tags for this folder (comma-separated):',
+          (f.tags || []).join(', '), 'Save');
+        if (raw === null) return;
+        try {
+          await apiJson(`/api/folders/${f.id}`, { method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tags: raw.split(',').map(s => s.trim()).filter(Boolean) }) });
+          refreshProjPane();
+        } catch (e) { uiNotice(e.message, 'err', 5000); }
+      }),
+      foldBtn('✕', 'Delete folder (its projects and subfolders move up one level)', async () => {
+        if (!(await uiConfirm(`Delete folder "${f.name}"?\n\nIts projects and subfolders are kept — they move up one level.`, 'Delete'))) return;
+        try {
+          await apiJson(`/api/folders/${f.id}`, { method: 'DELETE' });
+          refreshProjPane();
+        } catch (e) { uiNotice(e.message, 'err', 5000); }
+      }),
+    );
+    li.append(btns);
+    li.onclick = () => {
+      uiSettings.folderOpen[f.id] = !isOpen(f.id);
+      saveUiSettings();
+      refreshProjPane();
+    };
+    ul.append(li);
+    if (isOpen(f.id)) walk(f.id, depth + 1);
+  };
+
+  const walk = (parent, depth) => {
+    const fs = (byParent[parent] || [])
+      .slice().sort((a, b) => a.name.localeCompare(b.name));
+    for (const f of fs) addFolderRow(f, depth);
+    for (const pr of projByFolder[parent] || []) addProjectRow(pr, depth);
+  };
+  walk('', 0);
+  if (!ul.children.length)
+    ul.innerHTML = '<li class="muted">No server projects yet — use File → Save.</li>';
+  // dropping on the pane background moves to the root level
+  if (!ul._rootDrop) {
+    ul._rootDrop = true;
+    makeDroppable(ul, null);
   }
 }
 async function toggleCompare(name, on) {
@@ -3125,6 +3344,8 @@ const MENU_ACTIONS = {
   exportGerber: () => exportGerberZip(),
   run: () => startRun(),
   stop: () => stopRun(),
+  undo: () => undoEdit(),
+  redo: () => redoEdit(),
   copy: () => app.copySelection(false),
   cut: () => app.copySelection(true),
   paste: () => app.pasteClipboard(),
@@ -3207,6 +3428,7 @@ function loadProject(p) {
   app.dirty();
   if (app.meshVisible) app.refreshMesh();
   refreshPastRuns();   // the list is scoped to the loaded project
+  resetHistory();      // a freshly loaded project is the new baseline
 }
 
 /* ---------- init ---------- */
@@ -3221,6 +3443,16 @@ window.addEventListener('DOMContentLoaded', () => {
   initMenus();
   document.querySelectorAll('#leftTabs .tab').forEach(btn =>
     btn.addEventListener('click', () => showLeftTab(btn.dataset.ltab)));
+  $('btnNewFolder').addEventListener('click', async () => {
+    const name = await uiPrompt('New folder name:', '', 'Create');
+    if (!name) return;
+    try {
+      await apiJson('/api/folders', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }) });
+      refreshProjPane();
+    } catch (e) { uiNotice(e.message, 'err', 5000); }
+  });
   bindForms();
   applyTheme();
   loadProject(saved || defaultProject());
@@ -3557,6 +3789,8 @@ window.addEventListener('DOMContentLoaded', () => {
     if (e.target.matches('input, select, textarea')) return;
     if ((e.ctrlKey || e.metaKey) && !e.altKey) {
       const k = e.key.toLowerCase();
+      if (k === 'z') { (e.shiftKey ? redoEdit : undoEdit)(); e.preventDefault(); return; }
+      if (k === 'y') { redoEdit(); e.preventDefault(); return; }
       if (k === 'c') { app.copySelection(false); e.preventDefault(); }
       else if (k === 'x') { app.copySelection(true); e.preventDefault(); }
       else if (k === 'v') { app.pasteClipboard(); e.preventDefault(); }

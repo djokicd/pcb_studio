@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_file, send_from_directory
@@ -1128,6 +1129,149 @@ def api_tests_run():
 @app.get('/api/tests/status')
 def api_tests_status():
     return jsonify(test_runner.status())
+
+
+# ---------------------------------------------------------------------------
+# Project folders: a purely organizational overlay over the flat
+# projects/<name>/ storage. Folders nest arbitrarily deep via parent
+# pointers, carry optional tags, and live in projects/folders.json —
+# moving or renaming a folder never touches result ids or run data.
+# ---------------------------------------------------------------------------
+FOLDERS_FILE = PROJ_ROOT / 'folders.json'
+
+
+def _load_folders():
+    try:
+        d = json.loads(FOLDERS_FILE.read_text())
+    except (OSError, ValueError):
+        d = {}
+    d.setdefault('folders', [])
+    d.setdefault('assign', {})
+    return d
+
+
+def _save_folders(d):
+    PROJ_ROOT.mkdir(parents=True, exist_ok=True)
+    FOLDERS_FILE.write_text(json.dumps(d, indent=1))
+
+
+def _folder_by_id(d, fid):
+    return next((f for f in d['folders'] if f['id'] == fid), None)
+
+
+def _is_descendant(d, fid, maybe_ancestor):
+    """True if `fid` is (or descends from) `maybe_ancestor`."""
+    seen = set()
+    while fid is not None and fid not in seen:
+        if fid == maybe_ancestor:
+            return True
+        seen.add(fid)
+        f = _folder_by_id(d, fid)
+        fid = f['parent'] if f else None
+    return False
+
+
+def _clean_tags(tags):
+    out = []
+    for t in (tags or []):
+        t = str(t).strip()[:24]
+        if t and t not in out:
+            out.append(t)
+    return out[:12]
+
+
+@app.get('/api/folders')
+def api_folders():
+    d = _load_folders()
+    # hygiene: only report assignments whose project still exists
+    assign = {p: f for p, f in d['assign'].items()
+              if (PROJ_ROOT / p / 'project.json').is_file()
+              and _folder_by_id(d, f)}
+    return jsonify({'folders': d['folders'], 'assign': assign})
+
+
+@app.post('/api/folders')
+def api_folders_create():
+    data = request.get_json(force=True)
+    name = str(data.get('name') or '').strip()[:60]
+    if not name:
+        return jsonify({'error': 'folder name required'}), 400
+    d = _load_folders()
+    parent = data.get('parent') or None
+    if parent is not None and not _folder_by_id(d, parent):
+        return jsonify({'error': 'no such parent folder'}), 404
+    fid = 'f_' + uuid.uuid4().hex[:8]
+    folder = {'id': fid, 'name': name, 'parent': parent,
+              'tags': _clean_tags(data.get('tags'))}
+    d['folders'].append(folder)
+    _save_folders(d)
+    return jsonify(folder)
+
+
+@app.post('/api/folders/<fid>')
+def api_folders_update(fid):
+    data = request.get_json(force=True)
+    d = _load_folders()
+    f = _folder_by_id(d, fid)
+    if not f:
+        return jsonify({'error': 'no such folder'}), 404
+    if 'name' in data:
+        name = str(data['name'] or '').strip()[:60]
+        if not name:
+            return jsonify({'error': 'folder name required'}), 400
+        f['name'] = name
+    if 'tags' in data:
+        f['tags'] = _clean_tags(data['tags'])
+    if 'parent' in data:
+        parent = data['parent'] or None
+        if parent is not None:
+            if not _folder_by_id(d, parent):
+                return jsonify({'error': 'no such parent folder'}), 404
+            if _is_descendant(d, parent, fid):
+                return jsonify({'error': 'cannot move a folder into itself'}), 400
+        f['parent'] = parent
+    _save_folders(d)
+    return jsonify(f)
+
+
+@app.delete('/api/folders/<fid>')
+def api_folders_delete(fid):
+    d = _load_folders()
+    f = _folder_by_id(d, fid)
+    if not f:
+        return jsonify({'error': 'no such folder'}), 404
+    # contents survive: children and projects move to the deleted
+    # folder's parent (or the root)
+    for child in d['folders']:
+        if child['parent'] == fid:
+            child['parent'] = f['parent']
+    for proj, fol in list(d['assign'].items()):
+        if fol == fid:
+            if f['parent']:
+                d['assign'][proj] = f['parent']
+            else:
+                del d['assign'][proj]
+    d['folders'] = [x for x in d['folders'] if x['id'] != fid]
+    _save_folders(d)
+    return jsonify({'deleted': fid})
+
+
+@app.post('/api/folders/assign')
+def api_folders_assign():
+    data = request.get_json(force=True)
+    safe = _safe_project_name(data.get('project'))
+    if not safe or not (PROJ_ROOT / safe / 'project.json').is_file():
+        return jsonify({'error': 'no such project'}), 404
+    d = _load_folders()
+    fid = data.get('folder') or None
+    if fid is None:
+        d['assign'].pop(safe, None)
+    else:
+        if not _folder_by_id(d, fid):
+            return jsonify({'error': 'no such folder'}), 404
+        d['assign'][safe] = fid
+    _save_folders(d)
+    return jsonify({'project': safe, 'folder': fid})
 
 
 @app.get('/api/projects')

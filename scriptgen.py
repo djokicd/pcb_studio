@@ -20,7 +20,7 @@ import os
 import re
 from pathlib import Path
 
-from geometry import (PACKAGES, stackup_z, shape_outline, comp_body,
+from geometry import (PACKAGES, sim_shapes, stackup_z, shape_outline, comp_body,
                       comp_element_box, circle_points)
 from meshlines import build_mesh
 
@@ -95,7 +95,7 @@ def validate(model):
     if fstop <= fstart:
         raise ValidationError('sim.fStop must be greater than sim.fStart')
 
-    for i, s in enumerate(model.get('shapes') or []):
+    for i, s in enumerate(sim_shapes(model)):
         name = s.get('name') or f'shape {i + 1}'
         if s.get('layer') not in conductors:
             raise ValidationError(f'{name}: not on a conductor layer')
@@ -168,7 +168,7 @@ def validate(model):
 
 def dump_layers(model):
     """Conductor layers that carry copper (candidates for J dumps)."""
-    used = {s.get('layer') for s in model.get('shapes') or []}
+    used = {s.get('layer') for s in sim_shapes(model)}
     used |= {c.get('layer') for c in model.get('components') or []}
     used |= {l['id'] for l in model.get('stackup') or []
              if l.get('type') == 'conductor' and l.get('fill')}
@@ -211,7 +211,7 @@ def generate_script(model):
     board = model['board']
     stackup = model['stackup']
     sim = model.get('sim') or {}
-    shapes = model.get('shapes') or []
+    shapes = sim_shapes(model)
     vias = model.get('vias') or []
     comps = model.get('components') or []
     ports = model.get('ports') or []

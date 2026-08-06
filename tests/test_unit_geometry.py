@@ -132,3 +132,22 @@ def test_canvas_notes_are_ignored_by_mesh_and_script():
     assert noted['z'] == plain_mesh['z']
     assert generate_script(m) == plain_script
     assert 'tuning note' not in plain_script
+
+
+def test_reference_layer_invisible_to_sim_and_fab():
+    """Shapes on the __ref comments layer are editor-only: excluded from
+    validation, mesh, the generated script and the Gerber export."""
+    from scriptgen import generate_script
+    from gerber import export_fabrication
+    ref = {'id': 8, 'name': 'connector_outline', 'type': 'rect',
+           'layer': '__ref', 'x': -30, 'y': -30, 'w': 5, 'h': 5, 'mesh': {}}
+    plain = _model([rect('t', 10, 8, 10, 3)])
+    m = _model([rect('t', 10, 8, 10, 3), ref])
+    base_mesh = build_mesh(plain)
+    with_ref = build_mesh(m)
+    assert with_ref['x'] == base_mesh['x'] and with_ref['y'] == base_mesh['y']
+    script = generate_script(m)   # would raise "not on a conductor layer"
+    assert script == generate_script(plain)
+    files = export_fabrication(m)
+    top = next(v for k, v in files.items() if 'Top' in k or 'top' in k.lower())
+    assert 'X-30000000' not in top

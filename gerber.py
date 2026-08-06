@@ -435,6 +435,7 @@ def gerber_layer(model, layer_id):
         out += _region([(0, 0), (board['width'], 0),
                         (board['width'], board['height']), (0, board['height'])])
     for s in model.get('shapes') or []:
+        # the reference/comments layer is never fabricated
         if s.get('layer') != layer_id:
             continue
         out += _region(shape_outline(s))

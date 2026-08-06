@@ -32,6 +32,9 @@
     <div class="menu">
       <button class="menu-btn">Edit</button>
       <div class="menu-drop">
+        <button data-action="undo">Undo <kbd>Ctrl+Z</kbd></button>
+        <button data-action="redo">Redo <kbd>Ctrl+Y</kbd></button>
+        <div class="menu-sep"></div>
         <button data-action="copy">Copy <kbd>Ctrl+C</kbd></button>
         <button data-action="cut">Cut <kbd>Ctrl+X</kbd></button>
         <button data-action="paste">Paste <kbd>Ctrl+V</kbd></button>
@@ -189,13 +192,17 @@
     </div>
     <div id="ltab-projects" class="ltabpage">
       <div class="panel grow">
-        <h3>Server projects</h3>
+        <h3 class="phead">Server projects
+          <button id="btnNewFolder" class="lr-btn" title="New folder at the top level">＋ folder</button>
+        </h3>
         <ul id="projPane" class="obj-list"></ul>
       </div>
       <div class="panel hint">
-        Click a project to open it in the editor. Tick &ldquo;cmp&rdquo; to
-        overlay that project&rsquo;s S-parameters in the Results charts for
-        comparison with the current results.
+        Click a project to open it. Drag projects into folders (and
+        folders into folders) to organize; drop on empty space to move
+        to the top level. Folder buttons: ＋ subfolder, ✎ rename,
+        🏷 tags, ✕ delete (contents move up). &ldquo;cmp&rdquo; overlays
+        that project&rsquo;s S-parameters in the Results charts.
       </div>
     </div>
   </aside>
@@ -580,6 +587,7 @@
       <tr><td><kbd>X</kbd></td><td>measure tool — drag between two points</td></tr>
       <tr><td><kbd>N</kbd></td><td>note — click to place; click its triangle (or double-click) to collapse/expand</td></tr>
       <tr><td><kbd>G</kbd> / <kbd>M</kbd> / <kbd>F</kbd></td><td>toggle grid / mesh preview / fit view</td></tr>
+      <tr><td><kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd></td><td>undo / redo (Ctrl+Shift+Z also redoes)</td></tr>
       <tr><td><kbd>Ctrl+C/X/V</kbd></td><td>copy / cut / paste the selection</td></tr>
       <tr><td><kbd>Ctrl+D</kbd></td><td>duplicate</td></tr>
       <tr><td><kbd>Ctrl+A</kbd></td><td>select all objects</td></tr>

@@ -18,6 +18,16 @@ import math
 # package -> (body length, body width) mm, current flows along the length
 PACKAGES = {'0402': (1.0, 0.5), '0603': (1.6, 0.8), '0805': (2.0, 1.25)}
 
+# the comments layer: shapes drawn here are reference geometry only -
+# visible in the editor, invisible to mesh, simulation and fabrication
+REF_LAYER = '__ref'
+
+
+def sim_shapes(model):
+    """The model's shapes that take part in the simulation (i.e. not on
+    the reference/comments layer)."""
+    return [s for s in model.get('shapes') or [] if s.get('layer') != REF_LAYER]
+
 
 def stackup_z(stackup):
     """stackup is listed top->bottom. Returns (cond_z, diel_z, total_height)
@@ -267,7 +277,7 @@ def mesh_lines_xy(model, edge_res, fringe=None):
         # edge + di*res/3 (inside the metal) and edge - di*2res/3 (outside)
         return [edge + di * res / 3.0, edge - di * 2.0 * res / 3.0]
 
-    for s in model.get('shapes') or []:
+    for s in sim_shapes(model):
         pts = shape_outline(s)
         pxs = [p[0] for p in pts]
         pys = [p[1] for p in pts]

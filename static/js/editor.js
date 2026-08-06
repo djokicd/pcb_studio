@@ -8,6 +8,10 @@ const LAYER_COLORS_DEFAULT = [...LAYER_COLORS];
 /* selectable object kind -> the project array holding it */
 const OBJ_LISTS = { shape: 'shapes', via: 'vias', component: 'components',
                     port: 'ports', note: 'notes' };
+/* the comments layer: reference geometry drawn here is visible in the
+   editor but never reaches mesh, simulation or fabrication (the Python
+   side filters the same id) */
+const REF_LAYER = '__ref';
 /* editor canvas palettes; ED is mutated by applyTheme()/applyColorPrefs() */
 const ED_THEMES = {
   dark: {
@@ -19,6 +23,7 @@ const ED_THEMES = {
     measure: '#f2c94c', overlay: 'rgba(13,13,13,0.82)',
     overlayEdge: 'rgba(255,255,255,0.14)', selectFill: 'rgba(57,135,229,0.12)',
     note: 'rgba(38,38,36,0.94)', noteEdge: '#c98500', noteText: '#e8e7e0',
+    ref: '#7fb2e8',
   },
   light: {
     port: '#0a8a0a', msl: '#0a8a66', pin: '#6a5bd8',
@@ -29,6 +34,7 @@ const ED_THEMES = {
     measure: '#a9770a', overlay: 'rgba(255,255,255,0.90)',
     overlayEdge: 'rgba(0,0,0,0.15)', selectFill: 'rgba(47,111,202,0.10)',
     note: 'rgba(255,251,235,0.97)', noteEdge: '#a9770a', noteText: '#1c1c1a',
+    ref: '#3a76b8',
   },
 };
 const ED = { ...ED_THEMES.dark };
@@ -724,6 +730,16 @@ class Editor {
         ctx.lineWidth = 1;
         ctx.stroke();
       }
+    }
+
+    // reference geometry (comments layer): dashed outlines, never simulated
+    for (const s of p.shapes.filter(s => s.layer === REF_LAYER)) {
+      this.pathOf(outlinePts(s));
+      ctx.strokeStyle = ED.ref;
+      ctx.setLineDash([6, 4]);
+      ctx.lineWidth = 1.3;
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     for (const v of p.vias) this.drawVia(v);

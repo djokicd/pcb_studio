@@ -44,11 +44,21 @@ FDTD simulations of planar PCB structures via GNU Octave.
   to corners/vertices of existing objects. The background grid always
   shows the configured snap grid (coarsened by 2/5/10× when zoomed out).
 - **Projects pane**: the left sidebar switches between Design (tools +
-  objects) and Projects — a list of the server-stored projects for
+  objects) and Projects — a tree of the server-stored projects for
   quick switching, where each project with stored results has a "cmp"
   checkbox that overlays its S-parameters in the Results charts
   (resampled onto the current sweep) for direct comparison; overlay
   traces get their own legend chips.
+- **Project folders**: projects organize into **named folders with
+  optional tags, nested to any depth**. Drag a project onto a folder
+  (or a folder onto a folder) to move it; drop on empty space to move
+  to the top level. Folder rows expand/collapse (state remembered per
+  browser) and offer ＋ subfolder, ✎ rename, 🏷 tags and ✕ delete —
+  deleting a folder keeps its contents, moving them up one level, and
+  moving a folder into its own subtree is rejected. The hierarchy is a
+  pure organizational overlay stored in `projects/folders.json`: the
+  on-disk project directories stay flat, so run ids, stored results
+  and the completion auto-attach are untouched by any reorganizing.
 - **Multi-selection**: with the Select tool, dragging on empty canvas
   box-selects every object fully inside; the group moves/nudges/
   copies/deletes together (Ctrl+A selects everything). Esc in any
@@ -277,6 +287,21 @@ FDTD simulations of planar PCB structures via GNU Octave.
   notch, patch resonance), each showing a reference-vs-obtained
   comparison table with acceptance windows. The same cases run headless
   via `python3 -m pytest -m sim` (see `tests/README.md`).
+- **Undo / redo** (Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z, also in the Edit
+  menu): full-project snapshot history (80 steps, deduplicated) covering
+  every committed edit — drawing, moving, deleting, property and
+  stackup changes. Opening or importing a project starts a fresh
+  baseline.
+- **Reference / comments layer**: the layer selector offers
+  "✎ Reference" alongside the conductors. Geometry drawn there (any
+  shape type, including transmission lines) renders as dashed outlines
+  in the editor for annotation and reference — connector outlines,
+  keep-outs, target dimensions — but is **completely invisible to the
+  simulation**: excluded from validation (it may sit outside the
+  board), from mesh generation, from the generated Octave script and
+  from the Gerber export. Existing shapes can be moved to/from it via
+  the Layer property; components and ports drawn while it is active
+  fall back to the first conductor layer.
 - **Editor conveniences**: Ctrl+C/X/V copy, cut and paste the selected
   object (repeated pastes cascade; Ctrl+D duplicates), the right panel
   is resizable via its drag handle, and all confirmations and notices
