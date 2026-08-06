@@ -1108,6 +1108,7 @@ function initTabs() {
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
   document.querySelectorAll('.tabpage').forEach(p => p.classList.toggle('active', p.id === 'tab-' + name));
+  if (name === 'run' && typeof refreshPastRuns === 'function') refreshPastRuns();
 }
 
 /* ---------- helpers ---------- */
@@ -1469,6 +1470,7 @@ async function loadResults(runId, show = true) {
     await loadJDumps(runId);
     await loadSMatrix(runId);
     rememberRun(runId);
+    refreshPastRuns();   // new completion / selection highlight
     if (show) showView('results');
   } catch (e) {
     appendLog(['[gui] failed to load results: ' + e.message]);
@@ -2552,6 +2554,65 @@ async function openProjectsModal() {
   }
 }
 
+/* ---------- past runs of the current project (Run tab sidebar) ----------
+   Merges the runs stored with the server project and any matching runs
+   still only under sims/ (unsaved project, or runs from before a save),
+   deduplicated by run id, newest first. */
+async function refreshPastRuns() {
+  const ul = $('pastRuns');
+  if (!ul) return;
+  const name = app.project.name || '';
+  const items = [];
+  const seen = new Set();
+  if (name) {
+    try {
+      const { runs } = await apiJson(`/api/projects/${encodeURIComponent(name)}/runs`);
+      for (const r of runs) {
+        if (!r.hasResults) continue;
+        items.push({ id: r.resultsId, runId: r.runId, mtime: r.mtime,
+                     stages: r.stages, stored: true });
+        if (r.runId) seen.add(r.runId);
+      }
+    } catch (e) { /* project not saved on the server yet */ }
+  }
+  try {
+    const { runs } = await apiJson('/api/runs');
+    for (const r of runs) {
+      if (!r.hasResults || seen.has(r.runId)) continue;
+      if ((r.project || '') !== name) continue;   // this project's runs only
+      items.push({ id: r.runId, runId: r.runId, mtime: r.mtime,
+                   stages: r.stages, stored: false });
+    }
+  } catch (e) { /* server unreachable - leave whatever we have */ }
+  items.sort((a, b) => b.mtime - a.mtime);
+  ul.innerHTML = '';
+  if (!items.length) {
+    ul.innerHTML = '<li class="muted">No past runs of this project yet.</li>';
+    return;
+  }
+  for (const it of items.slice(0, 30)) {
+    const li = document.createElement('li');
+    if (it.id === app.currentRunId || (it.runId && it.runId === app.currentRunId))
+      li.classList.add('selected');
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.style.background = it.stored ? ED.port : ED.compCap;
+    const nm = document.createElement('span');
+    nm.textContent = new Date(it.mtime * 1000).toLocaleString();
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = (it.stages > 1 ? `${it.stages} exc` : '1 exc')
+      + (it.stored ? '' : ' · unsaved');
+    li.append(chip, nm, tag);
+    li.title = it.stored
+      ? 'Stored with the project — click to open these results'
+      : 'Only in sims/ (not yet attached to a saved project) — click to open';
+    li.onclick = () => loadResults(it.id)
+      .catch(e => uiNotice('Cannot load results: ' + e.message, 'err', 6000));
+    ul.append(li);
+  }
+}
+
 /* ---------- run browsers ----------
    One modal, two sources: every sims/run_* on disk (File → Browse runs)
    and the runs stored with a server project (▤ in the Projects pane).
@@ -3145,6 +3206,7 @@ function loadProject(p) {
   app.editor.zoomFit();
   app.dirty();
   if (app.meshVisible) app.refreshMesh();
+  refreshPastRuns();   // the list is scoped to the loaded project
 }
 
 /* ---------- init ---------- */

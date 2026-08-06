@@ -116,6 +116,11 @@ FDTD simulations of planar PCB structures via GNU Octave.
   excitation count — click to open its results, ✎ to restore that
   run's exact design into the editor, ✕ to delete a stored run.
   (An older single `results/` copy still appears as a "legacy" entry.)
+  The **Run tab in the right sidebar also lists the current project's
+  past runs** (stored ones plus any matching runs still only under
+  `sims/`, tagged "unsaved"), newest first with the open one
+  highlighted — one click away from re-opening any previous result
+  while watching a new run.
 - **Gerber + drill export** (File → Export Gerber + drill): a zip with
   one RS-274X file per conductor layer (shape outlines as filled
   G36/G37 regions — exactly the polygons the simulation uses — via

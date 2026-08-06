@@ -235,6 +235,8 @@ main { flex: 1; display: flex; min-height: 0; }
 .stat b { font-size: 15px; font-variant-numeric: tabular-nums; }
 .stat span { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
 .wide-btn { width: 100%; margin-top: 12px; }
+.past-runs { max-height: 220px; overflow-y: auto; font-size: 12px; }
+.past-runs li.selected .tag { color: rgba(255,255,255,0.75); }
 #rawLog { margin-top: 12px; }
 #rawLog summary { color: var(--muted); font-size: 12px; cursor: pointer; user-select: none; }
 #rawLog summary:hover { color: var(--soft); }
