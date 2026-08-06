@@ -1129,6 +1129,10 @@ async function apiJson(url, opts) {
 function showView(name) {
   document.querySelectorAll('.viewtab').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   document.querySelectorAll('#center .view').forEach(v => v.classList.toggle('active', v.id === name + 'View'));
+  if (name !== 'tests') {   // remember where the user was across restarts
+    uiSettings.lastView = name;
+    saveUiSettings();
+  }
   if (name === 'editor') {
     app.editor.resize();
   } else if (name === 'tests') {
@@ -1355,6 +1359,7 @@ async function startRun() {
       body: JSON.stringify(app.project),
     });
     app.currentRunId = runId;
+    rememberRun(runId);   // survives a browser shutdown mid-run
     app.logOffset = 0;
     app._runStageSeen = null;   // rebuild the excitation tabs for this run
     app.runStageView = null;
@@ -1391,7 +1396,7 @@ function poll() {
             + 'lowest frequencies may be unreliable. See the design warnings for likely causes '
             + '(very wide band or a too-strict end criteria).', 'warn', 12000);
         }
-        loadResults(st.runId);
+        loadResults(st.runId).catch(() => {});   // failure already logged
       }
       else if (st.state === 'error') {
         appendLog(['', '*** ' + (st.error || 'simulation failed') + ' ***']);
@@ -1408,7 +1413,20 @@ async function stopRun() {
 }
 
 /* ---------- results ---------- */
-async function loadResults(runId) {
+/* durable pointer to the latest run: written at run start and whenever
+   results load, so a browser restart can find its way back */
+function rememberRun(runId) {
+  try {
+    localStorage.setItem('openems_last_run', JSON.stringify(
+      { runId, project: app.project.name || '', t: Date.now() }));
+  } catch (e) { /* ignore */ }
+}
+function lastRunPointer() {
+  try { return JSON.parse(localStorage.getItem('openems_last_run') || 'null'); }
+  catch (e) { return null; }
+}
+
+async function loadResults(runId, show = true) {
   app.currentRunId = runId;
   try {
     const res = await fetch(`/api/results/${runId}/sparams.csv`);
@@ -1450,9 +1468,11 @@ async function loadResults(runId) {
     }
     await loadJDumps(runId);
     await loadSMatrix(runId);
-    showView('results');
+    rememberRun(runId);
+    if (show) showView('results');
   } catch (e) {
     appendLog(['[gui] failed to load results: ' + e.message]);
+    throw e;
   }
 }
 
@@ -2532,6 +2552,74 @@ async function openProjectsModal() {
   }
 }
 
+/* ---------- run browser: every sims/run_* on disk ---------- */
+async function openRunsModal() {
+  const modal = $('runsModal');
+  const list = $('runsList');
+  list.innerHTML = '<li class="muted">loading…</li>';
+  modal.hidden = false;
+  let runs = [];
+  try {
+    runs = (await apiJson('/api/runs')).runs;
+  } catch (e) {
+    list.innerHTML = '<li class="muted">failed to list runs</li>';
+    return;
+  }
+  list.innerHTML = '';
+  if (!runs.length) {
+    list.innerHTML = '<li class="muted">No simulation runs on disk yet.</li>';
+    return;
+  }
+  for (const r of runs) {
+    const li = document.createElement('li');
+    if (r.runId === app.currentRunId) li.classList.add('selected');
+    const nm = document.createElement('span');
+    nm.className = 'pname';
+    nm.textContent = new Date(r.mtime * 1000).toLocaleString();
+    li.append(nm);
+    if (r.project) {
+      const p = document.createElement('span');
+      p.className = 'muted';
+      p.textContent = r.project;
+      li.append(p);
+    }
+    if (r.hasResults) {
+      const b = document.createElement('span');
+      b.className = 'badge';
+      b.textContent = r.stages > 1 ? `results · ${r.stages} exc` : 'results';
+      li.append(b);
+    }
+    const dsg = document.createElement('button');
+    dsg.className = 'pdel';
+    dsg.textContent = '✎';
+    dsg.title = 'Load the design that produced this run into the editor';
+    dsg.style.marginLeft = 'auto';
+    dsg.onclick = async e => {
+      e.stopPropagation();
+      if (!(await uiConfirm('Load this run\'s design into the editor?\n\nThe current '
+          + 'project is replaced (it stays in the browser autosave until then).', 'Load design'))) return;
+      try {
+        const { project } = await apiJson(`/api/runs/${r.runId}/project`);
+        modal.hidden = true;
+        loadProject(project);
+        if (r.hasResults) await loadResults(r.runId).catch(() => {});
+        uiNotice('Design' + (r.hasResults ? ' and results' : '') + ' restored from ' + r.runId + '.');
+      } catch (err) { uiNotice('Cannot load the design: ' + err.message, 'err', 6000); }
+    };
+    li.append(dsg);
+    li.title = r.hasResults ? 'Click to open this run\'s results'
+      : 'This run has no S-parameter results (failed or stopped early)';
+    li.onclick = async () => {
+      if (!r.hasResults) return;
+      modal.hidden = true;
+      try {
+        await loadResults(r.runId);
+      } catch (e) { uiNotice('Cannot load results: ' + e.message, 'err', 6000); }
+    };
+    list.append(li);
+  }
+}
+
 async function openServerProject(name) {
   try {
     const data = await apiJson(`/api/projects/${encodeURIComponent(name)}`);
@@ -2886,6 +2974,7 @@ async function saveProjectAs() {
 const MENU_ACTIONS = {
   new: newProject,
   open: openProjectsModal,
+  runs: openRunsModal,
   save: saveProjectToServer,
   saveAs: saveProjectAs,
   importJson: () => $('fileInput').click(),
@@ -3065,6 +3154,10 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // top bar + modals
   $('projClose').addEventListener('click', () => { $('projModal').hidden = true; });
+  $('runsClose').addEventListener('click', () => { $('runsModal').hidden = true; });
+  $('runsModal').addEventListener('click', e => {
+    if (e.target === $('runsModal')) $('runsModal').hidden = true;
+  });
   $('projModal').addEventListener('click', e => {
     if (e.target === $('projModal')) $('projModal').hidden = true;
   });
@@ -3347,13 +3440,38 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // resume polling if a run is active
-  apiJson('/api/status?offset=0').then(st => {
-    if (['starting', 'running', 'post'].includes(st.state)) {
-      app.logOffset = 0;
-      showTab('run');
-      setRunUI(st.state, st.percent, st.elapsed);
-      poll();
+  // ---- session restore: come back exactly where the browser left off ----
+  // 1. a run still solving -> re-attach the live monitor
+  // 2. a run that finished while the browser was away -> load its results
+  // 3. otherwise -> the last results this browser had open (localStorage)
+  (async () => {
+    let restored = false;
+    try {
+      const st = await apiJson('/api/status?offset=0');
+      if (['starting', 'running', 'post'].includes(st.state)) {
+        app.logOffset = 0;
+        showTab('run');
+        setRunUI(st.state, st.percent, st.elapsed);
+        poll();
+        return;   // results load when it finishes
+      }
+      if (['done', 'error', 'stopped'].includes(st.state) && st.runId) {
+        try {
+          await loadResults(st.runId, false);
+          restored = true;
+          if (st.state === 'done') showTab('run');
+        } catch (e) { /* fall through to the stored pointer */ }
+      }
+    } catch (e) { /* server idle or restarted - use the stored pointer */ }
+    if (!restored) {
+      const lp = lastRunPointer();
+      if (lp && lp.runId && (lp.project || '') === (app.project.name || '')) {
+        try {
+          await loadResults(lp.runId, false);
+          restored = true;
+        } catch (e) { /* results gone - nothing to restore */ }
+      }
     }
-  }).catch(() => {});
+    if (restored && uiSettings.lastView === 'results') showView('results');
+  })();
 });

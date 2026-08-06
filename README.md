@@ -104,6 +104,21 @@ FDTD simulations of planar PCB structures via GNU Octave.
   solver warning is surfaced in a highlighted box; non-converged runs
   are labelled as such. The raw terminal log stays collapsed by
   default (auto-expands on errors). Runs can be stopped.
+- **Nothing is lost when the browser goes away.** Every run directory
+  stores the exact model that produced it (`sims/run_*/project.json`),
+  and the moment a run completes the server **automatically attaches
+  its results to the project on disk** (`projects/<name>/results/`) —
+  no browser needed. On page load the GUI restores the session in three
+  layers: a run still solving re-attaches to the live monitor; a run
+  that finished while the browser was away loads its results from the
+  server's run state; otherwise a pointer kept in localStorage reloads
+  the last results this browser had open (and the Results/Editor view
+  you were on). **File → Browse runs…** lists every `sims/run_*` on
+  disk — newest first, with project name and a results badge — to
+  reopen any past run's results or reload the design that produced it
+  (✎). For long unattended simulations, run the server as a systemd
+  user service (see `openems-webgui.service`) so it outlives terminals
+  and login sessions.
 - **Server-side projects**: Save stores the project on the server
   (`projects/<name>/project.json`) together with a copy of the latest
   run's results (S-parameters, port signals, current-density exports —

@@ -1,0 +1,29 @@
+# OpenEMS PCB Studio server as a systemd user service.
+#
+# Running the server this way keeps it (and the simulation stage
+# sequencing) alive independently of any browser, terminal or assistant
+# session. Install with:
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp openems-webgui.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now openems-webgui
+#
+# and, so it also runs while you are logged out (long overnight sims):
+#
+#   loginctl enable-linger $USER
+#
+# Logs: journalctl --user -u openems-webgui -f
+
+[Unit]
+Description=OpenEMS PCB Studio (Flask + openEMS run sequencing)
+After=network.target
+
+[Service]
+WorkingDirectory=%h/OpenEMS_WebGUI
+ExecStart=/usr/bin/python3 %h/OpenEMS_WebGUI/server.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

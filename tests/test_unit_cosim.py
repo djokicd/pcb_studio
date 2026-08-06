@@ -184,3 +184,64 @@ def test_run_status_keeps_stage_samples_separate():
     assert st['stages'][0]['warn'] == []
     assert len(st['stages'][1]['warn']) == 1
     assert st['samples'] is st['stages'][-1]['samples']    # top level = current
+
+
+def test_copy_results_handles_stage_dirs(tmp_path):
+    """Saving a multi-excitation run must not choke on the exc_* stage
+    directories, and keeps each stage's raw sparams.csv."""
+    src = tmp_path / 'run_src'
+    src.mkdir()
+    (src / 'sparams.csv').write_text('#freq_Hz\n')
+    (src / 'Jf_top.h5').write_text('bulky')
+    (src / 'exc_2').mkdir()
+    (src / 'exc_2' / 'sparams.csv').write_text('#freq_Hz\n')
+    (src / 'exc_2' / 'et').write_text('binary noise')
+    dst = tmp_path / 'results'
+    server._copy_results(src, dst)
+    assert (dst / 'sparams.csv').is_file()
+    assert (dst / 'exc_2' / 'sparams.csv').is_file()
+    assert not (dst / 'Jf_top.h5').exists()        # bulky dumps skipped
+    assert not (dst / 'exc_2' / 'et').exists()     # stage internals skipped
+
+
+def test_autosave_attaches_results_on_completion(tmp_path, monkeypatch):
+    """When a run finishes, its results are written to the project dir on
+    disk immediately — no browser involvement."""
+    monkeypatch.setattr(server, 'SIM_ROOT', tmp_path / 'sims')
+    monkeypatch.setattr(server, 'PROJ_ROOT', tmp_path / 'projects')
+    run = tmp_path / 'sims' / 'run_00000000_000003'
+    run.mkdir(parents=True)
+    (run / 'sparams.csv').write_text('#freq_Hz\n1e9,0,0\n')
+    r = server.Runner()
+    r._reset()
+    r.run_id = run.name
+    r.base_model = {'name': 'autosave_check', 'ports': []}
+    r._autosave_locked()
+    pdir = tmp_path / 'projects' / 'autosave_check'
+    assert (pdir / 'project.json').is_file()
+    assert (pdir / 'results' / 'sparams.csv').is_file()
+    # a later manual save must win over the autosaved design
+    (pdir / 'project.json').write_text('{"name": "edited"}')
+    r._autosave_locked()
+    assert 'edited' in (pdir / 'project.json').read_text()
+    # unnamed project: nothing attached, no crash
+    r.base_model = {'name': '', 'ports': []}
+    r._autosave_locked()
+
+
+def test_runs_listing_and_run_project(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, 'SIM_ROOT', tmp_path)
+    d = tmp_path / 'run_20260101_000000'
+    d.mkdir()
+    (d / 'sparams.csv').write_text('#freq_Hz\n')
+    (d / 'project.json').write_text('{"name": "listed_proj", "ports": []}')
+    (tmp_path / 'run_20260101_000001').mkdir()   # failed run: no results
+    with server.app.test_client() as c:
+        runs = c.get('/api/runs').get_json()['runs']
+        assert [r['runId'] for r in runs] == \
+            ['run_20260101_000001', 'run_20260101_000000']   # newest first
+        assert runs[1]['hasResults'] and runs[1]['project'] == 'listed_proj'
+        assert not runs[0]['hasResults'] and runs[0]['project'] is None
+        pj = c.get('/api/runs/run_20260101_000000/project').get_json()
+        assert pj['project']['name'] == 'listed_proj'
+        assert c.get('/api/runs/run_20260101_000001/project').status_code == 404

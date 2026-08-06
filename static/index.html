@@ -15,6 +15,7 @@
       <div class="menu-drop">
         <button data-action="new">New project</button>
         <button data-action="open">Open&hellip;</button>
+        <button data-action="runs">Browse runs&hellip;</button>
         <button data-action="save">Save</button>
         <button data-action="saveAs">Save as&hellip;</button>
         <div class="menu-sep"></div>
@@ -512,6 +513,18 @@
     <div class="uic-btns">
       <button id="projImport">Import JSON file…</button>
     </div>
+  </div>
+</div>
+
+<div id="runsModal" hidden>
+  <div class="uic-box proj-box">
+    <div class="modal-head"><span>Simulation runs on disk</span><button id="runsClose">&#10005;</button></div>
+    <p class="muted" style="margin:6px 0 0">
+      Every run is stored under <code>sims/</code> with the design that
+      produced it. Click a run to open its results; &#9998; loads that
+      run&rsquo;s design into the editor.
+    </p>
+    <ul id="runsList" class="proj-list"></ul>
   </div>
 </div>
 

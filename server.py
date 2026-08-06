@@ -304,7 +304,8 @@ class Runner:
             devices = validate_devices(model)   # raises ValidationError
             run_id = time.strftime('run_%Y%m%d_%H%M%S')
             sim_dir = SIM_ROOT / run_id
-            sim_dir.mkdir(parents=True, exist_ok=True)
+            # nothing is written until every stage has validated - a
+            # rejected run must not leave an empty run directory behind
 
             # with S-parameter devices (or the full-S-matrix option) one
             # excitation run per port is needed; the user's excited port
@@ -359,6 +360,10 @@ class Runner:
             self.stages = stages
             self.stage_idx = 0
             self.merge_only = merge_only
+            # persist the exact model that produced this run: the run stays
+            # self-describing and recoverable with no browser involved
+            sim_dir.mkdir(parents=True, exist_ok=True)
+            (sim_dir / 'project.json').write_text(json.dumps(model, indent=1))
             sim = model.get('sim') or {}
             self.nrts = max(1, int(sim.get('maxTimesteps') or 30000))
             self.end_db = float(sim.get('endCriteria') or -40.0)
@@ -544,6 +549,27 @@ class Runner:
                     return
             self.percent = 100.0
             self.state = 'done'
+            self._autosave_locked()
+
+    def _autosave_locked(self):
+        """Attach the finished run's results to its project on disk right
+        away, so nothing depends on a browser being open when the
+        simulation ends. The project design itself is only written if the
+        project does not exist yet (a later manual Save wins otherwise);
+        the run directory keeps the authoritative model in project.json."""
+        name = _safe_project_name((self.base_model or {}).get('name'))
+        if not name:
+            return   # unnamed project: recoverable via the run browser
+        try:
+            pdir = PROJ_ROOT / name
+            pdir.mkdir(parents=True, exist_ok=True)
+            pj = pdir / 'project.json'
+            if not pj.is_file():
+                pj.write_text(json.dumps(self.base_model, indent=1))
+            _copy_results(SIM_ROOT / self.run_id, pdir / 'results')
+            self.log.append(f'GUI_MARKER: results saved to project "{name}"')
+        except Exception as e:
+            self.log.append(f'GUI_MARKER: attaching results to the project failed: {e}')
 
 
 runner = Runner()
@@ -920,6 +946,42 @@ def api_results_file(run_id, name):
     return send_from_directory(d, name, mimetype='text/plain')
 
 
+@app.get('/api/runs')
+def api_runs():
+    """Every simulation run on disk, newest first — the recovery path for
+    results whose browser session is long gone."""
+    out = []
+    for d in sorted(SIM_ROOT.glob('run_*'), reverse=True):
+        if not d.is_dir():
+            continue
+        entry = {
+            'runId': d.name,
+            'mtime': d.stat().st_mtime,
+            'hasResults': (d / 'sparams.csv').is_file(),
+            'stages': 1 + sum(1 for _ in d.glob('exc_*/sparams.csv')),
+            'project': None,
+        }
+        pj = d / 'project.json'
+        if pj.is_file():
+            try:
+                entry['project'] = json.loads(pj.read_text()).get('name') or ''
+            except (OSError, ValueError):
+                pass
+        out.append(entry)
+        if len(out) >= 200:
+            break
+    return jsonify({'runs': out})
+
+
+@app.get('/api/runs/<run_id>/project')
+def api_run_project(run_id):
+    """The exact model that produced a run (written at launch)."""
+    d = _run_dir(run_id)
+    if d is None or not (d / 'project.json').is_file():
+        return jsonify({'error': 'no design stored for this run'}), 404
+    return jsonify({'project': json.loads((d / 'project.json').read_text())})
+
+
 @app.get('/api/results/<run_id>/stage/<int:exc>')
 def api_results_stage(run_id, exc):
     """Raw sparams.csv of one excitation run of a multi-excitation sweep.
@@ -1026,6 +1088,25 @@ def api_projects_list():
     return jsonify({'projects': out})
 
 
+def _copy_results(src, dst):
+    """Copy a run's result files to dst (replacing it), excluding the
+    bulky raw field dumps; each excitation's own sparams.csv is kept in
+    its exc_<n>/ subdirectory so the raw-data links keep working."""
+    if dst.is_dir():
+        shutil.rmtree(dst)
+    dst.mkdir(parents=True)
+    for f in src.iterdir():
+        if f.is_dir():
+            if f.name.startswith('exc_') and (f / 'sparams.csv').is_file():
+                (dst / f.name).mkdir()
+                shutil.copy2(f / 'sparams.csv', dst / f.name / 'sparams.csv')
+            continue
+        # skip bulky raw field dumps - the GUI uses the .bin exports
+        if f.suffix in ('.h5', '.vtr'):
+            continue
+        shutil.copy2(f, dst / f.name)
+
+
 @app.post('/api/projects/save')
 def api_projects_save():
     data = request.get_json(force=True)
@@ -1043,15 +1124,7 @@ def api_projects_save():
     if run_id and re.fullmatch(r'run_[0-9_]+', str(run_id)):
         src = SIM_ROOT / run_id
         if src.is_dir() and (src / 'sparams.csv').is_file():
-            dst = pdir / 'results'
-            if dst.is_dir():
-                shutil.rmtree(dst)
-            dst.mkdir()
-            for f in src.iterdir():
-                # skip bulky raw field dumps - the GUI uses the .bin exports
-                if f.suffix in ('.h5', '.vtr'):
-                    continue
-                shutil.copy2(f, dst / f.name)
+            _copy_results(src, pdir / 'results')
             copied = True
     return jsonify({'name': safe, 'resultsSaved': copied})
 
