@@ -100,7 +100,7 @@
   <aside id="left">
     <nav class="tabs" id="leftTabs">
       <button class="tab active" data-ltab="design">Design</button>
-      <button class="tab" data-ltab="projects">Projects</button>
+      <button class="tab" data-ltab="projects" title="Projects loaded for review — compare results without opening them in the editor">Loaded</button>
     </nav>
     <div id="ltab-design" class="ltabpage active">
     <div class="panel">
@@ -192,21 +192,23 @@
     </div>
     <div id="ltab-projects" class="ltabpage">
       <div class="panel grow">
-        <h3 class="phead">Server projects
-          <button id="btnNewFolder" class="lr-btn" title="New folder at the top level">＋ folder</button>
+        <h3 class="phead">Loaded for review
+          <button id="btnAddLoaded" class="lr-btn" title="Add a stored project to the review list">＋ add</button>
         </h3>
-        <ul id="projPane" class="obj-list"></ul>
+        <ul id="loadedPane" class="obj-list"></ul>
       </div>
       <div class="panel hint">
-        Click a project to open it. Drag projects into folders (and
-        folders into folders) to organize; drop on empty space to move
-        to the top level. Folder buttons: ＋ subfolder, ✎ rename,
-        🏷 tags, ✕ delete (contents move up). &ldquo;cmp&rdquo; overlays
-        that project&rsquo;s S-parameters in the Results charts.
+        These projects are held for review only &mdash; the editor keeps
+        the project you have open. Click one to show its results,
+        &ldquo;cmp&rdquo; to overlay its S-parameters on the current
+        results, &#9636; to browse its runs, &#10005; to drop it from the
+        list. Browse and open stored projects from
+        <b>File &rarr; Open</b>.
       </div>
     </div>
   </aside>
 
+  <div id="leftSplit" title="Drag to resize the panel"></div>
   <section id="center">
     <nav class="viewtabs">
       <button class="viewtab active" data-view="editor">Editor</button>
@@ -520,10 +522,34 @@
 
 <div id="projModal" hidden>
   <div class="uic-box proj-box">
-    <div class="modal-head"><span>Open project</span><button id="projClose">&#10005;</button></div>
-    <ul id="projList" class="proj-list"></ul>
+    <div class="modal-head">
+      <span id="projTitle">Open project</span>
+      <button id="btnNewFolder" class="lr-btn" title="New folder at the top level">＋ folder</button>
+      <button id="projClose">&#10005;</button>
+    </div>
+    <p class="muted" id="projHint" style="margin:6px 0 0"></p>
+    <ul id="projList" class="proj-list ftree"></ul>
     <div class="uic-btns">
       <button id="projImport">Import JSON file…</button>
+    </div>
+  </div>
+</div>
+
+<div id="saveModal" hidden>
+  <div class="uic-box">
+    <div class="modal-head"><span id="saveTitle">Save project</span><button id="saveClose">&#10005;</button></div>
+    <div class="form" style="margin-top:12px">
+      <label>Project name <input id="saveName" type="text" spellcheck="false"></label>
+      <label>Folder <select id="saveFolder"></select></label>
+      <label title="Leave empty to use the folder selected above">
+        New subfolder <input id="saveNewFolder" type="text" spellcheck="false" placeholder="(optional)"></label>
+    </div>
+    <p class="muted" style="margin:10px 0 0">
+      A new subfolder is created inside the folder selected above.
+    </p>
+    <div class="uic-btns">
+      <button id="saveCancel">Cancel</button>
+      <button id="saveOk" class="primary">Save</button>
     </div>
   </div>
 </div>

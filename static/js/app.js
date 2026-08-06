@@ -2540,14 +2540,82 @@ async function startTests(unit, caseIds) {
 }
 
 /* ---------- server-side projects ---------- */
-async function saveProjectToServer() {
+/* Save dialog: project name + destination folder, with the option to
+   create a subfolder on the spot. Resolves {name, folder} or null. */
+async function askSaveTarget(title, defaultName) {
+  let fdata = { folders: [], assign: {} };
+  try { fdata = await apiJson('/api/folders'); } catch (e) { /* no folders yet */ }
+  const sel = $('saveFolder');
+  sel.innerHTML = '';
+  const add = (value, label) => {
+    const o = document.createElement('option');
+    o.value = value; o.textContent = label;
+    sel.append(o);
+  };
+  add('', '— top level —');
+  const byParent = {};
+  for (const f of fdata.folders)
+    (byParent[f.parent || ''] = byParent[f.parent || ''] || []).push(f);
+  const walk = (parent, depth) => {
+    for (const f of (byParent[parent] || []).slice().sort((a, b) => a.name.localeCompare(b.name))) {
+      add(f.id, ' '.repeat(depth * 3) + f.name
+        + ((f.tags || []).length ? `  [${f.tags.join(', ')}]` : ''));
+      walk(f.id, depth + 1);
+    }
+  };
+  walk('', 0);
+  // preselect the folder the project already lives in
+  sel.value = fdata.assign[defaultName] || '';
+  $('saveTitle').textContent = title;
+  $('saveName').value = defaultName || '';
+  $('saveNewFolder').value = '';
+  $('saveModal').hidden = false;
+  $('saveName').focus();
+  $('saveName').select();
+
+  return new Promise(resolve => {
+    const done = v => {
+      $('saveModal').hidden = true;
+      $('saveOk').onclick = $('saveCancel').onclick = $('saveName').onkeydown = null;
+      resolve(v);
+    };
+    const ok = async () => {
+      const name = $('saveName').value.trim();
+      if (!name) { uiNotice('A project name is required.', 'warn', 3000); return; }
+      let folder = sel.value || null;
+      const sub = $('saveNewFolder').value.trim();
+      if (sub) {
+        try {
+          const f = await apiJson('/api/folders', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: sub, parent: folder }),
+          });
+          folder = f.id;
+        } catch (e) {
+          uiNotice('Could not create the folder: ' + e.message, 'err', 6000);
+          return;
+        }
+      }
+      done({ name, folder });
+    };
+    $('saveOk').onclick = ok;
+    $('saveCancel').onclick = () => done(null);
+    $('saveName').onkeydown = e => { if (e.key === 'Enter') ok(); };
+  });
+}
+
+async function saveProjectToServer(target) {
   let name = app.project.name;
+  if (target) name = target.name;
   if (!name) {
-    name = await uiPrompt('Project name to save as:', '', 'Save');
-    if (!name) return;
-    app.project.name = name;
-    formsFromModel();
+    // first save: ask for the name and where to file it
+    const t = await askSaveTarget('Save project', '');
+    if (!t) return;
+    target = t;
+    name = t.name;
   }
+  app.project.name = name;
+  formsFromModel();
   try {
     const runId = app.currentRunId && String(app.currentRunId).startsWith('run_')
       ? app.currentRunId : null;
@@ -2559,8 +2627,23 @@ async function saveProjectToServer() {
       app.project.name = res.name;
       formsFromModel();
     }
+    // file it into the chosen folder (target undefined = leave where it is)
+    let where = '';
+    if (target) {
+      try {
+        await apiJson('/api/folders/assign', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project: res.name, folder: target.folder || null }),
+        });
+        const f = target.folder && (app.folders ? app.folders.folders : [])
+          .find(x => x.id === target.folder);
+        where = target.folder ? ` in folder "${f ? f.name : '…'}"` : ' at the top level';
+      } catch (e) { /* saved regardless; folder assignment is cosmetic */ }
+    }
     app.dirty();
-    uiNotice(`Saved "${res.name}" on the server`
+    refreshLoadedPane();
+    refreshPastRuns();
+    uiNotice(`Saved "${res.name}"${where}`
       + (res.resultsSaved ? ' together with the latest results.'
         : runId ? ' (results could not be attached).' : ' (run a simulation to attach results).'));
   } catch (e) {
@@ -2568,57 +2651,18 @@ async function saveProjectToServer() {
   }
 }
 
-async function openProjectsModal() {
-  const modal = $('projModal');
-  const list = $('projList');
-  list.innerHTML = '<li class="muted">loading…</li>';
-  modal.hidden = false;
-  let projects = [];
-  try {
-    projects = (await apiJson('/api/projects')).projects;
-  } catch (e) {
-    list.innerHTML = '<li class="muted">failed to list projects</li>';
-    return;
-  }
-  list.innerHTML = '';
-  if (!projects.length) {
-    list.innerHTML = '<li class="muted">No projects on the server yet — use Save.</li>';
-    return;
-  }
-  for (const pr of projects) {
-    const li = document.createElement('li');
-    const nm = document.createElement('span');
-    nm.className = 'pname';
-    nm.textContent = pr.name;
-    li.append(nm);
-    if (pr.hasResults) {
-      const b = document.createElement('span');
-      b.className = 'badge';
-      b.textContent = 'results';
-      li.append(b);
-    }
-    const meta = document.createElement('span');
-    meta.className = 'pmeta';
-    meta.textContent = new Date(pr.mtime * 1000).toLocaleString();
-    const del = document.createElement('button');
-    del.className = 'pdel';
-    del.textContent = '✕';
-    del.title = 'Delete this project from the server';
-    del.onclick = async e => {
-      e.stopPropagation();
-      if (!(await uiConfirm(`Delete project "${pr.name}" (and its stored results) from the server?`, 'Delete'))) return;
-      try {
-        await apiJson(`/api/projects/${encodeURIComponent(pr.name)}`, { method: 'DELETE' });
-        openProjectsModal();
-      } catch (err) { uiNotice('Delete failed: ' + err.message, 'err'); }
-    };
-    li.append(meta, del);
-    li.onclick = () => {
-      modal.hidden = true;
-      openServerProject(pr.name);
-    };
-    list.append(li);
-  }
+/* mode 'open': clicking opens the project in the editor.
+   mode 'pick': clicking adds it to the review list instead. */
+function openProjectsModal(mode = 'open') {
+  app._projMode = mode;
+  $('projTitle').textContent = mode === 'pick'
+    ? 'Add a project for review' : 'Projects';
+  $('projHint').textContent = mode === 'pick'
+    ? 'Click a project to hold it for review — the editor keeps the project you have open.'
+    : 'Click a project to open it in the editor, ⊕ to hold it for review only. '
+      + 'Drag projects and folders to organize; drop on empty space for the top level.';
+  $('projModal').hidden = false;
+  renderProjectsTree();
 }
 
 /* ---------- past runs of the current project (Run tab sidebar) ----------
@@ -2813,7 +2857,7 @@ async function openProjectRunsModal(name) {
           await apiJson(`/api/projects/${encodeURIComponent(name)}/runs/${r.runId}`,
             { method: 'DELETE' });
           openProjectRunsModal(name);
-          refreshProjPane();
+          refreshLoadedPane();
         } catch (err) { uiNotice('Delete failed: ' + err.message, 'err', 6000); }
       } : null,
     })),
@@ -2841,8 +2885,98 @@ function showLeftTab(name) {
     b.classList.toggle('active', b.dataset.ltab === name));
   document.querySelectorAll('.ltabpage').forEach(p =>
     p.classList.toggle('active', p.id === 'ltab-' + name));
-  if (name === 'projects') refreshProjPane();
+  if (name === 'projects') refreshLoadedPane();
 }
+/* ---------- projects loaded for review (left "Loaded" pane) ----------
+   These are held for comparison only: their results can be shown and
+   overlaid without touching the project open in the editor. */
+function loadedList() {
+  uiSettings.loaded = uiSettings.loaded || [];
+  return uiSettings.loaded;
+}
+function addLoadedProject(name) {
+  const l = loadedList();
+  if (!l.includes(name)) l.push(name);
+  saveUiSettings();
+  showLeftTab('projects');
+  refreshLoadedPane();
+}
+function removeLoadedProject(name) {
+  uiSettings.loaded = loadedList().filter(n => n !== name);
+  saveUiSettings();
+  if (app.compare[name]) { delete app.compare[name]; renderCharts(); }
+  refreshLoadedPane();
+}
+
+async function refreshLoadedPane() {
+  const ul = $('loadedPane');
+  if (!ul) return;
+  ul.innerHTML = '';
+  // the editor's own project sits on top, always available for compare
+  const rows = [];
+  if (app.project.name) rows.push({ name: app.project.name, current: true });
+  for (const n of loadedList()) {
+    if (n !== app.project.name) rows.push({ name: n, current: false });
+  }
+  if (!rows.length) {
+    ul.innerHTML = '<li class="muted">Nothing loaded — use ＋ add, or File → Open.</li>';
+    return;
+  }
+  app._loadedMeta = app._loadedMeta || {};
+  for (const r of rows) {
+    const li = document.createElement('li');
+    if (r.current) li.classList.add('current');
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.style.background = r.current ? ED.port : ED.pin;
+    const nm = document.createElement('span');
+    nm.textContent = r.name;
+    li.append(chip, nm);
+    if (r.current) {
+      const t = document.createElement('span');
+      t.className = 'tag';
+      t.textContent = 'editor';
+      li.append(t);
+    }
+    // overlay checkbox (the editor's project is already the base trace)
+    if (!r.current) {
+      const cmp = document.createElement('label');
+      cmp.className = 'mini-check tag';
+      cmp.title = "Overlay this project's S-parameters on the current results";
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !!app.compare[r.name];
+      cmp.addEventListener('click', e => e.stopPropagation());
+      cb.addEventListener('change', () => toggleCompare(r.name, cb.checked));
+      cmp.append(cb, document.createTextNode('cmp'));
+      li.append(cmp);
+    }
+    const runs = document.createElement('button');
+    runs.className = 'pdel';
+    runs.textContent = '▤';
+    runs.title = 'Browse this project’s stored runs';
+    runs.onclick = e => { e.stopPropagation(); openProjectRunsModal(r.name); };
+    li.append(runs);
+    if (!r.current) {
+      const rm = document.createElement('button');
+      rm.className = 'pdel';
+      rm.textContent = '✕';
+      rm.title = 'Remove from the review list (the project itself is kept)';
+      rm.onclick = e => { e.stopPropagation(); removeLoadedProject(r.name); };
+      li.append(rm);
+    }
+    li.title = 'Show this project’s latest results (the editor keeps its own project)';
+    li.onclick = async () => {
+      try {
+        const d = await apiJson(`/api/projects/${encodeURIComponent(r.name)}`);
+        if (!d.resultsId) { uiNotice(`"${r.name}" has no stored results yet.`, 'warn', 4000); return; }
+        await loadResults(d.resultsId);
+      } catch (e) { uiNotice('Cannot show results: ' + e.message, 'err', 6000); }
+    };
+    ul.append(li);
+  }
+}
+
 /* drop handler shared by folder rows and the pane background:
    'proj:<name>' assigns a project, 'folder:<id>' re-parents a folder */
 async function folderDrop(data, targetFid) {
@@ -2862,7 +2996,7 @@ async function folderDrop(data, targetFid) {
     } else {
       return;
     }
-    refreshProjPane();
+    renderProjectsTree();
   } catch (e) {
     uiNotice('Move failed: ' + e.message, 'err', 5000);
   }
@@ -2882,8 +3016,10 @@ function makeDroppable(el, targetFid) {
   });
 }
 
-async function refreshProjPane() {
-  const ul = $('projPane');
+/* ---------- folder tree: the project browser (File → Open) ---------- */
+async function renderProjectsTree() {
+  const ul = $('projList');
+  const mode = app._projMode || 'open';
   ul.innerHTML = '<li class="muted">loading…</li>';
   let projects = [];
   let fdata = { folders: [], assign: {} };
@@ -2926,30 +3062,58 @@ async function refreshProjPane() {
     li.addEventListener('dragstart', e =>
       e.dataTransfer.setData('text/plain', 'proj:' + pr.name));
     const nm = document.createElement('span');
+    nm.className = 'pname';
     nm.textContent = pr.name;
-    nm.title = 'Open this project in the editor — drag onto a folder to move it';
     li.append(nm);
-    if (pr.runCount) {
-      const rb = document.createElement('button');
-      rb.className = 'pdel';
-      rb.textContent = '▤';
-      rb.title = `Browse the ${pr.runCount} stored run${pr.runCount > 1 ? 's' : ''} of this project`;
-      rb.onclick = e => { e.stopPropagation(); openProjectRunsModal(pr.name); };
-      li.append(rb);
-    }
     if (pr.hasResults) {
-      const cmp = document.createElement('label');
-      cmp.className = 'mini-check tag';
-      cmp.title = "Overlay this project's S-parameters in the Results charts";
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = !!app.compare[pr.name];
-      cmp.addEventListener('click', e => e.stopPropagation());
-      cb.addEventListener('change', () => toggleCompare(pr.name, cb.checked));
-      cmp.append(cb, document.createTextNode('cmp'));
-      li.append(cmp);
+      const b = document.createElement('span');
+      b.className = 'badge';
+      b.textContent = pr.runCount > 1 ? `${pr.runCount} runs` : 'results';
+      li.append(b);
     }
-    li.onclick = () => openServerProject(pr.name).then(refreshProjPane);
+    const meta = document.createElement('span');
+    meta.className = 'pmeta';
+    meta.textContent = new Date(pr.mtime * 1000).toLocaleDateString();
+    li.append(meta);
+    const btns = document.createElement('span');
+    btns.className = 'fbtns';
+    btns.style.display = 'inline-flex';
+    const mk = (txt, title, fn) => {
+      const b = document.createElement('button');
+      b.className = 'pdel';
+      b.textContent = txt;
+      b.title = title;
+      b.onclick = e => { e.stopPropagation(); fn(); };
+      return b;
+    };
+    if (mode === 'open') {
+      btns.append(mk('⊕', 'Add to the review list without opening it in the editor',
+        () => { addLoadedProject(pr.name); uiNotice(`"${pr.name}" added to the review list.`); }));
+    }
+    if (pr.runCount) {
+      btns.append(mk('▤', `Browse the ${pr.runCount} stored run${pr.runCount > 1 ? 's' : ''}`,
+        () => openProjectRunsModal(pr.name)));
+    }
+    btns.append(mk('✕', 'Delete this project from the server', async () => {
+      if (!(await uiConfirm(`Delete project "${pr.name}" (and its stored runs) from the server?`, 'Delete'))) return;
+      try {
+        await apiJson(`/api/projects/${encodeURIComponent(pr.name)}`, { method: 'DELETE' });
+        renderProjectsTree();
+      } catch (err) { uiNotice('Delete failed: ' + err.message, 'err'); }
+    }));
+    li.append(btns);
+    li.title = mode === 'pick'
+      ? 'Add this project to the review list'
+      : 'Open this project in the editor — drag onto a folder to move it';
+    li.onclick = () => {
+      $('projModal').hidden = true;
+      if (mode === 'pick') {
+        addLoadedProject(pr.name);
+        uiNotice(`"${pr.name}" added to the review list.`);
+      } else {
+        openServerProject(pr.name);
+      }
+    };
     ul.append(li);
   };
 
@@ -2984,7 +3148,7 @@ async function refreshProjPane() {
           await apiJson('/api/folders', { method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, parent: f.id }) });
-          refreshProjPane();
+          renderProjectsTree();
         } catch (e) { uiNotice(e.message, 'err', 5000); }
       }),
       foldBtn('✎', 'Rename folder', async () => {
@@ -2994,7 +3158,7 @@ async function refreshProjPane() {
           await apiJson(`/api/folders/${f.id}`, { method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name }) });
-          refreshProjPane();
+          renderProjectsTree();
         } catch (e) { uiNotice(e.message, 'err', 5000); }
       }),
       foldBtn('🏷', 'Edit tags (comma-separated)', async () => {
@@ -3005,14 +3169,14 @@ async function refreshProjPane() {
           await apiJson(`/api/folders/${f.id}`, { method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ tags: raw.split(',').map(s => s.trim()).filter(Boolean) }) });
-          refreshProjPane();
+          renderProjectsTree();
         } catch (e) { uiNotice(e.message, 'err', 5000); }
       }),
       foldBtn('✕', 'Delete folder (its projects and subfolders move up one level)', async () => {
         if (!(await uiConfirm(`Delete folder "${f.name}"?\n\nIts projects and subfolders are kept — they move up one level.`, 'Delete'))) return;
         try {
           await apiJson(`/api/folders/${f.id}`, { method: 'DELETE' });
-          refreshProjPane();
+          renderProjectsTree();
         } catch (e) { uiNotice(e.message, 'err', 5000); }
       }),
     );
@@ -3020,7 +3184,7 @@ async function refreshProjPane() {
     li.onclick = () => {
       uiSettings.folderOpen[f.id] = !isOpen(f.id);
       saveUiSettings();
-      refreshProjPane();
+      renderProjectsTree();
     };
     ul.append(li);
     if (isOpen(f.id)) walk(f.id, depth + 1);
@@ -3063,7 +3227,7 @@ async function toggleCompare(name, on) {
   } catch (e) {
     uiNotice(`Cannot compare "${name}": ` + e.message, 'err', 6000);
     delete app.compare[name];
-    refreshProjPane();
+    refreshLoadedPane();
   }
 }
 
@@ -3323,17 +3487,14 @@ async function newProject() {
   uiNotice('New empty project started' + (def ? ' with your default stackup.' : '.'));
 }
 async function saveProjectAs() {
-  const name = await uiPrompt('Save the project on the server as:',
-    app.project.name || '', 'Save');
-  if (!name) return;
-  app.project.name = name;
-  formsFromModel();
-  await saveProjectToServer();
+  const target = await askSaveTarget('Save project as', app.project.name || '');
+  if (!target) return;
+  await saveProjectToServer(target);
 }
 
 const MENU_ACTIONS = {
   new: newProject,
-  open: openProjectsModal,
+  open: () => openProjectsModal('open'),
   runs: openRunsModal,
   save: saveProjectToServer,
   saveAs: saveProjectAs,
@@ -3428,6 +3589,7 @@ function loadProject(p) {
   app.dirty();
   if (app.meshVisible) app.refreshMesh();
   refreshPastRuns();   // the list is scoped to the loaded project
+  refreshLoadedPane(); // the editor's project heads the review list
   resetHistory();      // a freshly loaded project is the new baseline
 }
 
@@ -3450,8 +3612,13 @@ window.addEventListener('DOMContentLoaded', () => {
       await apiJson('/api/folders', { method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }) });
-      refreshProjPane();
+      renderProjectsTree();
     } catch (e) { uiNotice(e.message, 'err', 5000); }
+  });
+  $('btnAddLoaded').addEventListener('click', () => openProjectsModal('pick'));
+  $('saveClose').addEventListener('click', () => { $('saveModal').hidden = true; });
+  $('saveModal').addEventListener('click', e => {
+    if (e.target === $('saveModal')) $('saveModal').hidden = true;
   });
   bindForms();
   applyTheme();
@@ -3503,7 +3670,28 @@ window.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.viewtab').forEach(btn =>
     btn.addEventListener('click', () => showView(btn.dataset.view)));
 
-  // resizable right panel
+  // resizable side panels
+  const dragSplit = (splitId, panelId, prefKey, widthFrom) => {
+    $(splitId).addEventListener('mousedown', e => {
+      e.preventDefault();
+      $(splitId).classList.add('active');
+      const move = ev => { $(panelId).style.width = widthFrom(ev) + 'px'; };
+      const up = () => {
+        $(splitId).classList.remove('active');
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', up);
+        uiSettings[prefKey] = parseInt($(panelId).style.width, 10) || null;
+        saveUiSettings();
+        app.editor.resize();
+        if (app._lastRunStat) updateRunStats(app._lastRunStat);
+      };
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
+    });
+  };
+  if (uiSettings.leftW) $('left').style.width = uiSettings.leftW + 'px';
+  dragSplit('leftSplit', 'left', 'leftW',
+    ev => Math.min(560, Math.max(150, ev.clientX)));
   if (uiSettings.rightW) $('right').style.width = uiSettings.rightW + 'px';
   $('rightSplit').addEventListener('mousedown', e => {
     e.preventDefault();

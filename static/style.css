@@ -150,23 +150,31 @@ main { flex: 1; display: flex; min-height: 0; }
 #leftTabs .tab { padding: 7px 4px; }
 .ltabpage { display: none; flex: 1; min-height: 0; flex-direction: column; }
 .ltabpage.active { display: flex; }
-#projPane li { justify-content: space-between; }
-#projPane .mini-check { cursor: pointer; }
+#loadedPane li { justify-content: space-between; }
+#loadedPane .mini-check { cursor: pointer; }
+#loadedPane li > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#loadedPane li.current { border-left: 2px solid var(--accent); }
 .phead { display: flex; align-items: center; justify-content: space-between; }
-.phead .lr-btn { padding: 1px 8px; font-size: 11px; background: none; border: 1px solid var(--border); text-transform: none; letter-spacing: normal; }
-#projPane .fold-row { font-weight: 600; color: var(--soft); }
-#projPane .ftog { flex: none; width: 12px; color: var(--muted); }
-#projPane .fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-#projPane li > span:first-child:not(.ftog) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.phead .lr-btn, .modal-head .lr-btn {
+  padding: 1px 8px; font-size: 11px; background: none;
+  border: 1px solid var(--border); text-transform: none; letter-spacing: normal;
+}
+.modal-head .lr-btn { margin-left: auto; font-weight: normal; }
+/* folder tree (Open dialog) */
+.ftree .fold-row { font-weight: 600; color: var(--soft); }
+.ftree .ftog { flex: none; width: 12px; color: var(--muted); }
+.ftree .fname { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tagchip {
   flex: none; font-size: 9px; font-weight: normal; padding: 0 5px;
   border-radius: 7px; border: 1px solid var(--border);
   color: var(--muted); background: var(--card);
 }
-#projPane .fbtns { display: none; flex: none; }
-#projPane .fold-row:hover .fbtns { display: inline-flex; }
-#projPane .fbtn { padding: 0 3px; font-size: 11px; }
-#projPane .drophover, #projPane.drophover { outline: 1px dashed var(--accent); outline-offset: -1px; }
+.ftree .fbtns { display: none; flex: none; margin-left: auto; }
+.ftree .fold-row:hover .fbtns { display: inline-flex; }
+.ftree .fbtn { padding: 0 3px; font-size: 11px; }
+.ftree .drophover, .ftree.drophover { outline: 1px dashed var(--accent); outline-offset: -1px; }
+#projModal .proj-box { width: 520px; max-height: 78vh; }
+#saveModal .form input, #saveModal .form select { width: 250px; }
 .panel { padding: 12px; border-bottom: 1px solid var(--border-soft); }
 .panel.grow { flex: 1; overflow-y: auto; }
 .panel.hint { font-size: 11px; color: var(--muted); border-bottom: none; }
@@ -369,8 +377,8 @@ select.mini { font-size: 12px; padding: 2px 5px; }
 .plotwrap.big canvas { width: 100%; }
 
 /* ---- panel splitter, toasts, in-app dialogs ---- */
-#rightSplit { width: 5px; flex: none; cursor: col-resize; background: var(--border-soft); }
-#rightSplit:hover, #rightSplit.active { background: var(--accent); }
+#rightSplit, #leftSplit { width: 5px; flex: none; cursor: col-resize; background: var(--border-soft); }
+#rightSplit:hover, #rightSplit.active, #leftSplit:hover, #leftSplit.active { background: var(--accent); }
 #toasts {
   position: fixed; right: 16px; bottom: 16px; z-index: 60;
   display: flex; flex-direction: column; gap: 8px; max-width: 400px;
@@ -395,11 +403,12 @@ select.mini { font-size: 12px; padding: 2px 5px; }
 }
 .uic-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 #uicInput { width: 100%; margin-top: 12px; }
-#projModal, #stackModal, #colorsModal, #helpModal, #runsModal {
+#projModal, #stackModal, #colorsModal, #helpModal, #runsModal, #saveModal {
   position: fixed; inset: 0; z-index: 65; background: rgba(0,0,0,0.55);
   display: flex; align-items: center; justify-content: center;
 }
-#projModal[hidden], #stackModal[hidden], #colorsModal[hidden], #helpModal[hidden], #runsModal[hidden] { display: none; }
+#projModal[hidden], #stackModal[hidden], #colorsModal[hidden],
+#helpModal[hidden], #runsModal[hidden], #saveModal[hidden] { display: none; }
 .proj-box { width: 460px; max-height: 70vh; display: flex; flex-direction: column; }
 .proj-list {
   list-style: none; margin: 10px 0 0; padding: 0; overflow-y: auto; flex: 1;

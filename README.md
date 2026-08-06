@@ -43,22 +43,32 @@ FDTD simulations of planar PCB structures via GNU Octave.
   restrictable to x-only or y-only grid ticks, plus optional snapping
   to corners/vertices of existing objects. The background grid always
   shows the configured snap grid (coarsened by 2/5/10× when zoomed out).
-- **Projects pane**: the left sidebar switches between Design (tools +
-  objects) and Projects — a tree of the server-stored projects for
-  quick switching, where each project with stored results has a "cmp"
-  checkbox that overlays its S-parameters in the Results charts
-  (resampled onto the current sweep) for direct comparison; overlay
-  traces get their own legend chips.
-- **Project folders**: projects organize into **named folders with
-  optional tags, nested to any depth**. Drag a project onto a folder
-  (or a folder onto a folder) to move it; drop on empty space to move
-  to the top level. Folder rows expand/collapse (state remembered per
-  browser) and offer ＋ subfolder, ✎ rename, 🏷 tags and ✕ delete —
-  deleting a folder keeps its contents, moving them up one level, and
-  moving a folder into its own subtree is rejected. The hierarchy is a
-  pure organizational overlay stored in `projects/folders.json`: the
-  on-disk project directories stay flat, so run ids, stored results
-  and the completion auto-attach are untouched by any reorganizing.
+- **Loaded-for-review pane**: the left sidebar switches between Design
+  (tools + objects) and **Loaded** — projects held for review
+  *without* opening them in the editor. Click one to show its latest
+  results, tick "cmp" to overlay its S-parameters on the current
+  results (resampled onto the current sweep; overlay traces get their
+  own legend chips), ▤ to browse its runs, ✕ to drop it. The project
+  open in the editor heads the list. Add projects with ＋ add, or with
+  ⊕ in the Open dialog. The list is remembered per browser.
+- **Project browser with folders** (File → Open): the complete tree of
+  stored projects, organized into **named folders with optional tags,
+  nested to any depth**. Drag a project onto a folder (or a folder onto
+  a folder) to move it; drop on empty space for the top level. Folder
+  rows expand/collapse (state remembered) and offer ＋ subfolder,
+  ✎ rename, 🏷 tags and ✕ delete — deleting a folder keeps its
+  contents, moving them up one level, and moving a folder into its own
+  subtree is rejected. The hierarchy is a pure organizational overlay
+  stored in `projects/folders.json`: the on-disk project directories
+  stay flat, so run ids, stored results and the completion auto-attach
+  are untouched by any reorganizing.
+- **Save places the project in a folder**: the first Save and
+  File → Save as… ask for the project name *and* its destination
+  folder, with an optional "new subfolder" field that creates the
+  folder on the spot inside the selected one. Re-saving an existing
+  project preselects the folder it already lives in.
+- **Both side panels are resizable** by dragging the splitter next to
+  them; the widths are remembered per browser.
 - **Multi-selection**: with the Select tool, dragging on empty canvas
   box-selects every object fully inside; the group moves/nudges/
   copies/deletes together (Ctrl+A selects everything). Esc in any
