@@ -17,7 +17,7 @@ import threading
 import time
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_file, send_from_directory
 
 from gerber import parse_gerber, parse_excellon, GerberError
 from scriptgen import generate_script, ValidationError, dump_layers
@@ -566,7 +566,9 @@ class Runner:
             pj = pdir / 'project.json'
             if not pj.is_file():
                 pj.write_text(json.dumps(self.base_model, indent=1))
-            _copy_results(SIM_ROOT / self.run_id, pdir / 'results')
+            # one directory per run: results + the design that produced them
+            # (the run dir's project.json rides along in the copy)
+            _copy_results(SIM_ROOT / self.run_id, pdir / 'runs' / self.run_id)
             self.log.append(f'GUI_MARKER: results saved to project "{name}"')
         except Exception as e:
             self.log.append(f'GUI_MARKER: attaching results to the project failed: {e}')
@@ -747,15 +749,49 @@ def _safe_project_name(name):
 
 
 def _run_dir(run_id):
-    """Resolve a results id: run_* under sims/, proj_* under projects/."""
+    """Resolve a results id: run_* under sims/, proj_<name>__run_* for a
+    stored project run, and legacy proj_<name> for the old single copy."""
     if re.fullmatch(r'run_[0-9_]+', run_id):
         d = SIM_ROOT / run_id
+        return d if d.is_dir() else None
+    m = re.fullmatch(r'proj_([\w.-]+)__(run_[0-9_]+)', run_id)
+    if m:
+        d = PROJ_ROOT / m.group(1) / 'runs' / m.group(2)
         return d if d.is_dir() else None
     m = re.fullmatch(r'proj_([\w.-]+)', run_id)
     if m:
         d = PROJ_ROOT / m.group(1) / 'results'
         return d if d.is_dir() else None
     return None
+
+
+def _project_runs(safe):
+    """Stored runs of a project, newest first: [{runId, mtime, hasResults,
+    stages, hasDesign, resultsId}], including the legacy single copy."""
+    out = []
+    pdir = PROJ_ROOT / safe
+    for d in sorted((pdir / 'runs').glob('run_*'), reverse=True):
+        if not d.is_dir():
+            continue
+        out.append({
+            'runId': d.name,
+            'mtime': d.stat().st_mtime,
+            'hasResults': (d / 'sparams.csv').is_file(),
+            'stages': 1 + sum(1 for _ in d.glob('exc_*/sparams.csv')),
+            'hasDesign': (d / 'project.json').is_file(),
+            'resultsId': f'proj_{safe}__{d.name}',
+        })
+    legacy = pdir / 'results'
+    if (legacy / 'sparams.csv').is_file():
+        out.append({
+            'runId': None,
+            'mtime': legacy.stat().st_mtime,
+            'hasResults': True,
+            'stages': 1 + sum(1 for _ in legacy.glob('exc_*/sparams.csv')),
+            'hasDesign': (legacy / 'project.json').is_file(),
+            'resultsId': f'proj_{safe}',
+        })
+    return out
 
 
 def _read_probe(path):
@@ -946,6 +982,27 @@ def api_results_file(run_id, name):
     return send_from_directory(d, name, mimetype='text/plain')
 
 
+@app.post('/api/export/gerber')
+def api_export_gerber():
+    """Zip of RS-274X layers + board outline + Excellon drill file."""
+    import io
+    import zipfile
+    from gerber import export_fabrication
+    model = request.get_json(force=True)
+    try:
+        files = export_fabrication(model)
+    except Exception as e:
+        return jsonify({'error': f'gerber export failed: {e}'}), 400
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        for fn, content in files.items():
+            z.writestr(fn, content)
+    buf.seek(0)
+    name = _safe_project_name(model.get('name')) or 'board'
+    return send_file(buf, mimetype='application/zip', as_attachment=True,
+                     download_name=f'{name}_gerber.zip')
+
+
 @app.get('/api/runs')
 def api_runs():
     """Every simulation run on disk, newest first — the recovery path for
@@ -1079,10 +1136,12 @@ def api_projects_list():
     for d in sorted(PROJ_ROOT.iterdir()):
         pj = d / 'project.json'
         if d.is_dir() and pj.is_file():
+            runs = _project_runs(d.name)
             out.append({
                 'name': d.name,
                 'mtime': pj.stat().st_mtime,
-                'hasResults': (d / 'results' / 'sparams.csv').is_file(),
+                'hasResults': any(r['hasResults'] for r in runs),
+                'runCount': len(runs),
             })
     out.sort(key=lambda p: -p['mtime'])
     return jsonify({'projects': out})
@@ -1124,7 +1183,7 @@ def api_projects_save():
     if run_id and re.fullmatch(r'run_[0-9_]+', str(run_id)):
         src = SIM_ROOT / run_id
         if src.is_dir() and (src / 'sparams.csv').is_file():
-            _copy_results(src, pdir / 'results')
+            _copy_results(src, pdir / 'runs' / run_id)
             copied = True
     return jsonify({'name': safe, 'resultsSaved': copied})
 
@@ -1136,8 +1195,11 @@ def api_projects_get(name):
     if not safe or not (pdir / 'project.json').is_file():
         return jsonify({'error': 'no such project'}), 404
     project = json.loads((pdir / 'project.json').read_text())
-    has_results = (pdir / 'results' / 'sparams.csv').is_file()
-    return jsonify({'project': project, 'resultsId': f'proj_{safe}' if has_results else None})
+    runs = _project_runs(safe)
+    newest = next((r for r in runs if r['hasResults']), None)
+    return jsonify({'project': project,
+                    'resultsId': newest['resultsId'] if newest else None,
+                    'runCount': len(runs)})
 
 
 @app.delete('/api/projects/<name>')
@@ -1148,6 +1210,38 @@ def api_projects_delete(name):
         return jsonify({'error': 'no such project'}), 404
     shutil.rmtree(pdir)
     return jsonify({'deleted': safe})
+
+
+@app.get('/api/projects/<name>/runs')
+def api_project_runs(name):
+    safe = _safe_project_name(name)
+    if not safe or not (PROJ_ROOT / safe / 'project.json').is_file():
+        return jsonify({'error': 'no such project'}), 404
+    return jsonify({'runs': _project_runs(safe)})
+
+
+@app.get('/api/projects/<name>/runs/<run_id>/project')
+def api_project_run_design(name, run_id):
+    """The editor state stored with one of the project's runs."""
+    safe = _safe_project_name(name)
+    if not safe or not re.fullmatch(r'run_[0-9_]+', run_id):
+        return jsonify({'error': 'no such run'}), 404
+    pj = PROJ_ROOT / safe / 'runs' / run_id / 'project.json'
+    if not pj.is_file():
+        return jsonify({'error': 'no design stored with this run'}), 404
+    return jsonify({'project': json.loads(pj.read_text())})
+
+
+@app.delete('/api/projects/<name>/runs/<run_id>')
+def api_project_run_delete(name, run_id):
+    safe = _safe_project_name(name)
+    if not safe or not re.fullmatch(r'run_[0-9_]+', run_id):
+        return jsonify({'error': 'no such run'}), 404
+    d = PROJ_ROOT / safe / 'runs' / run_id
+    if not d.is_dir():
+        return jsonify({'error': 'no such stored run'}), 404
+    shutil.rmtree(d)
+    return jsonify({'deleted': run_id})
 
 
 @app.post('/api/import/gerber')

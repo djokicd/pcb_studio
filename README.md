@@ -107,8 +107,23 @@ FDTD simulations of planar PCB structures via GNU Octave.
 - **Nothing is lost when the browser goes away.** Every run directory
   stores the exact model that produced it (`sims/run_*/project.json`),
   and the moment a run completes the server **automatically attaches
-  its results to the project on disk** (`projects/<name>/results/`) —
-  no browser needed. On page load the GUI restores the session in three
+  its results to the project on disk** — no browser needed.
+- **Per-project run history**: each completion is stored as its own
+  `projects/<name>/runs/<run_id>/` — results *plus a snapshot of the
+  editor state that produced them*, so several runs of the same project
+  coexist. The ▤ button on a project in the Projects pane opens the
+  project's **results browser**: every stored run with date and
+  excitation count — click to open its results, ✎ to restore that
+  run's exact design into the editor, ✕ to delete a stored run.
+  (An older single `results/` copy still appears as a "legacy" entry.)
+- **Gerber + drill export** (File → Export Gerber + drill): a zip with
+  one RS-274X file per conductor layer (shape outlines as filled
+  G36/G37 regions — exactly the polygons the simulation uses — via
+  pads as circle flashes on the layers the via crosses, plane layers
+  as a full-board region), a board-outline file, and an Excellon drill
+  file for the vias. The generated files re-import cleanly through the
+  tool's own Gerber/Excellon parsers. Note: plane regions carry no
+  thermal reliefs or clearances. On page load the GUI restores the session in three
   layers: a run still solving re-attaches to the live monitor; a run
   that finished while the browser was away loads its results from the
   server's run state; otherwise a pointer kept in localStorage reloads

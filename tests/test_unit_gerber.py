@@ -106,3 +106,71 @@ def test_excellon_inch():
 def test_excellon_empty_rejected():
     with pytest.raises(GerberError):
         parse_excellon('M48\nMETRIC\n%\nM30\n')
+
+
+# ---------------- fabrication export ----------------
+
+def _model_for_export():
+    return {
+        'name': 'export_check',
+        'board': {'width': 20, 'height': 10},
+        'stackup': [
+            {'id': 'top', 'name': 'Top Cu', 'type': 'conductor', 'thickness': 0.035, 'fill': False},
+            {'id': 'core', 'name': 'core', 'type': 'dielectric', 'thickness': 0.8, 'er': 4.3},
+            {'id': 'bot', 'name': 'Bottom', 'type': 'conductor', 'thickness': 0.035, 'fill': True},
+        ],
+        'shapes': [
+            {'id': 1, 'name': 't', 'type': 'rect', 'layer': 'top',
+             'x': 2, 'y': 4, 'w': 10, 'h': 1.5},
+            {'id': 2, 'name': 'l', 'type': 'trace', 'layer': 'top',
+             'pts': [[3, 7], [9, 7]], 'width': 1.0, 'radius': 0},
+        ],
+        'vias': [{'id': 3, 'x': 5, 'y': 5, 'drill': 0.6, 'pad': 1.2,
+                  'from': 'bot', 'to': 'top'}],
+    }
+
+
+def test_export_round_trips_through_own_parsers():
+    """The generated RS-274X and Excellon files must re-import through
+    parse_gerber / parse_excellon with the original geometry."""
+    from gerber import export_fabrication, parse_excellon
+    files = export_fabrication(_model_for_export())
+    assert set(files) == {'Top_Cu.gbr', 'Bottom.gbr', 'outline.gbr', 'drill.drl'}
+
+    r = parse_gerber(files['Top_Cu.gbr'])
+    assert not r['warnings']
+    # two regions (rect + stroked trace) and one via pad flash
+    polys = [s for s in r['shapes'] if s['type'] == 'poly']
+    circles = [s for s in r['shapes'] if s['type'] == 'circle']
+    assert len(polys) == 2 and len(circles) == 1
+    xs = [p[0] for p in polys[0]['pts']]
+    ys = [p[1] for p in polys[0]['pts']]
+    assert min(xs) == 2 and max(xs) == 12 and min(ys) == 4 and max(ys) == 5.5
+    assert circles[0]['cx'] == 5 and abs(circles[0]['r'] - 0.6) < 1e-9
+
+    # plane layer: full-board region plus the via pad
+    rb = parse_gerber(files['Bottom.gbr'])
+    xs = [p[0] for s in rb['shapes'] if s['type'] == 'poly' for p in s['pts']]
+    assert min(xs) == 0 and max(xs) == 20
+
+    rd = parse_excellon(files['drill.drl'])
+    assert not rd['warnings']
+    assert len(rd['vias']) == 1
+    v = rd['vias'][0]
+    assert v['x'] == 5 and v['y'] == 5 and v['drill'] == 0.6
+
+
+def test_export_via_pads_only_on_crossed_layers():
+    """A blind via between mid layers must not flash pads elsewhere."""
+    from gerber import export_fabrication
+    m = _model_for_export()
+    m['stackup'].insert(2, {'id': 'mid', 'name': 'Mid', 'type': 'conductor',
+                            'thickness': 0.035, 'fill': False})
+    m['stackup'].insert(3, {'id': 'core2', 'name': 'core2', 'type': 'dielectric',
+                            'thickness': 0.5, 'er': 4.3})
+    m['vias'][0]['from'] = 'bot'
+    m['vias'][0]['to'] = 'mid'
+    files = export_fabrication(m)
+    assert 'D03*' not in files['Top_Cu.gbr']      # top not crossed
+    assert 'D03*' in files['Mid.gbr']
+    assert 'D03*' in files['Bottom.gbr']

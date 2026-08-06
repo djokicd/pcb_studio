@@ -219,7 +219,12 @@ def test_autosave_attaches_results_on_completion(tmp_path, monkeypatch):
     r._autosave_locked()
     pdir = tmp_path / 'projects' / 'autosave_check'
     assert (pdir / 'project.json').is_file()
-    assert (pdir / 'results' / 'sparams.csv').is_file()
+    # one stored run per completion, keyed by run id
+    assert (pdir / 'runs' / run.name / 'sparams.csv').is_file()
+    runs = server._project_runs('autosave_check')
+    assert len(runs) == 1 and runs[0]['runId'] == run.name
+    assert runs[0]['resultsId'] == f'proj_autosave_check__{run.name}'
+    assert server._run_dir(runs[0]['resultsId']) == pdir / 'runs' / run.name
     # a later manual save must win over the autosaved design
     (pdir / 'project.json').write_text('{"name": "edited"}')
     r._autosave_locked()

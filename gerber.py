@@ -383,3 +383,113 @@ def parse_excellon(text):
     ys = [v['y'] for v in vias]
     return {'vias': vias, 'warnings': warnings,
             'bbox': [min(xs), min(ys), max(xs), max(ys)]}
+
+
+# ---------------------------------------------------------------------------
+# Fabrication export: RS-274X (one file per conductor layer + board
+# outline) and an Excellon drill file. The generated Gerbers use filled
+# G36/G37 regions for every shape outline (matching exactly what the
+# simulation sees via geometry.shape_outline), circle flashes for via
+# pads, and a full-board region for plane layers. Coordinates are
+# emitted in 4.6 mm format; the drill file uses metric decimal
+# coordinates, which round-trips through parse_excellon above.
+# ---------------------------------------------------------------------------
+
+def _gc(v):
+    """mm -> RS-274X 4.6 integer coordinate."""
+    return str(int(round(float(v) * 1e6)))
+
+
+def _region(pts):
+    out = ['G36*']
+    x0, y0 = pts[0]
+    out.append(f'X{_gc(x0)}Y{_gc(y0)}D02*')
+    for x, y in list(pts[1:]) + [pts[0]]:
+        out.append(f'X{_gc(x)}Y{_gc(y)}D01*')
+    out.append('G37*')
+    return out
+
+
+def _via_span(v, cond_z):
+    lo, hi = sorted([cond_z[v['from']], cond_z[v['to']]])
+    return lo - 1e-9, hi + 1e-9
+
+
+def gerber_layer(model, layer_id):
+    """RS-274X content for one conductor layer of the model."""
+    from geometry import shape_outline, stackup_z
+    cond_z, _diel, _tot = stackup_z(model['stackup'])
+    layer = next(l for l in model['stackup'] if l.get('id') == layer_id)
+    board = model['board']
+    out = [f'%TF.FileFunction,Copper,{layer_id}*%',
+           '%FSLAX46Y46*%', '%MOMM*%', '%LPD*%', 'G01*']
+    # one circle aperture per distinct via pad diameter on this layer
+    z = cond_z[layer_id]
+    pads = sorted({round(float(v['pad']), 4) for v in model.get('vias') or []
+                   if _via_span(v, cond_z)[0] <= z <= _via_span(v, cond_z)[1]})
+    dcode = {}
+    for i, dia in enumerate(pads):
+        dcode[dia] = 10 + i
+        out.append('%%ADD%dC,%.4f*%%' % (dcode[dia], dia))
+    if layer.get('fill'):
+        out += _region([(0, 0), (board['width'], 0),
+                        (board['width'], board['height']), (0, board['height'])])
+    for s in model.get('shapes') or []:
+        if s.get('layer') != layer_id:
+            continue
+        out += _region(shape_outline(s))
+    for v in model.get('vias') or []:
+        lo, hi = _via_span(v, cond_z)
+        if lo <= z <= hi:
+            out.append('D%d*' % dcode[round(float(v['pad']), 4)])
+            out.append(f'X{_gc(v["x"])}Y{_gc(v["y"])}D03*')
+    out.append('M02*')
+    return '\n'.join(out) + '\n'
+
+
+def gerber_outline(model):
+    """Board outline as a thin drawn rectangle (Edge-Cuts style)."""
+    b = model['board']
+    out = ['%TF.FileFunction,Profile,NP*%',
+           '%FSLAX46Y46*%', '%MOMM*%', '%LPD*%', 'G01*',
+           '%ADD10C,0.1000*%', 'D10*',
+           f'X{_gc(0)}Y{_gc(0)}D02*',
+           f'X{_gc(b["width"])}Y{_gc(0)}D01*',
+           f'X{_gc(b["width"])}Y{_gc(b["height"])}D01*',
+           f'X{_gc(0)}Y{_gc(b["height"])}D01*',
+           f'X{_gc(0)}Y{_gc(0)}D01*',
+           'M02*']
+    return '\n'.join(out) + '\n'
+
+
+def excellon_drill(model):
+    """Excellon (PTH) drill file for the model's vias."""
+    vias = model.get('vias') or []
+    tools = sorted({round(float(v['drill']), 3) for v in vias})
+    out = ['M48', 'METRIC,TZ']
+    for i, dia in enumerate(tools, 1):
+        out.append(f'T{i}C{dia:.3f}')
+    out.append('%')
+    for i, dia in enumerate(tools, 1):
+        out.append(f'T{i}')
+        for v in vias:
+            if round(float(v['drill']), 3) == dia:
+                out.append(f'X{float(v["x"]):.3f}Y{float(v["y"]):.3f}')
+    out.append('M30')
+    return '\n'.join(out) + '\n'
+
+
+def export_fabrication(model):
+    """{filename: text} for the whole model: one .gbr per conductor
+    layer, the board outline, and the drill file (when vias exist)."""
+    import re as _re
+    files = {}
+    for l in model.get('stackup') or []:
+        if l.get('type') != 'conductor':
+            continue
+        name = _re.sub(r'[^\w.-]+', '_', l.get('name') or l['id']).strip('_') or l['id']
+        files[f'{name}.gbr'] = gerber_layer(model, l['id'])
+    files['outline.gbr'] = gerber_outline(model)
+    if model.get('vias'):
+        files['drill.drl'] = excellon_drill(model)
+    return files

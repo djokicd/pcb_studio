@@ -2552,30 +2552,28 @@ async function openProjectsModal() {
   }
 }
 
-/* ---------- run browser: every sims/run_* on disk ---------- */
-async function openRunsModal() {
+/* ---------- run browsers ----------
+   One modal, two sources: every sims/run_* on disk (File → Browse runs)
+   and the runs stored with a server project (▤ in the Projects pane).
+   rows: [{when, project?, badge?, resultsId?, canDesign, loadDesign(),
+   del?()}] */
+function renderRunsModal(title, hint, rows, empty) {
   const modal = $('runsModal');
   const list = $('runsList');
-  list.innerHTML = '<li class="muted">loading…</li>';
+  $('runsTitle').textContent = title;
+  $('runsHint').textContent = hint;
   modal.hidden = false;
-  let runs = [];
-  try {
-    runs = (await apiJson('/api/runs')).runs;
-  } catch (e) {
-    list.innerHTML = '<li class="muted">failed to list runs</li>';
-    return;
-  }
   list.innerHTML = '';
-  if (!runs.length) {
-    list.innerHTML = '<li class="muted">No simulation runs on disk yet.</li>';
+  if (!rows.length) {
+    list.innerHTML = `<li class="muted">${empty}</li>`;
     return;
   }
-  for (const r of runs) {
+  for (const r of rows) {
     const li = document.createElement('li');
-    if (r.runId === app.currentRunId) li.classList.add('selected');
+    if (r.resultsId && r.resultsId === app.currentRunId) li.classList.add('selected');
     const nm = document.createElement('span');
     nm.className = 'pname';
-    nm.textContent = new Date(r.mtime * 1000).toLocaleString();
+    nm.textContent = r.when;
     li.append(nm);
     if (r.project) {
       const p = document.createElement('span');
@@ -2583,41 +2581,115 @@ async function openRunsModal() {
       p.textContent = r.project;
       li.append(p);
     }
-    if (r.hasResults) {
+    if (r.badge) {
       const b = document.createElement('span');
       b.className = 'badge';
-      b.textContent = r.stages > 1 ? `results · ${r.stages} exc` : 'results';
+      b.textContent = r.badge;
       li.append(b);
     }
-    const dsg = document.createElement('button');
-    dsg.className = 'pdel';
-    dsg.textContent = '✎';
-    dsg.title = 'Load the design that produced this run into the editor';
-    dsg.style.marginLeft = 'auto';
-    dsg.onclick = async e => {
-      e.stopPropagation();
-      if (!(await uiConfirm('Load this run\'s design into the editor?\n\nThe current '
-          + 'project is replaced (it stays in the browser autosave until then).', 'Load design'))) return;
-      try {
-        const { project } = await apiJson(`/api/runs/${r.runId}/project`);
+    const spacer = document.createElement('span');
+    spacer.style.marginLeft = 'auto';
+    li.append(spacer);
+    if (r.canDesign) {
+      const dsg = document.createElement('button');
+      dsg.className = 'pdel';
+      dsg.textContent = '✎';
+      dsg.title = 'Load the design of this run into the editor';
+      dsg.onclick = async e => {
+        e.stopPropagation();
+        if (!(await uiConfirm('Load this run\'s design into the editor?\n\nThe current '
+            + 'project is replaced (it stays in the browser autosave until then).', 'Load design'))) return;
         modal.hidden = true;
-        loadProject(project);
-        if (r.hasResults) await loadResults(r.runId).catch(() => {});
-        uiNotice('Design' + (r.hasResults ? ' and results' : '') + ' restored from ' + r.runId + '.');
-      } catch (err) { uiNotice('Cannot load the design: ' + err.message, 'err', 6000); }
-    };
-    li.append(dsg);
-    li.title = r.hasResults ? 'Click to open this run\'s results'
+        r.loadDesign();
+      };
+      li.append(dsg);
+    }
+    if (r.del) {
+      const del = document.createElement('button');
+      del.className = 'pdel';
+      del.textContent = '✕';
+      del.title = 'Delete this stored run from the project';
+      del.onclick = async e => {
+        e.stopPropagation();
+        if (!(await uiConfirm('Delete this stored run (results + design snapshot) from the project?', 'Delete'))) return;
+        r.del();
+      };
+      li.append(del);
+    }
+    li.title = r.resultsId ? 'Click to open this run\'s results'
       : 'This run has no S-parameter results (failed or stopped early)';
     li.onclick = async () => {
-      if (!r.hasResults) return;
+      if (!r.resultsId) return;
       modal.hidden = true;
       try {
-        await loadResults(r.runId);
+        await loadResults(r.resultsId);
       } catch (e) { uiNotice('Cannot load results: ' + e.message, 'err', 6000); }
     };
     list.append(li);
   }
+}
+
+async function openRunsModal() {
+  let runs = [];
+  try {
+    runs = (await apiJson('/api/runs')).runs;
+  } catch (e) { /* empty list message below */ }
+  renderRunsModal('Simulation runs on disk',
+    'Every run is stored under sims/ with the design that produced it. '
+    + 'Click a run to open its results; ✎ loads its design into the editor.',
+    runs.map(r => ({
+      when: new Date(r.mtime * 1000).toLocaleString(),
+      project: r.project,
+      badge: r.hasResults ? (r.stages > 1 ? `results · ${r.stages} exc` : 'results') : null,
+      resultsId: r.hasResults ? r.runId : null,
+      canDesign: true,
+      loadDesign: async () => {
+        try {
+          const { project } = await apiJson(`/api/runs/${r.runId}/project`);
+          loadProject(project);
+          if (r.hasResults) await loadResults(r.runId).catch(() => {});
+          uiNotice('Design' + (r.hasResults ? ' and results' : '') + ' restored from ' + r.runId + '.');
+        } catch (err) { uiNotice('Cannot load the design: ' + err.message, 'err', 6000); }
+      },
+    })),
+    'No simulation runs on disk yet.');
+}
+
+/* the run history stored with one server project (results browser) */
+async function openProjectRunsModal(name) {
+  let runs = [];
+  try {
+    runs = (await apiJson(`/api/projects/${encodeURIComponent(name)}/runs`)).runs;
+  } catch (e) { /* empty message below */ }
+  renderRunsModal(`Runs of "${name}"`,
+    'Each run keeps its results and the editor state that produced them. '
+    + 'Click to open the results; ✎ restores that run\'s design.',
+    runs.map(r => ({
+      when: r.runId ? new Date(r.mtime * 1000).toLocaleString()
+        : new Date(r.mtime * 1000).toLocaleString() + ' (legacy copy)',
+      badge: r.hasResults ? (r.stages > 1 ? `results · ${r.stages} exc` : 'results') : null,
+      resultsId: r.hasResults ? r.resultsId : null,
+      canDesign: r.hasDesign,
+      loadDesign: async () => {
+        try {
+          const { project } = await apiJson(
+            `/api/projects/${encodeURIComponent(name)}/runs/${r.runId}/project`);
+          project.name = name;
+          loadProject(project);
+          if (r.hasResults) await loadResults(r.resultsId).catch(() => {});
+          uiNotice(`Design and results of ${r.runId} restored.`);
+        } catch (err) { uiNotice('Cannot load the design: ' + err.message, 'err', 6000); }
+      },
+      del: r.runId ? async () => {
+        try {
+          await apiJson(`/api/projects/${encodeURIComponent(name)}/runs/${r.runId}`,
+            { method: 'DELETE' });
+          openProjectRunsModal(name);
+          refreshProjPane();
+        } catch (err) { uiNotice('Delete failed: ' + err.message, 'err', 6000); }
+      } : null,
+    })),
+    'No runs stored with this project yet — run a simulation while it is open.');
 }
 
 async function openServerProject(name) {
@@ -2665,6 +2737,14 @@ async function refreshProjPane() {
     nm.textContent = pr.name;
     nm.title = 'Open this project in the editor';
     li.append(nm);
+    if (pr.runCount) {
+      const rb = document.createElement('button');
+      rb.className = 'pdel';
+      rb.textContent = '▤';
+      rb.title = `Browse the ${pr.runCount} stored run${pr.runCount > 1 ? 's' : ''} of this project`;
+      rb.onclick = e => { e.stopPropagation(); openProjectRunsModal(pr.name); };
+      li.append(rb);
+    }
     if (pr.hasResults) {
       const cmp = document.createElement('label');
       cmp.className = 'mini-check tag';
@@ -2981,6 +3061,7 @@ const MENU_ACTIONS = {
   exportCfg: () => download((app.project.name || 'untitled') + '.json',
     JSON.stringify(app.project, null, 2), 'application/json'),
   exportM: () => exportScript(),
+  exportGerber: () => exportGerberZip(),
   run: () => startRun(),
   stop: () => stopRun(),
   copy: () => app.copySelection(false),
@@ -3016,6 +3097,26 @@ const MENU_ACTIONS = {
 };
 
 /* ---------- export / save / open ---------- */
+async function exportGerberZip() {
+  try {
+    const res = await fetch('/api/export/gerber', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(app.project),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${app.project.name || 'board'}_gerber.zip`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    uiNotice('Fabrication data exported: one RS-274X file per conductor layer, '
+      + 'the board outline, and an Excellon drill file.');
+  } catch (e) {
+    uiNotice('Gerber export failed: ' + e.message, 'err', 8000);
+  }
+}
+
 async function exportScript() {
   try {
     const { script, note } = await apiJson('/api/script', {

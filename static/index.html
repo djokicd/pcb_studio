@@ -23,6 +23,7 @@
         <button data-action="importDrill">Import drill file (PTH vias)&hellip;</button>
         <button data-action="exportCfg">Export cfg (JSON)</button>
         <button data-action="exportM">Export Octave script (.m)</button>
+        <button data-action="exportGerber">Export Gerber + drill (zip)</button>
         <div class="menu-sep"></div>
         <button data-action="run">Run simulation</button>
         <button data-action="stop">Stop simulation</button>
@@ -518,12 +519,8 @@
 
 <div id="runsModal" hidden>
   <div class="uic-box proj-box">
-    <div class="modal-head"><span>Simulation runs on disk</span><button id="runsClose">&#10005;</button></div>
-    <p class="muted" style="margin:6px 0 0">
-      Every run is stored under <code>sims/</code> with the design that
-      produced it. Click a run to open its results; &#9998; loads that
-      run&rsquo;s design into the editor.
-    </p>
+    <div class="modal-head"><span id="runsTitle">Simulation runs on disk</span><button id="runsClose">&#10005;</button></div>
+    <p class="muted" id="runsHint" style="margin:6px 0 0"></p>
     <ul id="runsList" class="proj-list"></ul>
   </div>
 </div>
