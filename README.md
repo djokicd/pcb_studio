@@ -157,8 +157,8 @@ FDTD simulations of planar PCB structures via GNU Octave.
   disk — newest first, with project name and a results badge — to
   reopen any past run's results or reload the design that produced it
   (✎). For long unattended simulations, run the server as a systemd
-  user service (see `openems-webgui.service`) so it outlives terminals
-  and login sessions.
+  user service — `./scripts/install-service.sh`, see *Run as a service*
+  below — so it outlives terminals and login sessions.
 - **Server-side projects**: Save stores the project on the server
   (`projects/<name>/project.json`) together with a copy of the latest
   run's results (S-parameters, port signals, current-density exports —
@@ -338,6 +338,76 @@ python3 server.py
 
 Then open <http://localhost:8036> (set `PORT` to change).
 
+This is fine for a quick look, but the server dies with the terminal —
+and with it goes the stage sequencing of a multi-excitation run. **For
+anything longer than a few minutes, run it as a service instead.**
+
+## Run as a service (recommended)
+
+The server owns the simulation: it launches Octave, sequences the
+excitation stages and writes the results to disk. Running it under
+systemd makes it independent of terminals, SSH sessions and the browser,
+so a simulation keeps going (and still saves its results) when you close
+everything and walk away.
+
+```bash
+./scripts/install-service.sh
+```
+
+The script detects the repository path and `python3`, fills in
+`openems-webgui.service` from those, installs it as a **systemd user
+service**, enables and starts it, turns on *linger* so it also runs while
+you are logged out, and waits until the HTTP endpoint answers before
+reporting success. It is safe to re-run — that is also how you change the
+port:
+
+```bash
+PORT=9000 ./scripts/install-service.sh          # different port
+PYTHON=/usr/bin/python3.12 ./scripts/install-service.sh
+```
+
+Day-to-day control:
+
+```bash
+systemctl --user status openems-webgui      # is it running?
+systemctl --user restart openems-webgui     # restart (kills a running sim!)
+systemctl --user stop openems-webgui        # stop
+journalctl --user -u openems-webgui -f      # live server log
+```
+
+Nothing is lost if you stop the service between runs: designs live in
+`projects/`, and every completed run is written to disk before the
+browser is ever involved (see *Nothing is lost when the browser goes
+away* above).
+
+## Update from git
+
+```bash
+./scripts/update.sh
+```
+
+The script, in order:
+
+1. **Refuses to update while a simulation is running** — a restart would
+   kill it. Wait for the run to finish, or override with `--force`.
+2. Requires a clean working tree; `--stash` sets local changes aside and
+   restores them afterwards.
+3. `git pull --ff-only` (a diverged branch is reported, never
+   auto-merged) and prints the commits you just received.
+4. Reinstalls dependencies if `requirements.txt` changed.
+5. Restarts the service if it is installed and running, then waits for
+   the health check — printing the last log lines if it fails to come
+   back.
+6. Runs the fast test suite as a smoke test.
+
+```bash
+./scripts/update.sh --stash     # keep local edits across the update
+./scripts/update.sh --force     # update even though a sim is running
+```
+
+Your data is never touched: `sims/` and `projects/` are gitignored, so
+pulls cannot clobber designs, stored runs or results.
+
 ## Layout
 
 - `server.py` – Flask app: static UI, `/api/script`, `/api/run`,
@@ -350,7 +420,12 @@ Then open <http://localhost:8036> (set `PORT` to change).
 - `static/` – vanilla JS UI: `js/editor.js` (canvas editor),
   `js/charts.js` (dB/Smith/polar + modal), `js/jview.js` (current
   density animation), `js/app.js` (state, panels, run control)
-- `sims/run_*/` – one working directory per run
+- `sims/run_*/` – one working directory per run (gitignored)
+- `projects/<name>/` – stored designs, their run history and
+  `folders.json` (gitignored)
+- `scripts/install-service.sh` – install/refresh the systemd user service
+- `scripts/update.sh` – pull from git, restart the service, smoke-test
+- `openems-webgui.service` – unit template used by the install script
 
 ## Conventions
 

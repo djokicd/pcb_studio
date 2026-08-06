@@ -1,17 +1,18 @@
-# OpenEMS PCB Studio server as a systemd user service.
+# OpenEMS PCB Studio - systemd user service TEMPLATE.
 #
-# Running the server this way keeps it (and the simulation stage
-# sequencing) alive independently of any browser, terminal or assistant
-# session. Install with:
+# Do not install this file directly: the @PLACEHOLDERS@ below are filled
+# in with the real paths by
 #
-#   mkdir -p ~/.config/systemd/user
-#   cp openems-webgui.service ~/.config/systemd/user/
-#   systemctl --user daemon-reload
-#   systemctl --user enable --now openems-webgui
+#     scripts/install-service.sh
 #
-# and, so it also runs while you are logged out (long overnight sims):
+# To install by hand instead, replace @REPO@ with the absolute path of
+# this repository and @PYTHON@ with your python3, then:
 #
-#   loginctl enable-linger $USER
+#     mkdir -p ~/.config/systemd/user
+#     cp openems-webgui.service ~/.config/systemd/user/
+#     systemctl --user daemon-reload
+#     systemctl --user enable --now openems-webgui
+#     loginctl enable-linger $USER      # keep running while logged out
 #
 # Logs: journalctl --user -u openems-webgui -f
 
@@ -20,10 +21,15 @@ Description=OpenEMS PCB Studio (Flask + openEMS run sequencing)
 After=network.target
 
 [Service]
-WorkingDirectory=%h/OpenEMS_WebGUI
-ExecStart=/usr/bin/python3 %h/OpenEMS_WebGUI/server.py
+Type=simple
+WorkingDirectory=@REPO@
+Environment=PORT=@PORT@
+ExecStart=@PYTHON@ @REPO@/server.py
 Restart=on-failure
 RestartSec=3
+# a simulation may run for hours - never hard-kill mid-run on stop
+KillSignal=SIGTERM
+TimeoutStopSec=30
 
 [Install]
 WantedBy=default.target
