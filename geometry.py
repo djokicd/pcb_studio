@@ -162,6 +162,71 @@ def stroke_outline(cl, width):
     return left + end_cap + right[::-1] + start_cap
 
 
+def dp_polyline(pts, tol):
+    """Douglas-Peucker decimation of an open polyline: drops vertices that
+    deviate from the kept chords by at most `tol`. Endpoints are kept."""
+    pts = list(pts)
+    if tol <= 0 or len(pts) < 3:
+        return pts
+    keep = [False] * len(pts)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(pts) - 1)]
+    while stack:
+        i0, i1 = stack.pop()
+        if i1 - i0 < 2:
+            continue
+        x0, y0 = pts[i0]
+        dx, dy = pts[i1][0] - x0, pts[i1][1] - y0
+        ln = math.hypot(dx, dy)
+        best, bd = -1, tol
+        for k in range(i0 + 1, i1):
+            px, py = pts[k][0] - x0, pts[k][1] - y0
+            d = math.hypot(px, py) if ln < 1e-12 else abs(px * dy - py * dx) / ln
+            if d > bd:
+                best, bd = k, d
+        if best >= 0:
+            keep[best] = True
+            stack += [(i0, best), (best, i1)]
+    return [p for p, k in zip(pts, keep) if k]
+
+
+def dp_ring(pts, tol):
+    """Douglas-Peucker for a closed outline (no repeated end point). The
+    ring is anchored at two mutually distant vertices and each half is
+    decimated as an open polyline."""
+    pts = list(pts)
+    n = len(pts)
+    if tol <= 0 or n < 5:
+        return pts
+
+    def far(i):
+        return max(range(n), key=lambda k: (pts[k][0] - pts[i][0]) ** 2
+                   + (pts[k][1] - pts[i][1]) ** 2)
+
+    a = far(0)
+    b = far(a)
+    if a > b:
+        a, b = b, a
+    out = dp_polyline(pts[a:b + 1], tol)[:-1] \
+        + dp_polyline(pts[b:] + pts[:a + 1], tol)[:-1]
+    return out if len(out) >= 3 else pts
+
+
+def resample_polyline(pts, max_seg, closed=False):
+    """Subdivide segments longer than `max_seg` into equal parts, so a
+    sparse chain of chords gets evenly spaced vertices again."""
+    pts = list(pts)
+    if max_seg <= 0 or len(pts) < 2:
+        return pts
+    src = pts + ([pts[0]] if closed else [])
+    out = [src[0]]
+    for (x0, y0), (x1, y1) in zip(src, src[1:]):
+        n = max(1, int(math.ceil(math.hypot(x1 - x0, y1 - y0) / max_seg - 1e-9)))
+        for k in range(1, n + 1):
+            out.append((x0 + (x1 - x0) * k / n, y0 + (y1 - y0) * k / n))
+    return out[:-1] if closed else out
+
+
 def shape_outline(s):
     """Closed polygon outline (list of (x, y), not repeated at the end)."""
     t = s.get('type', 'rect')
@@ -245,93 +310,263 @@ def comp_element_box(c, shapes):
 
 
 def _obj_mesh(obj):
+    """(local res, thirds) - thirds is tri-state: True/False/None(auto)."""
     m = obj.get('mesh') or {}
     res = m.get('res')
     try:
         res = float(res) if res else None
     except (TypeError, ValueError):
         res = None
-    return res, bool(m.get('thirds'))
+    thirds = m.get('thirds')
+    return res, (None if thirds is None else bool(thirds))
+
+
+# narrowest dimension below which a shape counts as a transmission-line
+# feature and gets the metal-edge refinement by default
+AUTO_THIRDS_MAX_DIM = 3.0
+
+# vertices turning more than this are geometric corners that pin exact
+# mesh lines on both axes; gentler turns are samples of a smooth curve
+# (all tessellations used here stay at or below 30 deg per step)
+CORNER_TURN_DEG = 35.0
+
+# floor for curve-sampling resolution, so hairline features cannot crush
+# the FDTD timestep with micron-spaced lines
+MIN_SOFT_RES = 0.1
+
+
+def outline_edge_lines(pts, res, hx, hy, sx, sy, corners=True):
+    """Turn a closed outline into mesh-line candidates. Axis-aligned edges
+    pin exact (hard) lines in hx/hy. Oblique and curved edges are sampled
+    every ~res of length into sx/sy as (pos, res) soft candidates - the
+    mesher thins them to the local resolution, so the resulting staircase
+    follows the actual copper edge instead of its bounding box. With
+    corners=True, vertices turning more than CORNER_TURN_DEG pin exact
+    lines on both axes; imported stroke soup passes corners=False so its
+    thousands of cap/miter joints stay soft and thin into smooth bands."""
+    clean = []
+    for p in pts:
+        if not clean or math.hypot(p[0] - clean[-1][0], p[1] - clean[-1][1]) > 1e-9:
+            clean.append(p)
+    if len(clean) > 1 and math.hypot(clean[0][0] - clean[-1][0],
+                                     clean[0][1] - clean[-1][1]) < 1e-9:
+        clean.pop()
+    n = len(clean)
+    if n < 2:
+        return
+    step = max(res, 1e-3)
+    for i in range(n):
+        x0, y0 = clean[i]
+        x1, y1 = clean[(i + 1) % n]
+        dx, dy = x1 - x0, y1 - y0
+        ln = math.hypot(dx, dy)
+        if abs(dx) < 1e-6:
+            hx.append(x0)
+        elif abs(dy) < 1e-6:
+            hy.append(y0)
+        else:
+            m = max(1, int(math.ceil(ln / step)))
+            for k in range(m + 1):
+                t = k / m
+                sx.append((x0 + dx * t, res))
+                sy.append((y0 + dy * t, res))
+    if not corners:
+        return
+    cos_lim = math.cos(math.radians(CORNER_TURN_DEG))
+    for i in range(n):
+        xa, ya = clean[i - 1]
+        xb, yb = clean[i]
+        xc, yc = clean[(i + 1) % n]
+        l1 = math.hypot(xb - xa, yb - ya)
+        l2 = math.hypot(xc - xb, yc - yb)
+        if l1 < 1e-9 or l2 < 1e-9:
+            continue
+        dot = ((xb - xa) * (xc - xb) + (yb - ya) * (yc - yb)) / (l1 * l2)
+        if dot < cos_lim:
+            hx.append(xb)
+            hy.append(yb)
+
+
+def _coalesce(regs):
+    """Merge overlapping (lo, hi, res) intervals, keeping the finest res."""
+    out = []
+    for lo, hi, res in sorted(regs):
+        if out and lo <= out[-1][1] + 1e-9:
+            out[-1][1] = max(out[-1][1], hi)
+            out[-1][2] = min(out[-1][2], res)
+        else:
+            out.append([lo, hi, res])
+    return [tuple(r) for r in out]
 
 
 def mesh_lines_xy(model, edge_res, fringe=None):
-    """Fixed mesh lines and per-object refinement implied by the geometry.
+    """Mesh-line candidates implied by the geometry.
 
-    Returns (xs, ys, xregions, yregions); regions are (lo, hi, res) intervals
-    where gap filling must be at least as fine as `res` (from per-object
-    mesh.res overrides). Shapes with mesh.thirds get their straight bbox
-    edges replaced by the metal-edge 1/3–2/3 line pair.
+    Returns (xs, ys, xsoft, ysoft, xregions, yregions):
+      xs/ys       exact lines: board edges, axis-aligned copper edges, true
+                  corners, circle/via centres and tangent extremes, ports,
+                  components
+      xsoft/ysoft (pos, res) candidates sampled along curved and oblique
+                  edges plus the metal-edge refinement pairs; the mesher
+                  thins them to the local resolution and drops duplicates
+                  of exact lines (after the coincidence merge, so meshMerge
+                  cannot collapse deliberate fine structure)
+      regions     (lo, hi, res) intervals where gap filling must be at
+                  least as fine as res
     """
     board = model['board']
     xs = [0.0, float(board['width'])]
     ys = [0.0, float(board['height'])]
+    xsoft, ysoft = [], []
     xreg, yreg = [], []
+    # cross-width fine zones of narrow shapes are collected apart and
+    # coalesced: hundreds of overlapping stroke segments become a few
+    # merged zones, each contributing a single boundary-line pair
+    nreg_x, nreg_y = [], []
 
     def region(res, x0, x1, y0, y1):
         if res:
             xreg.append((x0, x1, res))
             yreg.append((y0, y1, res))
 
-    def thirds_pair(edge, di, res):
-        # metal-edge refinement: replace the edge line with lines at
-        # edge + di*res/3 (inside the metal) and edge - di*2res/3 (outside)
-        return [edge + di * res / 3.0, edge - di * 2.0 * res / 3.0]
-
     for s in sim_shapes(model):
         pts = shape_outline(s)
         pxs = [p[0] for p in pts]
         pys = [p[1] for p in pts]
         bx0, bx1, by0, by1 = min(pxs), max(pxs), min(pys), max(pys)
+        w, h = bx1 - bx0, by1 - by0
         res, thirds = _obj_mesh(s)
-        region(res, bx0, bx1, by0, by1)
-        if s.get('meshBbox'):
-            # imported geometry (e.g. Gerber): bbox lines only, otherwise
-            # thousands of stroke vertices would explode the mesh
-            xs += [bx0, bx1]
-            ys += [by0, by1]
-            continue
         t = s.get('type', 'rect')
+        if thirds is None:
+            # auto: transmission-line features (narrow rects, straight
+            # two-point traces) get the edge refinement by default. The
+            # rule replaces the bbox-extreme edges with a 1/3-2/3 pair,
+            # which is only meaningful when the bbox edge IS the copper
+            # edge - curved/multi-segment traces take the per-segment
+            # cross-zone path instead. Pads, planes and imported geometry
+            # stay coarse unless explicitly enabled.
+            straight = t != 'trace' or len(s.get('pts') or []) == 2
+            thirds = (t in ('rect', 'trace') and straight
+                      and not s.get('meshBbox')
+                      and min(w, h) <= AUTO_THIRDS_MAX_DIM)
+        region(res, bx0, bx1, by0, by1)
+        # the feature dimension that must stay resolved: the conductor
+        # cross-section, not the bounding box (a long diagonal trace has a
+        # huge bbox but a small width)
+        if t == 'trace':
+            dim = float(s['width'])
+        elif t == 'circle':
+            dim = 2 * float(s['r'])
+        elif t == 'arc':
+            dim = float(s['r1']) - float(s['r0'])
+        else:
+            dim = min(w, h)
+        rs = res or min(edge_res, max(dim / 3.0, MIN_SOFT_RES))
+        hx, hy, sx, sy = [], [], [], []
+        # corner pinning only for hand-drawn geometry: imported stroke
+        # soup would pin a line at every cap/miter joint
+        outline_edge_lines(pts, rs, hx, hy, sx, sy,
+                           corners=not s.get('meshBbox'))
+        if t == 'circle':
+            hx += [bx0, bx1, float(s['cx'])]
+            hy += [by0, by1, float(s['cy'])]
         if thirds:
-            # replace the metal bbox edges with the 1/3-2/3 pair; interior
-            # points (poly vertices, centre lines) are kept. The rule only
-            # converges with a FINE local resolution: coarse edge cells make
-            # a thin PEC strip electrically wider (several ohms of Z0 error),
-            # so default to a quarter of the smallest feature dimension.
-            feat = min(max(bx1 - bx0, 1e-3), max(by1 - by0, 1e-3))
-            rt = min(res, feat) if res else min(edge_res, feat / 8.0)
-            xs += thirds_pair(bx0, +1, rt) + thirds_pair(bx1, -1, rt)
-            ys += thirds_pair(by0, +1, rt) + thirds_pair(by1, -1, rt)
+            # replace the bbox-extreme edges with the 1/3-2/3 metal-edge
+            # pair (line inside the metal at edge+res/3, outside at
+            # edge-2res/3); interior lines - slots, bends, vertices - are
+            # kept. The rule only converges with a FINE local resolution:
+            # coarse edge cells make a thin PEC strip electrically wider
+            # (several ohms of Z0 error), so default to an eighth of the
+            # smallest feature dimension.
+            feat = min(max(w, 1e-3), max(h, 1e-3))
+            rt = min(res, feat) if res else min(edge_res, max(feat / 8.0, MIN_SOFT_RES))
+            eps = 1e-6
+            hx = [v for v in hx if bx0 + eps < v < bx1 - eps]
+            hy = [v for v in hy if by0 + eps < v < by1 - eps]
+            sx = [c for c in sx if bx0 + 0.9 * rt < c[0] < bx1 - 0.9 * rt]
+            sy = [c for c in sy if by0 + 0.9 * rt < c[0] < by1 - 0.9 * rt]
+            # pair tolerance 2rt/3: when a hard line already sits on the
+            # edge (an abutting port), the rt/3 pair line yields to it
+            # instead of creating a sliver cell beside it
+            for e, di in ((bx0, +1), (bx1, -1)):
+                sx += [(e + di * rt / 3.0, rt * 2 / 3.0), (e - di * 2.0 * rt / 3.0, rt * 2 / 3.0)]
+            for e, di in ((by0, +1), (by1, -1)):
+                sy += [(e + di * rt / 3.0, rt * 2 / 3.0), (e - di * 2.0 * rt / 3.0, rt * 2 / 3.0)]
             # resolve the cross-section of narrow strips: fine cells across
             # the thin dimension(s) and a medium band one fringe-length
             # (~substrate height) beyond the edges, where the microstrip
             # fringing field concentrates; long dimensions stay global
             fr = fringe or 4 * rt
-            if bx1 - bx0 <= 8 * rt:
+            if w <= 8 * rt:
                 xreg.append((bx0 - 2 * rt, bx1 + 2 * rt, rt))
                 xreg.append((bx0 - fr, bx1 + fr, max(rt, fr / 3.0)))
-            if by1 - by0 <= 8 * rt:
+            if h <= 8 * rt:
                 yreg.append((by0 - 2 * rt, by1 + 2 * rt, rt))
                 yreg.append((by0 - fr, by1 + fr, max(rt, fr / 3.0)))
-            eps = 1e-6
-            if t in ('rect', 'poly', 'trace'):
-                xs += [v for v in pxs if bx0 + eps < v < bx1 - eps]
-                ys += [v for v in pys if by0 + eps < v < by1 - eps]
-            else:
-                xs.append(float(s['cx']))
-                ys.append(float(s['cy']))
-        elif t in ('rect', 'poly', 'trace'):
-            xs += pxs
-            ys += pys
-        else:  # curved shapes: bounding box + centre lines
-            xs += [bx0, bx1, float(s['cx'])]
-            ys += [by0, by1, float(s['cy'])]
+        elif t == 'trace':
+            # a curved or multi-segment transmission line: refine ACROSS
+            # the conductor along its whole run without refining along
+            # it. Per centerline segment: a straight axis-aligned run
+            # spans only the width in the cross axis; bend samples are
+            # compact in both axes and get both. The zones coalesce into
+            # smooth bands that follow the line. The band reaches half a
+            # width past the copper edges, so a coplanar-waveguide slot
+            # beside the trace is resolved with the same fine cells
+            # instead of one graded jump.
+            w2 = float(s['width']) / 2.0
+            half = w2 + min(w2, 1.0)
+            cl = trace_centerline(s['pts'], s.get('radius') or 0)
+            for (ax0, ay0), (ax1, ay1) in zip(cl, cl[1:]):
+                sx0, sx1 = min(ax0, ax1) - half, max(ax0, ax1) + half
+                sy0, sy1 = min(ay0, ay1) - half, max(ay0, ay1) + half
+                if sx1 - sx0 <= AUTO_THIRDS_MAX_DIM:
+                    nreg_x.append((sx0, sx1, rs))
+                if sy1 - sy0 <= AUTO_THIRDS_MAX_DIM:
+                    nreg_y.append((sy0, sy1, rs))
+        elif dim <= AUTO_THIRDS_MAX_DIM:
+            # narrow feature without edge refinement (imported strokes,
+            # small pads, drawn circles): edge lines alone would leave a
+            # single cell across the conductor, so add a cross-width fine
+            # zone (~3 cells). Per-axis: a straight run refines across its
+            # width only; bends and round features refine both.
+            if w <= AUTO_THIRDS_MAX_DIM:
+                nreg_x.append((bx0, bx1, rs))
+            if h <= AUTO_THIRDS_MAX_DIM:
+                nreg_y.append((by0, by1, rs))
+        xs += hx
+        ys += hy
+        xsoft += sx
+        ysoft += sy
 
     for v in model.get('vias') or []:
         x, y = float(v['x']), float(v['y'])
         rd, rp = float(v['drill']) / 2, float(v['pad']) / 2
-        xs += [x - rp, x - rd, x, x + rd, x + rp]
-        ys += [y - rp, y - rd, y, y + rd, y + rp]
         res, _ = _obj_mesh(v)
+        # a via is a cylinder: pin the centre (hard) and put the tangent
+        # extremes plus samples of the drill/pad circles in the soft set,
+        # so the staircase is round (~3 cells across the drill) instead of
+        # a blocky cross. Soft, not hard: meshMerge must not average the
+        # deliberate pad/drill ring away (it is often < 0.1 mm), and the
+        # lines of near-coincident via columns thin against each other
+        # instead of stacking up.
+        xs.append(x)
+        ys.append(y)
+        # resolve the PAD with ~3 cells; the drill still pins its tangent
+        # extremes. Drill-based resolution would put micro-cells around
+        # every stitching via - a fence of 100+ small vias is common and
+        # the barrels carry current fine with pad-scale cells (a per-via
+        # mesh.res override remains available for critical signal vias).
+        rv = res or min(edge_res, max(2 * rp / 3.0, MIN_SOFT_RES))
+        tol = rv
+        # tangent extremes at high priority (exact feature positions);
+        # generic circle samples fill in between where room remains
+        xsoft += [(x - rp, tol, 1), (x - rd, tol, 1), (x + rd, tol, 1), (x + rp, tol, 1)]
+        ysoft += [(y - rp, tol, 1), (y - rd, tol, 1), (y + rd, tol, 1), (y + rp, tol, 1)]
+        for r in {rd, rp}:
+            # multiple of 4: vertices land exactly on the tangent extremes,
+            # so no near-vertical edge straddles them a few um off
+            n = max(16, 4 * int(math.ceil(math.pi * r / (2 * max(rv, 1e-3)))))
+            outline_edge_lines(circle_points(x, y, r, n), tol, xs, ys, xsoft, ysoft)
         region(res, x - rp, x + rp, y - rp, y + rp)
     shapes = model.get('shapes') or []
     for c in model.get('components') or []:
@@ -352,8 +587,10 @@ def mesh_lines_xy(model, edge_res, fringe=None):
             # coarse neighbouring cells systematically bias the measured
             # impedance. Refine one fringe-length around the port.
             fr = fringe or max(x1 - x0, y1 - y0, 1.0)
-            rp = min(edge_res, fr / 3.0)
+            rp = min(edge_res, max(fr / 3.0, MIN_SOFT_RES))
             xreg.append((x0 - fr, x1 + fr, rp))
             yreg.append((y0 - fr, y1 + fr, rp))
 
-    return xs, ys, xreg, yreg
+    xreg += _coalesce(nreg_x)
+    yreg += _coalesce(nreg_y)
+    return xs, ys, xsoft, ysoft, xreg, yreg

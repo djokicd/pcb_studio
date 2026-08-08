@@ -1,13 +1,25 @@
 """Mesh line generation in Python, shared by the /api/mesh preview and the
 script generator, so the previewed mesh is exactly what gets simulated.
 
-Strategy: fixed lines at every geometry edge, uniform fill inside each gap
-(edge_res inside the board region, max_res outside), geometrically graded
-lines through the air margins.
+Strategy: the geometry contributes two classes of lines. HARD lines pin
+exact positions (board and axis-aligned copper edges, true corners, via
+centres/extremes); near-coincident hard lines are merged (meshMerge) to
+avoid accidental micro-cells. SOFT candidates are sampled along curved
+and oblique edges (and carry the metal-edge refinement pairs); they are
+thinned to the local resolution after the merge, so the staircase follows
+the actual copper edge and deliberate fine structure survives. Inside
+each remaining gap the fill is GRADED - cell sizes start from the fine
+detail at both gap ends and grow geometrically (sim setting "meshRatio",
+default 1.5) up to the local cap (edge/region resolution inside the
+board, lambda/N outside), so fine zones relax smoothly into the bulk.
+The z axis concentrates cells at conductor faces that carry geometry
+(the strip side) and grades coarser toward plane-only faces (the bulk
+ground side).
 """
+import bisect
 import math
 
-from geometry import stackup_z, mesh_lines_xy
+from geometry import stackup_z, mesh_lines_xy, sim_shapes
 
 C0 = 299792458.0
 
@@ -47,6 +59,70 @@ def _fill_gap(a, b, res):
     return [a + gap * k / n for k in range(1, n)]
 
 
+def _fill_graded(a, b, d_left, d_right, cap, ratio):
+    """Interior lines for the gap [a, b]: cell sizes start near d_left /
+    d_right at the ends and grow geometrically (factor `ratio`) towards
+    the middle, plateauing at `cap`. No cell exceeds cap and adjacent
+    cells inside the gap never differ by more than `ratio`."""
+    gap = b - a
+    cap_hard = cap
+    cap = max(min(cap, gap), 1e-4)
+    sl = max(min(d_left, cap), 1e-4)
+    sr = max(min(d_right, cap), 1e-4)
+    # a single cell is acceptable only if it stays within one grading
+    # step of BOTH neighbours (a wide gap beside a tiny cell must be
+    # subdivided even when it is smaller than the local cap) AND it does
+    # not seriously overrun the cap: refinement zones promise a
+    # resolution, so a gap over ~1.3x the promise splits - while a gap
+    # only marginally over stays single (sliver halves would be worse).
+    if gap <= min(sl, sr) * ratio * 1.1 and gap <= cap_hard * 1.3:
+        return []
+    seq = []                            # (side, size) in build order
+    total = 0.0
+    while total < gap - 1e-12:
+        if sl <= sr:                    # grow the currently smaller side
+            sl = min(sl * ratio, cap)
+            seq.append(('L', sl))
+            total += sl
+        else:
+            sr = min(sr * ratio, cap)
+            seq.append(('R', sr))
+            total += sr
+    # the last size overshoots the gap; scaling everything down can
+    # produce cells far below the neighbouring detail (a hidden size
+    # jump at the gap ends). If the overshoot is large, prefer dropping
+    # the last size and stretching the rest - but only while the stretch
+    # keeps the junction jump (ratio x stretch) within ~ratio^1.5;
+    # otherwise scaling down is the lesser evil.
+    if len(seq) > 1 and gap / total < 1.0 / math.sqrt(ratio):
+        alt_total = total - seq[-1][1]
+        alt = gap / alt_total
+        if alt <= math.sqrt(ratio) * 1.001 and max(s for _, s in seq[:-1]) * alt <= cap * 1.2:
+            seq.pop()
+            total = alt_total
+    scale = gap / total
+    pts = []
+    pos = a
+    for side, s in seq:
+        if side == 'L':
+            pos += s * scale
+            pts.append(pos)
+    pos = b
+    for side, s in seq:                 # first-added R is the cell at b
+        if side == 'R':
+            pos -= s * scale
+            pts.append(pos)
+    # the two fronts meet in the middle: drop the coincident meeting
+    # point and anything landing on the gap ends
+    out = []
+    for p in sorted(pts):
+        if p <= a + 1e-6 or p >= b - 1e-6:
+            continue
+        if not out or p - out[-1] > 1e-6:
+            out.append(p)
+    return out
+
+
 def _grade_out(start, res0, res_max, margin, direction, ratio=1.4):
     """Lines growing geometrically away from `start` covering `margin`."""
     sizes = []
@@ -66,7 +142,42 @@ def _grade_out(start, res0, res_max, margin, direction, ratio=1.4):
     return lines
 
 
-def _smooth_axis(fixed, lo, hi, edge_res, max_res, margin, regions=(), merge=0.0):
+def _thin_soft(soft, hard):
+    """Thin soft candidates - (pos, res) or (pos, res, priority) - keeping
+    a point only when it is at least ~0.7*res away from every hard line
+    and every previously kept point. Higher-priority candidates (via
+    tangent extremes, other exact feature positions) are placed first, so
+    dense generic curve samples cannot crowd them out. What survives is
+    an edge-following set of lines spaced at the local resolution - no
+    denser than the graded fill they replace."""
+    if not soft:
+        return []
+    kept = sorted(hard)
+
+    def ok(p, d):
+        i = bisect.bisect_left(kept, p)
+        if i > 0 and p - kept[i - 1] < d:
+            return False
+        if i < len(kept) and kept[i] - p < d:
+            return False
+        return True
+
+    tiers = {}
+    for c in soft:
+        p, res = c[0], c[1]
+        prio = c[2] if len(c) > 2 else 0
+        tiers.setdefault(prio, []).append((p, res))
+    out = []
+    for prio in sorted(tiers, reverse=True):
+        for p, res in sorted(tiers[prio]):
+            if ok(p, 0.7 * res):
+                bisect.insort(kept, p)
+                out.append(p)
+    return out
+
+
+def _smooth_axis(fixed, lo, hi, edge_res, max_res, margin, regions=(), merge=0.0,
+                 ratio=1.5, soft=()):
     # region boundaries must be mesh lines themselves, otherwise a fine
     # region inside a large gap never splits it (the gap midpoint decides
     # the fill resolution and may lie outside the region)
@@ -78,20 +189,59 @@ def _smooth_axis(fixed, lo, hi, edge_res, max_res, margin, regions=(), merge=0.0
         if span_lo < rhi < span_hi:
             fixed.append(rhi)
     lines = _merge_close(fixed, merge) if merge > 0 else _dedupe(fixed)
-    out = [lines[0]]
-    for a, b in zip(lines, lines[1:]):
-        mid = 0.5 * (a + b)
-        res = edge_res if lo - 1e-9 <= mid <= hi + 1e-9 else max_res
-        for rlo, rhi, rres in regions:
-            if rlo - 1e-9 <= mid <= rhi + 1e-9:
-                res = min(res, rres)
-        out += _fill_gap(a, b, res)
-        out.append(b)
+    # deliberate fine structure (curve samples, edge-refinement pairs) is
+    # inserted after the coincidence merge, so meshMerge cannot collapse
+    # it; candidates duplicating a hard line are dropped instead
+    if soft:
+        lines = _dedupe(lines + _thin_soft(soft, lines))
+
+    def fill_pass(lines):
+        # per-gap fill cap: edge resolution on the board, lambda/N
+        # outside, refinement regions finer still
+        caps = []
+        for a, b in zip(lines, lines[1:]):
+            mid = 0.5 * (a + b)
+            res = edge_res if lo - 1e-9 <= mid <= hi + 1e-9 else max_res
+            for rlo, rhi, rres in regions:
+                if rlo - 1e-9 <= mid <= rhi + 1e-9:
+                    res = min(res, rres)
+            caps.append(res)
+        # the geometric detail present at each line: the smaller of the
+        # neighbouring gaps (each limited by its own cap). Graded fills
+        # start from this size, so fine features relax smoothly into the
+        # bulk.
+        widths = [b - a for a, b in zip(lines, lines[1:])]
+        detail = []
+        for j in range(len(lines)):
+            cand = []
+            if j > 0:
+                cand.append(min(widths[j - 1], caps[j - 1]))
+            if j < len(widths):
+                cand.append(min(widths[j], caps[j]))
+            detail.append(min(cand))
+        out = [lines[0]]
+        for j, (a, b) in enumerate(zip(lines, lines[1:])):
+            out += _fill_graded(a, b, detail[j], detail[j + 1], caps[j], ratio)
+            out.append(b)
+        return _dedupe(out)
+
+    # iterate: a single pass computes details from the input gaps only,
+    # so a gap it fills can still jump against the fill of its neighbour;
+    # re-running on the output sees the actual cells and closes those
+    # junction violations. Each pass's new lines can expose fresh
+    # junctions, so loop until stable (geometric convergence, a few
+    # passes in practice).
+    out = lines
+    for _ in range(8):
+        new = fill_pass(out)
+        if len(new) == len(out):
+            break
+        out = new
     if margin > 0:
         first_cell = out[1] - out[0] if len(out) > 1 else edge_res
         last_cell = out[-1] - out[-2] if len(out) > 1 else edge_res
-        out = list(reversed(_grade_out(out[0], first_cell, max_res, margin, -1))) \
-            + out + _grade_out(out[-1], last_cell, max_res, margin, +1)
+        out = list(reversed(_grade_out(out[0], first_cell, max_res, margin, -1, ratio))) \
+            + out + _grade_out(out[-1], last_cell, max_res, margin, +1, ratio)
     return _dedupe(out)
 
 
@@ -118,33 +268,74 @@ def build_mesh(model):
 
     merge = sim.get('meshMerge')
     merge = 0.1 if merge is None else max(0.0, float(merge))
+    ratio = sim.get('meshRatio')
+    ratio = 1.5 if not ratio else min(2.0, max(1.2, float(ratio)))
     # fringing length scale: total dielectric height of the stackup
     _, _diel, _total = stackup_z(model.get('stackup') or [])
-    xs, ys, xreg, yreg = mesh_lines_xy(model, edge_res, fringe=_total or None)
-    x = _smooth_axis(xs, 0.0, W, edge_res, max_res, margin, xreg, merge)
-    y = _smooth_axis(ys, 0.0, H, edge_res, max_res, margin, yreg, merge)
+    xs, ys, xsoft, ysoft, xreg, yreg = mesh_lines_xy(model, edge_res,
+                                                     fringe=_total or None)
+    x = _smooth_axis(xs, 0.0, W, edge_res, max_res, margin, xreg, merge, ratio, xsoft)
+    y = _smooth_axis(ys, 0.0, H, edge_res, max_res, margin, yreg, merge, ratio, ysoft)
 
-    # z: conductor sheets + dielectric interfaces, each dielectric subdivided
+    # z: conductor sheets + dielectric interfaces. Field detail lives at
+    # the conductor faces that carry geometry (strips, ports, pads); plane
+    # -only faces (the bulk ground) get by with coarser first cells, so
+    # each dielectric is graded fine->coarse from the signal side.
     cond_z, diel_z, total = stackup_z(model.get('stackup') or [])
+    signal_ids = ({s.get('layer') for s in sim_shapes(model)}
+                  | {c.get('layer') for c in model.get('components') or []}
+                  | {p.get('layer') for p in model.get('ports') or []}
+                  | {p.get('layerTo') for p in model.get('ports') or []}
+                  | {v.get('from') for v in model.get('vias') or []}
+                  | {v.get('to') for v in model.get('vias') or []})
+    signal_z = {round(z0, 6) for lid, z0 in cond_z.items() if lid in signal_ids}
+
+    def z_detail(zb, thickness):
+        """First-cell size at a dielectric face: fine where geometry sits,
+        moderate at plain interfaces/planes - never above edge_res."""
+        frac = 6.0 if round(zb, 6) in signal_z else 3.0
+        return min(edge_res, max(thickness / frac, 1e-3))
+
     zf = set(cond_z.values()) | {0.0, total}
-    z = []
     boundaries = _dedupe(list(zf | {z0 for z0, _ in diel_z.values()}
                               | {z1 for _, z1 in diel_z.values()}))
+    z = [boundaries[0]]
     for a, b in zip(boundaries, boundaries[1:]):
-        res = min(edge_res, max((b - a) / 3.0, 1e-3))
-        z.append(a)
-        z += _fill_gap(a, b, res)
-    z.append(boundaries[-1])
-    # mirror the outermost dielectric's cell size into the air above/below:
-    # the microstrip fringing field lives within ~one substrate height of the
-    # outer conductors, and coarse first air cells bias Z0 low
+        t = b - a
+        z += _fill_graded(a, b, z_detail(a, t), z_detail(b, t),
+                          min(edge_res, max(t / 2.0, 1e-3)), ratio)
+        z.append(b)
+    # air above/below: continue from the outer face's first-cell size,
+    # growing geometrically (the microstrip fringing field lives within
+    # ~one substrate height of the outer conductors; coarse first air
+    # cells bias Z0 low)
     if diel_z:
         spans = sorted(diel_z.values())
         b_thk = spans[0][1] - spans[0][0]
         t_thk = spans[-1][1] - spans[-1][0]
-        z += [total + t_thk * k / 3.0 for k in (1, 2, 3)]
-        z += [-b_thk * k / 3.0 for k in (1, 2, 3)]
-    z = _smooth_axis(z, 0.0, total, edge_res, max_res, margin)
+        s = z_detail(total, t_thk)
+        pos = total
+        for k in range(3):
+            pos += s * ratio ** k
+            z.append(pos)
+        s = z_detail(0.0, b_thk)
+        pos = 0.0
+        for k in range(3):
+            pos -= s * ratio ** k
+            z.append(pos)
+    z = _smooth_axis(z, 0.0, total, edge_res, max_res, margin, (), 0.0, ratio)
 
-    return {'x': x, 'y': y, 'z': z, 'cells': len(x) * len(y) * len(z),
+    mesh = {'x': x, 'y': y, 'z': z, 'cells': len(x) * len(y) * len(z),
             'edgeRes': edge_res, 'maxRes': max_res}
+    # quality stats for the preview status bar
+    worst = 1.0
+    min_cell = float('inf')
+    for ax in ('x', 'y', 'z'):
+        cells = [b - a for a, b in zip(mesh[ax], mesh[ax][1:])]
+        if cells:
+            min_cell = min(min_cell, min(cells))
+            for c1, c2 in zip(cells, cells[1:]):
+                worst = max(worst, c1 / c2, c2 / c1)
+    mesh['minCell'] = round(min_cell, 4) if min_cell < float('inf') else None
+    mesh['worstRatio'] = round(worst, 2)
+    return mesh

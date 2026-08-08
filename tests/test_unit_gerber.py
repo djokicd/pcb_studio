@@ -36,7 +36,10 @@ def test_gerber_basic():
     r = parse_gerber(GERBER)
     types = sorted(s['type'] for s in r['shapes'])
     assert types.count('rect') == 1          # R flash
-    assert types.count('poly') >= 3          # stroke, obround, region
+    assert types.count('trace') == 1         # stroked draw -> centerline
+    assert types.count('poly') >= 2          # obround flash, region
+    tr = next(s for s in r['shapes'] if s['type'] == 'trace')
+    assert tr['pts'] == [[2.0, 2.0], [10.0, 2.0]] and tr['width'] == 0.25
     x0, y0, x1, y1 = r['bbox']
     assert x0 < 2 and 19.9 < x1 <= 20.1
     assert not r['warnings']
@@ -52,8 +55,16 @@ def test_gerber_rect_flash_geometry():
 def test_gerber_arc_stroke():
     src = GERBER.replace('M02*', 'G75*\nG03*\nD10*\nX4000000Y8000000D02*\nX8000000Y8000000I2000000J0D01*\nM02*')
     r = parse_gerber(src)
-    # the CCW half-circle is sampled into many stadium polygons
-    assert len(r['shapes']) > 10
+    # the CCW half-circle chains into ONE trace whose centerline samples
+    # the arc: points stay on the r=2 circle around (6, 8) within the
+    # 10 um decimation tolerance
+    import math
+    traces = [s for s in r['shapes'] if s['type'] == 'trace']
+    arc = next(t for t in traces if len(t['pts']) > 2)
+    assert arc['pts'][0] == [4.0, 8.0] and arc['pts'][-1] == [8.0, 8.0]
+    assert len(arc['pts']) >= 6
+    for x, y in arc['pts']:
+        assert abs(math.hypot(x - 6, y - 8) - 2.0) < 0.02
 
 
 def test_gerber_inch_units():

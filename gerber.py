@@ -10,9 +10,17 @@ All output geometry is in mm:
   {'type': 'circle', 'cx', 'cy', 'r'}
   {'type': 'rect', 'x', 'y', 'w', 'h'}
   {'type': 'poly', 'pts': [[x, y], ...]}
+  {'type': 'trace', 'pts': [[x, y], ...], 'width'}   chained D01 draws
+
+Consecutive stroked draws (including the arc tessellation) are chained
+into a single centerline trace per run of the pen, lightly decimated
+(Douglas-Peucker, 10 um) - one shape per drawn line instead of a stroke
+polygon per segment.
 """
 import math
 import re
+
+from geometry import dp_polyline
 
 MAX_SHAPES = 8000
 
@@ -95,6 +103,7 @@ class _Gerber:
         self.quad = 75            # 74 single, 75 multi quadrant
         self.dark = True
         self.region = None        # list of contours while in G36
+        self.trace = None         # {'w', 'pts', 'dark'} while chaining draws
         self.shapes = []
         self.warnings = []
         self.skipped_clear = 0
@@ -120,6 +129,30 @@ class _Gerber:
         if len(self.shapes) >= MAX_SHAPES:
             raise GerberError(f'more than {MAX_SHAPES} primitives - aborting')
         self.shapes.append(shape)
+
+    def flush_trace(self):
+        """Close the current draw chain and emit it as a trace shape."""
+        t, self.trace = self.trace, None
+        if not t or len(t['pts']) < 2:
+            return
+        if not t['dark']:
+            self.skipped_clear += 1
+            return
+        if len(self.shapes) >= MAX_SHAPES:
+            raise GerberError(f'more than {MAX_SHAPES} primitives - aborting')
+        pts = [t['pts'][0]]
+        for p in t['pts'][1:]:
+            if math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1]) > 1e-9:
+                pts.append(p)
+        if len(pts) < 2:
+            # a zero-length draw: the traditional way to flash a dot
+            self.shapes.append({'type': 'circle', 'cx': _r4(pts[0][0]),
+                                'cy': _r4(pts[0][1]), 'r': _r4(t['w'] / 2)})
+            return
+        pts = dp_polyline(pts, 0.01)
+        self.shapes.append({'type': 'trace',
+                            'pts': [[_r4(x), _r4(y)] for x, y in pts],
+                            'width': _r4(t['w'])})
 
     # ---- extended commands ----------------------------------------
     def ext(self, cmd):
@@ -222,8 +255,10 @@ class _Gerber:
         if cmd.startswith('G04'):
             return
         if cmd in ('M00', 'M01', 'M02'):
+            self.flush_trace()
             return
         if cmd == 'G36':
+            self.flush_trace()
             self.region = [[]]
             return
         if cmd == 'G37':
@@ -258,14 +293,17 @@ class _Gerber:
         tx = self.x if nx is None else nx
         ty = self.y if ny is None else ny
         if d is not None and int(d) >= 10:
+            self.flush_trace()
             self.ap = int(d)
             return
         op = int(d) if d is not None else None
         if op == 3:
+            self.flush_trace()
             self.x, self.y = tx, ty
             self.flash()
             return
         if op == 2:
+            self.flush_trace()
             if self.region is not None:
                 self.region.append([(tx, ty)])
             self.x, self.y = tx, ty
@@ -286,12 +324,16 @@ class _Gerber:
                     w = max(ap[1][0], ap[1][1])
                     self.warn('rect/obround aperture strokes approximated as round')
                 if w > 1e-9:
-                    prev = (self.x, self.y)
-                    for p in pts:
-                        st = _stadium(prev[0] * self.scale, prev[1] * self.scale,
-                                      p[0] * self.scale, p[1] * self.scale, w * self.scale)
-                        self.emit({'type': 'poly', 'pts': [[_r4(a), _r4(b)] for a, b in st]})
-                        prev = p
+                    s = self.scale
+                    wmm = w * s
+                    prev = (self.x * s, self.y * s)
+                    t = self.trace
+                    if not (t and abs(t['w'] - wmm) < 1e-9 and t['dark'] == self.dark
+                            and math.hypot(t['pts'][-1][0] - prev[0],
+                                           t['pts'][-1][1] - prev[1]) < 1e-6):
+                        self.flush_trace()
+                        self.trace = {'w': wmm, 'pts': [prev], 'dark': self.dark}
+                    self.trace['pts'] += [(p[0] * s, p[1] * s) for p in pts]
                 else:
                     self.warn('draw with unset/zero-width aperture skipped')
             self.x, self.y = tx, ty
@@ -304,6 +346,7 @@ def parse_gerber(text):
             g.ext(cmd)
         else:
             g.word(cmd)
+    g.flush_trace()
     if g.skipped_clear:
         g.warn(f'{g.skipped_clear} clear-polarity (LPC) primitives skipped - '
                'plane clearances are NOT cut out')
@@ -317,6 +360,10 @@ def parse_gerber(text):
         elif s['type'] == 'rect':
             xs += [s['x'], s['x'] + s['w']]
             ys += [s['y'], s['y'] + s['h']]
+        elif s['type'] == 'trace':
+            r = s['width'] / 2
+            xs += [p[0] - r for p in s['pts']] + [p[0] + r for p in s['pts']]
+            ys += [p[1] - r for p in s['pts']] + [p[1] + r for p in s['pts']]
         else:
             xs += [p[0] for p in s['pts']]
             ys += [p[1] for p in s['pts']]

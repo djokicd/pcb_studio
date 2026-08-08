@@ -1388,6 +1388,32 @@ def api_project_run_delete(name, run_id):
     return jsonify({'deleted': run_id})
 
 
+@app.post('/api/simplify')
+def api_simplify():
+    """Simplify a model's shapes: merge imported stroke chains into
+    centerline traces, decimate curve tessellations, resample curves.
+    Body: {model, opts:{ids?, traces?, polys?, tol?, maxSeg?}}. Returns
+    the full replacement shape list, stats and before/after mesh sizes."""
+    from simplify import simplify_shapes
+    data = request.get_json(force=True) or {}
+    model = data.get('model') or {}
+    try:
+        shapes, stats = simplify_shapes(model.get('shapes') or [], data.get('opts') or {})
+    except (ValueError, TypeError, KeyError) as e:
+        return jsonify({'error': str(e)}), 400
+    out = {'shapes': shapes, 'stats': stats}
+    try:
+        for key, mm in (('meshBefore', model),
+                        ('meshAfter', {**model, 'shapes': shapes})):
+            mesh = build_mesh(mm)
+            out[key] = {'cells': mesh['cells'], 'minCell': mesh['minCell'],
+                        'worstRatio': mesh['worstRatio'],
+                        'nx': len(mesh['x']), 'ny': len(mesh['y']), 'nz': len(mesh['z'])}
+    except Exception:
+        pass   # mesh preview is best-effort; the shape list is the result
+    return jsonify(out)
+
+
 @app.post('/api/import/gerber')
 def api_import_gerber():
     data = request.get_json(force=True)

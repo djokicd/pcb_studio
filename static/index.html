@@ -61,6 +61,9 @@
         <div class="menu-label">Editing</div>
         <button data-action="toolSelect">Select <kbd>V</kbd></button>
         <button data-action="toolMeasure">Measure <kbd>X</kbd></button>
+        <button data-action="toolSimplify"
+                title="Merge imported stroke polygons into centerline traces and thin out densely sampled curves &#8212; fewer, cleaner shapes and a better mesh">
+          Simplify geometry&hellip;</button>
         <div class="menu-label">Drawing</div>
         <button data-action="toolRect">Rectangle <kbd>R</kbd></button>
         <button data-action="toolCircle">Circle <kbd>C</kbd></button>
@@ -435,6 +438,8 @@
         <label>Edge resolution (mm) <input id="s_edgeRes" type="number" step="0.05" min="0" placeholder="auto"></label>
         <label title="Mesh lines closer than this are merged (prevents tiny cells that crush the timestep)">
           Merge lines &lt; (mm) <input id="s_meshMerge" type="number" step="0.01" min="0" placeholder="0.1"></label>
+        <label title="Maximum growth factor between adjacent cells: fine mesh at geometry details relaxes geometrically at this rate towards the bulk (1.2 = gentle/more cells, 2.0 = aggressive/fewer cells)">
+          Mesh grading ratio <input id="s_meshRatio" type="number" step="0.1" min="1.2" max="2" placeholder="1.5"></label>
         <label>Air margin (mm) <input id="s_airMargin" type="number" step="1" min="0"></label>
       </div>
       <h3 style="margin-top:16px">S-parameter devices</h3>
@@ -550,6 +555,37 @@
     <div class="uic-btns">
       <button id="saveCancel">Cancel</button>
       <button id="saveOk" class="primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="simpModal" hidden>
+  <div class="uic-box">
+    <div class="modal-head"><span>Simplify geometry</span><button id="simpClose">&#10005;</button></div>
+    <p class="muted" style="margin:6px 0 0">
+      Rebuilds chains of imported stroke polygons into centerline
+      transmission lines and thins densely sampled curves. Copper edges
+      move by at most the tolerance; the mesh then follows one clean pair
+      of edges instead of hundreds of overlapping outlines.
+    </p>
+    <div class="form" style="margin-top:12px">
+      <label>Scope <select id="simpScope">
+        <option value="all">All shapes</option>
+        <option value="sel">Selected shapes only</option>
+      </select></label>
+      <label title="Maximum distance any copper edge may move (Douglas&#8211;Peucker tolerance)">
+        Tolerance (mm) <input id="simpTol" type="number" step="0.005" min="0" value="0.02"></label>
+      <label title="After thinning, curved lines are resampled so no straight chord is longer than this. 0 keeps the thinned vertices">
+        Curve sampling step (mm) <input id="simpSeg" type="number" step="0.1" min="0" value="0" placeholder="0 = off"></label>
+      <label title="Recognise round-capped stroke polygons (Gerber draws) and merge consecutive ones into native trace shapes">
+        <input id="simpTraces" type="checkbox" checked> Merge stroke chains into traces</label>
+      <label title="Thin the outlines of filled polygons (pours, regions) to the tolerance">
+        <input id="simpPolys" type="checkbox" checked> Thin polygon outlines</label>
+    </div>
+    <p class="muted" id="simpStats" style="margin:10px 0 0">&nbsp;</p>
+    <div class="uic-btns">
+      <button id="simpCancel">Cancel</button>
+      <button id="simpOk" class="primary">Apply</button>
     </div>
   </div>
 </div>

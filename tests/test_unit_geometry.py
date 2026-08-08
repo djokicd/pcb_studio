@@ -69,14 +69,27 @@ def test_mesh_merge_close_lines():
     assert min(diffs) > 0.05
 
 
-def test_mesh_z_air_cells_mirrored():
+def test_mesh_z_graded_towards_ground():
+    """z mesh is asymmetric: fine at the signal face (top, carries the
+    trace), graded coarser through the substrate towards the ground
+    plane, with fine air cells only on the signal side."""
     m = build_mesh(_model([rect('t', 10, 8, 10, 3)]))
     z = m['z']
-    # substrate is 0..0.8; expect fine mirrored lines just above/below
+    inside = [v for v in z if -1e-9 <= v <= 0.8 + 1e-9]
+    cells = [b - a for a, b in zip(inside, inside[1:])]
+    assert len(cells) >= 3                      # substrate still resolved
+    assert cells[-1] < cells[0]                 # fine at the strip, coarse at ground
+    assert cells[-1] <= 0.8 / 4                 # strip face genuinely fine
+    # air above the strip: at least 3 fine transition lines
     above = [v for v in z if 0.8 < v < 1.7]
-    below = [v for v in z if -0.9 < v < 0]
     assert len(above) >= 3
-    assert len(below) >= 3
+    first_above = min(above) - 0.8
+    # air below the solid ground plane may be coarser (no field there),
+    # but must still grade smoothly (bounded first-cell jump)
+    below = sorted(v for v in z if v < 0)
+    first_below = -max(below)
+    assert first_above <= 0.8 / 4
+    assert first_below <= 0.8 / 2
 
 
 def test_mesh_cells_count_consistent():
@@ -151,3 +164,90 @@ def test_reference_layer_invisible_to_sim_and_fab():
     files = export_fabrication(m)
     top = next(v for k, v in files.items() if 'Top' in k or 'top' in k.lower())
     assert 'X-30000000' not in top
+
+
+def test_imported_strokes_mesh_edges_and_width():
+    """Narrow imported (meshBbox) stroke polygons - traces from Gerber -
+    get mesh lines that follow the actual copper edges plus a fine
+    cross-width zone (~3 cells across the stroke), instead of a spray of
+    per-segment bbox lines."""
+    # a fake meander: 8 overlapping 0.8 mm-wide stroke segments
+    strokes = []
+    for k in range(8):
+        x0 = 8 + k * 1.5
+        strokes.append({'id': 100 + k, 'name': f'seg{k}', 'type': 'poly',
+                        'layer': 'top', 'meshBbox': True, 'mesh': {},
+                        'pts': [[x0, 9.0], [x0 + 2.0, 9.0],
+                                [x0 + 2.0, 9.8], [x0, 9.8]]})
+    m = build_mesh(_model(strokes))
+    # the exact edge lines are present (axis-aligned edges pin hard lines)
+    assert any(abs(v - 9.0) < 1e-6 for v in m['y'])
+    assert any(abs(v - 9.8) < 1e-6 for v in m['y'])
+    ys = [v for v in m['y'] if 8.9 <= v <= 9.9]
+    cells = [b - a for a, b in zip(ys, ys[1:])]
+    assert len(cells) >= 3                       # ~3 cells across the width
+    assert max(cells) <= 0.8 / 3 * 1.7           # genuinely fine, not bbox noise
+    # a big imported pour: exact edge lines, coarse interior
+    pour = [{'id': 200, 'name': 'pour', 'type': 'poly', 'layer': 'top',
+             'meshBbox': True, 'mesh': {},
+             'pts': [[2, 2], [28, 2], [28, 18], [2, 18]]}]
+    m2 = build_mesh(_model(pour))
+    assert any(abs(v - 2.0) < 1e-6 for v in m2['x'])
+    assert any(abs(v - 28.0) < 1e-6 for v in m2['x'])
+    inner = [v for v in m2['x'] if 3 < v < 27]
+    cells2 = [b - a for a, b in zip(inner, inner[1:])]
+    assert min(cells2) > 0.8                     # interior stays coarse
+
+
+def test_via_meshed_as_sampled_circle():
+    """A via pins exact lines at its centre and at the drill/pad tangent
+    extremes, with the ring resolved - not just a lonely centre line."""
+    m = _model([rect('t', 10, 8, 10, 3)])
+    m['vias'] = [{'x': 20, 'y': 10, 'drill': 0.6, 'pad': 1.2,
+                  'from': 'top', 'to': 'bot', 'mesh': {}}]
+    mesh = build_mesh(m)
+    for off in (-0.6, -0.3, 0.0, 0.3, 0.6):         # +-pad/2, +-drill/2, centre
+        assert any(abs(v - (20 + off)) < 1e-3 for v in mesh['x']), f'missing x {off}'
+        assert any(abs(v - (10 + off)) < 1e-3 for v in mesh['y']), f'missing y {off}'
+    across = [v for v in mesh['x'] if 19.39 <= v <= 20.61]
+    cells = [b - a for a, b in zip(across, across[1:])]
+    assert len(cells) >= 4                            # pad resolved
+    assert max(cells) <= 0.45                         # no gaping hole in the via
+
+
+def test_curved_and_oblique_edges_sampled():
+    """Curved shape edges (circles) and oblique polygon edges produce
+    mesh lines along the actual edge, not just bbox lines."""
+    c = {'id': 5, 'name': 'c', 'type': 'circle', 'layer': 'top',
+         'priority': 10, 'cx': 20, 'cy': 10, 'r': 2.0, 'mesh': {}}
+    mesh = build_mesh(_model([c]))
+    across = [v for v in mesh['x'] if 17.95 <= v <= 22.05]
+    cells = [b - a for a, b in zip(across, across[1:])]
+    assert any(abs(v - 18.0) < 1e-6 for v in mesh['x'])    # exact tangent
+    assert any(abs(v - 22.0) < 1e-6 for v in mesh['x'])
+    assert len(cells) >= 4                                 # edge sampled
+    # oblique edge: a taper's slanted sides get staircase lines between
+    # the vertices (the old mesher only pinned the endpoints)
+    p = {'id': 6, 'name': 'taper', 'type': 'poly', 'layer': 'top',
+         'priority': 10, 'pts': [[10, 8], [30, 9.3], [30, 10.7], [10, 12]],
+         'mesh': {}}
+    mesh2 = build_mesh(_model([p]))
+    interior = [v for v in mesh2['x'] if 12 < v < 28]
+    assert len(interior) >= 5                              # sampled along the slant
+
+
+def test_mesh_worst_ratio_bounded():
+    """Neighbouring cells never jump more than ~ratio^1.5 anywhere."""
+    strokes = []
+    for k in range(6):
+        x0 = 8 + k * 2.0
+        strokes.append({'id': 300 + k, 'name': f's{k}', 'type': 'poly',
+                        'layer': 'top', 'meshBbox': True, 'mesh': {},
+                        'pts': [[x0, 9.0], [x0 + 2.5, 9.0],
+                                [x0 + 2.5, 9.4], [x0, 9.4]]})
+    m = _model(strokes)
+    m['vias'] = [{'x': 12, 'y': 6, 'drill': 0.3, 'pad': 0.6,
+                  'from': 'top', 'to': 'bot', 'mesh': {}}]
+    mesh = build_mesh(m)
+    assert mesh['worstRatio'] <= 1.5 ** 1.5 * 1.05
+    assert mesh['minCell'] >= 0.05

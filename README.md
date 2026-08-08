@@ -230,11 +230,40 @@ FDTD simulations of planar PCB structures via GNU Octave.
   resets); Smith/polar charts and the current-density map zoom with
   the wheel and pan by dragging. Every chart exports to PNG, and the
   S-parameter/time-domain charts also export CSV.
+- **Graded meshing**: inside every gap between geometry lines the cell
+  sizes start from the fine detail at the gap ends and grow
+  geometrically (sim setting **"Mesh grading ratio"**, default 1.5, the
+  openEMS-recommended value) up to the local cap — so the fine mesh
+  that captures transmission-line geometry relaxes smoothly into the
+  bulk instead of jumping (abrupt size jumps cause spurious numerical
+  reflections). The z axis is graded the same way and **asymmetric**:
+  fine first cells at conductor faces that carry geometry (the strip
+  side), coarser toward plane-only faces (the bulk ground) and through
+  the air. The mesh preview status line reports the smallest cell
+  (sets the timestep) and the **worst adjacent-cell step** — on a
+  typical imported CPW board the rework took that step from ≈27× to
+  ≈1.8×, and the microstrip benchmark's return-loss floor improved
+  from −31 dB to −37 dB. **Curved and oblique copper edges** produce
+  mesh lines that follow the actual edge: axis-aligned edges pin exact
+  lines, curves are sampled along their length and thinned to the local
+  resolution, so the staircase tracks the copper instead of its
+  bounding box. **Curved transmission lines** (drawn traces and
+  stroke chains merged by the simplify tool) additionally get per-axis
+  cross-width fine bands along their whole run — a straight run
+  refines across its width only, bends refine both axes — extending
+  half a width past the copper edge so a coplanar-waveguide slot is
+  resolved with the same fine cells. Via fences are resolved at pad
+  scale (~3 cells across the pad), so 100+ stitching vias don't crush
+  the cell budget; a per-via local resolution remains available for
+  critical signal vias.
 - **Per-object meshing**: every shape/port/via/component takes an
-  optional local mesh resolution; shapes additionally support the
-  metal-edge 1/3–2/3 refinement rule (offset capped by the feature
-  size). Near-coincident mesh lines are merged (sim setting "Merge
-  lines <", default 0.1 mm) to protect the FDTD timestep.
+  optional local mesh resolution; shapes support the metal-edge
+  1/3–2/3 refinement rule (offset capped by the feature size) as a
+  tri-state: **auto** (the default) enables it for transmission-line
+  features — traces and shapes narrower than 3 mm — and leaves pads,
+  planes and Gerber imports coarse; on/off override per shape.
+  Near-coincident mesh lines are merged (sim setting "Merge lines <",
+  default 0.1 mm) to protect the FDTD timestep.
 - **Discrete R/L/C accuracy**: lumped-element boxes are automatically
   shrunk to the copper-free gap they bridge, so the nominal value
   applies across the gap regardless of how the body overlaps the pads;
@@ -242,6 +271,21 @@ FDTD simulations of planar PCB structures via GNU Octave.
 - **Fabrication data import**: per-layer Gerber (RS-274X subset:
   standard apertures, strokes, arcs, regions) via the ⇪ button on a
   stackup conductor layer, and Excellon drill files creating PTH vias.
+  Stroked draws — including the arc tessellation — are chained into
+  native **centerline traces** (one shape per drawn line, lightly
+  decimated to 10 µm) instead of one rounded stroke polygon per
+  segment, so imported boards arrive with editable widths and mesh
+  cleanly from the start.
+- **Geometry simplification** (Tools → Simplify geometry…): rebuilds
+  chains of previously imported stroke polygons into centerline
+  traces (each stroke is validated by regenerating its outline before
+  it may join a chain), thins densely tessellated polygon outlines
+  with a Douglas–Peucker pass, and can resample curved lines to an
+  even chord length. Copper edges move by at most the chosen
+  tolerance (default 0.02 mm). The dialog previews shape/vertex
+  counts and the mesh size before/after; applying is one undo step.
+  On the bundled CPW test board this turns 236 stroke polygons into
+  15 traces and cuts the shape list from 378 to 175.
   A shared import offset keeps all imported files aligned; the board
   outline grows to fit. Imported geometry meshes by bounding box to
   keep cell counts sane.

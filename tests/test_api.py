@@ -89,3 +89,38 @@ def test_status_endpoint_shape():
     st = client().get('/api/status').get_json()
     for key in ('state', 'percent', 'samples', 'info', 'warnMsgs'):
         assert key in st
+
+
+def test_simplify_endpoint():
+    from gerber import _stadium
+    import math
+    m = model()
+    strokes = []
+    prev = None
+    sid = 500
+    for k in range(9):
+        a = math.radians(90 * k / 8)
+        p = (20 + 6 * math.cos(a), 4 + 6 * math.sin(a))
+        if prev is not None:
+            pts = _stadium(prev[0], prev[1], p[0], p[1], 0.8)
+            strokes.append({'id': sid, 'name': f'seg{sid}', 'type': 'poly',
+                            'layer': 'top', 'priority': 10, 'meshBbox': True,
+                            'mesh': {}, 'pts': [[round(x, 4), round(y, 4)]
+                                                for x, y in pts]})
+            sid += 1
+        prev = p
+    m['shapes'] += strokes
+    r = client().post('/api/simplify', json={'model': m, 'opts': {'tol': 0.02}})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data['stats']['traces'] == 1
+    assert data['stats']['strokesMerged'] == 8
+    assert data['meshBefore']['cells'] > 0 and data['meshAfter']['cells'] > 0
+    types = [s['type'] for s in data['shapes']]
+    assert types.count('trace') == 1 and types.count('rect') == 1
+
+
+def test_simplify_endpoint_bad_opts():
+    r = client().post('/api/simplify',
+                      json={'model': model(), 'opts': {'tol': 'garbage'}})
+    assert r.status_code == 400

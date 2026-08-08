@@ -34,7 +34,8 @@ function defaultProject() {
     ],
     sim: {
       fStart: 1, fStop: 3, points: 401, boundary: 'MUR', endCriteria: -40,
-      maxTimesteps: 30000, meshDiv: 20, edgeRes: null, meshMerge: 0.1, airMargin: 25,
+      maxTimesteps: 30000, meshDiv: 20, edgeRes: null, meshMerge: 0.1,
+      meshRatio: 1.5, airMargin: 25,
       dumpJ: false, dumpFreqs: '', dumpJt: false, jtStart: 0, jtStop: 3, jtSub: 2,
       fullS: false,
     },
@@ -68,6 +69,7 @@ function migrate(p) {
     if (p.sim.jtStop == null) p.sim.jtStop = 3;
     if (!p.sim.jtSub) p.sim.jtSub = 2;
     if (p.sim.meshMerge == null) p.sim.meshMerge = 0.1;
+    if (p.sim.meshRatio == null) p.sim.meshRatio = 1.5;
     return p;
   }
   const b = p.board || {};
@@ -395,7 +397,12 @@ const app = {
       if (!res.ok) throw new Error(m.error || 'mesh failed');
       this.meshData = m;
       $('meshInfo').textContent =
-        `mesh ${m.x.length}×${m.y.length}×${m.z.length} = ${(m.cells / 1000).toFixed(0)}k cells`;
+        `mesh ${m.x.length}×${m.y.length}×${m.z.length} = ${(m.cells / 1000).toFixed(0)}k cells`
+        + (m.minCell != null ? ` · min ${(m.minCell * 1000).toFixed(0)} µm` : '')
+        + (m.worstRatio != null ? ` · worst step ${m.worstRatio}×` : '');
+      $('meshInfo').title = 'lines per axis · total cells · smallest cell '
+        + '(sets the timestep) · largest adjacent-cell size jump '
+        + '(smooth meshes stay near the grading ratio)';
     } catch (e) {
       this.meshData = null;
       $('meshInfo').textContent = 'mesh: ' + e.message;
@@ -995,15 +1002,21 @@ function renderProps() {
   resI.placeholder = 'default';
   mform.append(fld('Local resolution (mm)', resI));
   if (kind === 'shape') {
-    const thI = document.createElement('input');
-    thI.type = 'checkbox';
-    thI.checked = !!obj.mesh.thirds;
-    thI.addEventListener('change', () => { obj.mesh.thirds = thI.checked; upd(); });
-    const thL = document.createElement('label');
-    thL.className = 'check';
-    thL.title = 'Replace the metal edge line with lines at 1/3 inside / 2/3 outside the edge (captures the edge singularity)';
-    thL.append(thI, document.createTextNode(' Edge refinement (1/3–2/3 rule)'));
-    mform.append(thL);
+    const cur = obj.mesh.thirds === true ? 'on'
+      : obj.mesh.thirds === false ? 'off' : 'auto';
+    const thS = selIn([
+      ['auto', 'auto (on for narrow shapes)'],
+      ['on', 'on'],
+      ['off', 'off'],
+    ], cur, v => {
+      obj.mesh.thirds = v === 'auto' ? null : v === 'on';
+      upd();
+    });
+    thS.title = 'Metal-edge 1/3–2/3 refinement: replaces each edge line with a '
+      + 'pair 1/3 inside / 2/3 outside (captures the edge singularity). '
+      + '"auto" enables it for transmission-line features — traces and shapes '
+      + 'narrower than 3 mm — and leaves pads/planes coarse.';
+    mform.append(fld('Edge refinement', thS));
   }
   body.append(mh, mform);
 
@@ -1133,7 +1146,7 @@ function updateLayerSelect() {
 }
 
 /* ---------- board & sim forms ---------- */
-const SIM_FIELDS = ['fStart', 'fStop', 'points', 'endCriteria', 'maxTimesteps', 'meshDiv', 'edgeRes', 'meshMerge', 'airMargin', 'jtStart', 'jtStop'];
+const SIM_FIELDS = ['fStart', 'fStop', 'points', 'endCriteria', 'maxTimesteps', 'meshDiv', 'edgeRes', 'meshMerge', 'meshRatio', 'airMargin', 'jtStart', 'jtStop'];
 
 function formsFromModel() {
   $('b_width').value = app.project.board.width;
@@ -2211,10 +2224,13 @@ async function importGerberFile(layerId, file) {
     let n = 0;
     for (const sh of res.shapes) {
       const s = { ...sh, id: app.project.nextId++, layer: layerId, priority: 10,
-                  name: `${base}_${++n}`, meshBbox: true };
+                  name: `${base}_${++n}` };
+      // stroke chains arrive as native centerline traces; everything else
+      // meshes by its outline without pinning every tessellation vertex
+      if (s.type !== 'trace') s.meshBbox = true;
       if (s.type === 'rect') { s.x += off.x; s.y += off.y; }
       else if (s.type === 'circle') { s.cx += off.x; s.cy += off.y; }
-      else if (s.type === 'poly') s.pts = s.pts.map(([a, b]) => [a + off.x, b + off.y]);
+      else s.pts = s.pts.map(([a, b]) => [a + off.x, b + off.y]);
       app.project.shapes.push(s);
     }
     expandBoardTo(res.bbox, off);
@@ -2226,6 +2242,85 @@ async function importGerberFile(layerId, file) {
       uiNotice('Gerber import warnings:\n- ' + res.warnings.join('\n- '), 'warn', 10000);
   } catch (e) {
     uiNotice('Gerber import failed: ' + e.message, 'err', 8000);
+  }
+}
+
+/* ---------- geometry simplification tool ---------- */
+function simplifyOpts() {
+  const opts = {
+    tol: Math.max(0, parseFloat($('simpTol').value) || 0),
+    maxSeg: Math.max(0, parseFloat($('simpSeg').value) || 0),
+    traces: $('simpTraces').checked,
+    polys: $('simpPolys').checked,
+  };
+  if ($('simpScope').value === 'sel') {
+    const ids = app.multi.filter(m => m.kind === 'shape').map(m => m.id);
+    if (app.selection && app.selection.kind === 'shape') ids.push(app.selection.id);
+    opts.ids = ids;
+  }
+  return opts;
+}
+
+async function simplifyCall() {
+  return apiJson('/api/simplify', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: app.project, opts: simplifyOpts() }),
+  });
+}
+
+function simplifyStatsText(res) {
+  const s = res.stats;
+  const parts = [];
+  if (s.traces) parts.push(`${s.strokesMerged} strokes → ${s.traces} traces`);
+  if (s.polysSimplified) parts.push(`${s.polysSimplified} outlines thinned`);
+  parts.push(`shapes ${s.shapes} → ${s.shapesAfter}`);
+  parts.push(`vertices ${s.vertices} → ${s.verticesAfter}`);
+  if (res.meshBefore && res.meshAfter)
+    parts.push(`mesh ${(res.meshBefore.cells / 1e3).toFixed(0)}k → `
+      + `${(res.meshAfter.cells / 1e3).toFixed(0)}k cells `
+      + `(worst step ${res.meshAfter.worstRatio}×)`);
+  return parts.join(' · ');
+}
+
+async function simplifyRefresh() {
+  const el = $('simpStats');
+  if ($('simpScope').value === 'sel' && !(simplifyOpts().ids || []).length) {
+    el.textContent = 'Nothing selected — select shapes first or use scope "All shapes".';
+    return;
+  }
+  el.textContent = 'Computing…';
+  try {
+    const res = await simplifyCall();
+    el.textContent = simplifyStatsText(res);
+  } catch (e) {
+    el.textContent = 'Preview failed: ' + e.message;
+  }
+}
+
+function openSimplifyModal() {
+  $('simpScope').value =
+    (app.multi.some(m => m.kind === 'shape')
+     || (app.selection && app.selection.kind === 'shape')) ? 'sel' : 'all';
+  $('simpModal').hidden = false;
+  simplifyRefresh();
+}
+
+async function simplifyApply() {
+  try {
+    const res = await simplifyCall();
+    const s = res.stats;
+    if (s.shapesAfter === s.shapes && s.verticesAfter === s.vertices) {
+      uiNotice('Nothing to simplify with the current options.', 'warn');
+      return;
+    }
+    app.project.shapes = res.shapes;
+    app.select(null);
+    $('simpModal').hidden = true;
+    app.dirty();
+    uiNotice('Simplified geometry: ' + simplifyStatsText(res)
+      + '\nUndo with Ctrl+Z if needed.');
+  } catch (e) {
+    uiNotice('Simplify failed: ' + e.message, 'err', 8000);
   }
 }
 
@@ -2269,6 +2364,7 @@ async function loadDevLib() {
     app.devLib = [];
   }
   renderDevices();
+  updateWarnings();   // device checks ran before the library arrived
 }
 
 function renderDevices() {
@@ -3520,6 +3616,7 @@ const MENU_ACTIONS = {
   colors: openColorsModal,
   toolSelect: () => app.setTool('select'),
   toolMeasure: () => app.setTool('measure'),
+  toolSimplify: () => openSimplifyModal(),
   toolRect: () => app.setTool('rect'),
   toolCircle: () => app.setTool('circle'),
   toolSegment: () => app.setTool('segment'),
@@ -3616,6 +3713,19 @@ window.addEventListener('DOMContentLoaded', () => {
     } catch (e) { uiNotice(e.message, 'err', 5000); }
   });
   $('btnAddLoaded').addEventListener('click', () => openProjectsModal('pick'));
+  $('simpClose').addEventListener('click', () => { $('simpModal').hidden = true; });
+  $('simpCancel').addEventListener('click', () => { $('simpModal').hidden = true; });
+  $('simpModal').addEventListener('click', e => {
+    if (e.target === $('simpModal')) $('simpModal').hidden = true;
+  });
+  $('simpOk').addEventListener('click', simplifyApply);
+  let simpT = null;
+  for (const id of ['simpScope', 'simpTol', 'simpSeg', 'simpTraces', 'simpPolys'])
+    $(id).addEventListener('input', () => {
+      clearTimeout(simpT);
+      simpT = setTimeout(simplifyRefresh, 300);
+    });
+
   $('saveClose').addEventListener('click', () => { $('saveModal').hidden = true; });
   $('saveModal').addEventListener('click', e => {
     if (e.target === $('saveModal')) $('saveModal').hidden = true;

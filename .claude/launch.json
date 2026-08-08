@@ -3,9 +3,7 @@
   "configurations": [
     {
       "name": "pcb-studio",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["server.py"],
-      "port": 8036
+      "url": "http://localhost:8036"
     }
   ]
 }
