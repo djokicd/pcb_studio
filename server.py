@@ -310,7 +310,9 @@ class Runner:
 
             # with S-parameter devices (or the full-S-matrix option) one
             # excitation run per port is needed; the user's excited port
-            # runs last in the run root (that run carries the field dumps)
+            # runs last in the run root. Every stage keeps the configured
+            # field dumps, so the current density can be reviewed for each
+            # excitation - not only the primary one.
             full_s = bool((model.get('sim') or {}).get('fullS')) \
                 and len(model.get('ports') or []) > 1
             excited = sorted(int(p['number']) for p in (model.get('ports') or [])
@@ -319,17 +321,13 @@ class Runner:
                 raise ValidationError('No excited port - mark at least one '
                                       'port as the excitation source')
 
-            def stage_model(n, dumps):
+            def stage_model(n):
                 m2 = json.loads(json.dumps(model))
                 for q in m2['ports']:
                     q['excite'] = (int(q['number']) == n)
-                if not dumps:
-                    m2['sim']['dumpJ'] = False
-                    m2['sim']['dumpJt'] = False
                 return m2
 
             # stage list; the primary excitation runs last in the run root
-            # (that run carries the field dumps)
             stages = []
             exc = excited[0]
             if devices or full_s:
@@ -344,8 +342,8 @@ class Runner:
                 if n == exc:
                     continue
                 stages.append({'dir': sim_dir / f'exc_{n}',
-                               'model': stage_model(n, False), 'exc': n})
-            stages.append({'dir': sim_dir, 'model': stage_model(exc, True),
+                               'model': stage_model(n), 'exc': n})
+            stages.append({'dir': sim_dir, 'model': stage_model(exc),
                            'exc': exc if len(sweep) > 1 else None})
             merge_only = not (devices or full_s) and len(sweep) > 1
             # validate every stage before anything runs
@@ -522,6 +520,7 @@ class Runner:
                 tail = [l for l in self.log[-15:] if 'error' in l.lower()]
                 if tail:
                     self.error += ': ' + tail[-1]
+                self._write_diagnostics_locked()
                 return
             if self.stage_idx + 1 < len(self.stages):
                 self.stage_idx += 1
@@ -547,10 +546,30 @@ class Runner:
                 except Exception as e:
                     self.state = 'error'
                     self.error = f'combining the excitation runs failed: {e}'
+                    self._write_diagnostics_locked()
                     return
             self.percent = 100.0
             self.state = 'done'
+            self._write_diagnostics_locked()
             self._autosave_locked()
+
+    def _write_diagnostics_locked(self):
+        """Persist the Run-tab diagnostics next to the results: the
+        per-excitation energy/speed sample series, engine facts and
+        solver warnings. The file rides along when the run is attached
+        to its project, so the plots and the stats table can be reviewed
+        for any past run."""
+        try:
+            now = time.time()
+            d = {'runId': self.run_id, 'state': self.state,
+                 'startedAt': self.started_at, 'finishedAt': now,
+                 'elapsed': round(now - (self.started_at or now), 1),
+                 'meshCells': self.mesh_cells, 'nrts': self.nrts,
+                 'endDb': self.end_db, 'error': self.error,
+                 'stages': self.stage_data}
+            (SIM_ROOT / self.run_id / 'diagnostics.json').write_text(json.dumps(d))
+        except Exception as e:
+            self.log.append(f'GUI_MARKER: saving run diagnostics failed: {e}')
 
     def _autosave_locked(self):
         """Attach the finished run's results to its project on disk right
@@ -878,26 +897,59 @@ def api_results(run_id):
     return send_from_directory(d, 'sparams.csv')
 
 
+def _dump_dir(run_id):
+    """Directory holding the requested current-density dumps: the run
+    root, or an excitation stage subdir when ?exc=<port> is given."""
+    d = _run_dir(run_id)
+    if d is None:
+        return None
+    exc = request.args.get('exc') or ''
+    if exc:
+        if not re.fullmatch(r'\d{1,3}', exc):
+            return None
+        d = d / f'exc_{exc}'
+        if not d.is_dir():
+            return None
+    return d
+
+
 @app.get('/api/results/<run_id>/jdumps')
 def api_jdumps(run_id):
-    d = _run_dir(run_id)
-    if d is None or not (d / 'jdumps.csv').is_file():
-        return jsonify({'dumps': []})
+    d = _dump_dir(run_id)
+    if d is None:
+        return jsonify({'dumps': [], 'excs': []})
     dumps = []
-    for line in (d / 'jdumps.csv').read_text().strip().splitlines():
-        parts = line.split(',')
-        if len(parts) == 3 and (d / f'J_{re.sub(r"[^A-Za-z0-9]", "_", parts[0])}_f{parts[1]}.bin').is_file():
-            dumps.append({'layer': parts[0], 'k': int(parts[1]), 'freq': float(parts[2])})
-    return jsonify({'dumps': dumps})
+    if (d / 'jdumps.csv').is_file():
+        for line in (d / 'jdumps.csv').read_text().strip().splitlines():
+            parts = line.split(',')
+            if len(parts) == 3 and (d / f'J_{re.sub(r"[^A-Za-z0-9]", "_", parts[0])}_f{parts[1]}.bin').is_file():
+                dumps.append({'layer': parts[0], 'k': int(parts[1]), 'freq': float(parts[2])})
+    # which other excitations of this run carry their own dumps
+    excs = []
+    if not request.args.get('exc'):
+        excs = sorted(int(p.name[4:]) for p in d.glob('exc_*')
+                      if p.name[4:].isdigit()
+                      and ((p / 'jdumps.csv').is_file() or (p / 'jtdumps.csv').is_file()))
+    return jsonify({'dumps': dumps, 'excs': excs})
 
 
 @app.get('/api/results/<run_id>/jdump/<layer>/<int:k>')
 def api_jdump(run_id, layer, k):
-    d = _run_dir(run_id)
+    d = _dump_dir(run_id)
     fname = f'J_{re.sub(r"[^A-Za-z0-9]", "_", layer)}_f{k}.bin'
     if d is None or not (d / fname).is_file():
         return jsonify({'error': 'no such dump'}), 404
     return send_from_directory(d, fname, mimetype='application/octet-stream')
+
+
+@app.get('/api/results/<run_id>/diagnostics')
+def api_run_diagnostics(run_id):
+    """Saved Run-tab diagnostics of a completed run (energy/speed sample
+    series per excitation, engine facts, warnings)."""
+    d = _run_dir(run_id)
+    if d is None or not (d / 'diagnostics.json').is_file():
+        return jsonify({'error': 'no diagnostics stored for this run'}), 404
+    return send_from_directory(d, 'diagnostics.json', mimetype='application/json')
 
 
 @app.get('/api/devices')
@@ -1293,8 +1345,10 @@ def api_projects_list():
 
 def _copy_results(src, dst):
     """Copy a run's result files to dst (replacing it), excluding the
-    bulky raw field dumps; each excitation's own sparams.csv is kept in
-    its exc_<n>/ subdirectory so the raw-data links keep working."""
+    bulky raw field dumps. Each excitation's exc_<n>/ subdirectory keeps
+    its sparams.csv (raw-data links) plus the processed current-density
+    exports (jdumps/jtdumps listings and .bin frames), so the J viewer
+    works for every excitation of a stored run."""
     if dst.is_dir():
         shutil.rmtree(dst)
     dst.mkdir(parents=True)
@@ -1302,7 +1356,12 @@ def _copy_results(src, dst):
         if f.is_dir():
             if f.name.startswith('exc_') and (f / 'sparams.csv').is_file():
                 (dst / f.name).mkdir()
-                shutil.copy2(f / 'sparams.csv', dst / f.name / 'sparams.csv')
+                for g in f.iterdir():
+                    if not g.is_file():
+                        continue
+                    if (g.name == 'sparams.csv' or g.suffix == '.bin'
+                            or g.name in ('jdumps.csv', 'jtdumps.csv')):
+                        shutil.copy2(g, dst / f.name / g.name)
             continue
         # skip bulky raw field dumps - the GUI uses the .bin exports
         if f.suffix in ('.h5', '.vtr'):
@@ -1434,7 +1493,7 @@ def api_import_drill():
 
 @app.get('/api/results/<run_id>/jtdumps')
 def api_jtdumps(run_id):
-    d = _run_dir(run_id)
+    d = _dump_dir(run_id)
     if d is None or not (d / 'jtdumps.csv').is_file():
         return jsonify({'dumps': []})
     dumps = []
@@ -1447,7 +1506,7 @@ def api_jtdumps(run_id):
 
 @app.get('/api/results/<run_id>/jtdump/<layer>')
 def api_jtdump(run_id, layer):
-    d = _run_dir(run_id)
+    d = _dump_dir(run_id)
     fname = f'J_td_{re.sub(r"[^A-Za-z0-9]", "_", layer)}.bin'
     if d is None or not (d / fname).is_file():
         return jsonify({'error': 'no such dump'}), 404

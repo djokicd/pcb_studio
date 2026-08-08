@@ -1463,6 +1463,7 @@ async function startRun() {
     showTab('run');
     showView('editor');
     setRunUI('starting', 0, 0);
+    $('runDiagNote').hidden = true;
     updateRunStats({ samples: [], nrts: app.project.sim.maxTimesteps || 30000, endDb: app.project.sim.endCriteria || -40 });
     poll();
   } catch (e) {
@@ -1559,12 +1560,43 @@ async function loadResults(runId, show = true) {
     }
     await loadJDumps(runId);
     await loadSMatrix(runId);
+    await loadRunDiagnostics(runId);
     rememberRun(runId);
     refreshPastRuns();   // new completion / selection highlight
     if (show) showView('results');
   } catch (e) {
     appendLog(['[gui] failed to load results: ' + e.message]);
     throw e;
+  }
+}
+
+/* saved Run-tab diagnostics of a completed run: restore the energy /
+   speed plots and the stats table from diagnostics.json, unless a live
+   run is in progress (the live view always wins) */
+async function loadRunDiagnostics(runId) {
+  const note = $('runDiagNote');
+  const live = app._lastRunStat
+    && ['starting', 'running', 'post'].includes(app._lastRunStat.state);
+  if (live) return;
+  try {
+    const d = await apiJson(`/api/results/${runId}/diagnostics`);
+    const stages = d.stages || [];
+    const last = stages[stages.length - 1] || {};
+    app._runStageSeen = null;
+    app.runStageView = null;
+    updateRunStats({
+      state: d.state || 'done', stages, stageIdx: stages.length - 1,
+      samples: last.samples || [], info: last.info || {},
+      warnMsgs: last.warn || [],
+      nrts: d.nrts, endDb: d.endDb, meshCells: d.meshCells,
+      percent: 100, elapsed: d.elapsed,
+    });
+    note.hidden = false;
+    note.textContent = `Saved diagnostics of ${runId}`
+      + (d.finishedAt ? ` — finished ${new Date(d.finishedAt * 1000).toLocaleString()}` : '')
+      + (d.state === 'error' ? ` — run FAILED: ${d.error || 'unknown error'}` : '');
+  } catch (e) {
+    note.hidden = true;   // no stored diagnostics (run predates the feature)
   }
 }
 
@@ -2053,19 +2085,42 @@ function exportSMatrixCsv() {
 }
 
 /* ---------- current density ---------- */
-async function loadJDumps(runId) {
+async function loadJDumps(runId, exc) {
+  app.jExc = exc || null;
+  const q = app.jExc ? `?exc=${app.jExc}` : '';
   app.jdumps = [];
   app.jtdumps = [];
   try {
-    const { dumps } = await apiJson(`/api/results/${runId}/jdumps`);
-    app.jdumps = dumps;
+    const r = await apiJson(`/api/results/${runId}/jdumps${q}`);
+    app.jdumps = r.dumps;
+    if (!app.jExc) app.jExcList = r.excs || [];
   } catch (e) { /* none */ }
   try {
-    const { dumps } = await apiJson(`/api/results/${runId}/jtdumps`);
+    const { dumps } = await apiJson(`/api/results/${runId}/jtdumps${q}`);
     app.jtdumps = dumps;
   } catch (e) { /* none */ }
+  // excitation selector: every stage of a multi-excitation run keeps its
+  // own dumps; the run root holds the final (primary) stage's
+  const excSel = $('jExc');
+  const excs = app.jExcList || [];
+  excSel.hidden = excs.length === 0;
+  if (!excSel.hidden) {
+    excSel.innerHTML = '';
+    const o0 = document.createElement('option');
+    o0.value = '';
+    o0.textContent = 'final exc';
+    excSel.append(o0);
+    for (const n of excs) {
+      const o = document.createElement('option');
+      o.value = String(n);
+      o.textContent = `Exc ${n}`;
+      excSel.append(o);
+    }
+    excSel.value = app.jExc || '';
+    excSel.onchange = () => loadJDumps(runId, excSel.value || null);
+  }
   const any = app.jdumps.length || app.jtdumps.length;
-  $('jCard').hidden = !any;
+  $('jCard').hidden = !any && !excs.length;
   if (!any) return;
   // mode availability
   const modeSel = $('jMode');
@@ -2133,6 +2188,7 @@ function jOverlay(layer) {
 async function loadJFrame() {
   const mode = $('jMode').value;
   const layer = $('jLayer').value;
+  app.jview.query = app.jExc ? `?exc=${app.jExc}` : '';
   app.jview.pause();
   $('jPlay').innerHTML = '&#9654;';
   try {

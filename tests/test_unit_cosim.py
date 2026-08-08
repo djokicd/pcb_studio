@@ -250,3 +250,72 @@ def test_runs_listing_and_run_project(tmp_path, monkeypatch):
         pj = c.get('/api/runs/run_20260101_000000/project').get_json()
         assert pj['project']['name'] == 'listed_proj'
         assert c.get('/api/runs/run_20260101_000001/project').status_code == 404
+
+
+def test_copy_results_keeps_stage_j_dumps(tmp_path):
+    """Every excitation's processed current-density exports ride along
+    into the stored run, so the J viewer works for each stage later."""
+    src = tmp_path / 'run_src2'
+    (src / 'exc_2').mkdir(parents=True)
+    (src / 'sparams.csv').write_text('#freq_Hz\n')
+    st = src / 'exc_2'
+    (st / 'sparams.csv').write_text('#freq_Hz\n')
+    (st / 'jdumps.csv').write_text('Top,0,1.0e9\n')
+    (st / 'J_Top_f0.bin').write_bytes(b'\x00' * 16)
+    (st / 'jtdumps.csv').write_text('Top,4\n')
+    (st / 'J_td_Top.bin').write_bytes(b'\x00' * 16)
+    (st / 'Jf_top.h5').write_text('bulky')
+    (st / 'et').write_text('engine internals')
+    dst = tmp_path / 'results2'
+    server._copy_results(src, dst)
+    for name in ('sparams.csv', 'jdumps.csv', 'J_Top_f0.bin',
+                 'jtdumps.csv', 'J_td_Top.bin'):
+        assert (dst / 'exc_2' / name).is_file(), name
+    assert not (dst / 'exc_2' / 'Jf_top.h5').exists()
+    assert not (dst / 'exc_2' / 'et').exists()
+
+
+def test_diagnostics_written_and_served(tmp_path, monkeypatch):
+    """Run diagnostics (per-stage energy/speed samples, engine facts)
+    are persisted at completion and served for past runs; per-stage J
+    dumps resolve via ?exc=<port>."""
+    monkeypatch.setattr(server, 'SIM_ROOT', tmp_path)
+    run = tmp_path / 'run_00000000_000009'
+    (run / 'exc_2').mkdir(parents=True)
+    (run / 'sparams.csv').write_text('#freq_Hz\n')
+
+    r = server.Runner()
+    r._reset()
+    r.run_id = run.name
+    r.state = 'done'
+    r.started_at = 1000.0
+    r.mesh_cells = 123456
+    r.nrts, r.end_db = 30000, -40.0
+    r.stage_data = [
+        {'exc': 2, 'label': 'Exc 2', 'samples': [{'ts': 100, 'db': -5.0, 'speed': 80.0}],
+         'info': {'dt': '1e-13'}, 'warn': [], 'notConverged': False},
+        {'exc': 1, 'label': 'Exc 1', 'samples': [{'ts': 200, 'db': -41.0, 'speed': 90.0}],
+         'info': {}, 'warn': ['Warning: x'], 'notConverged': False},
+    ]
+    r._write_diagnostics_locked()
+    assert (run / 'diagnostics.json').is_file()
+
+    # stage dumps for exc 2
+    (run / 'exc_2' / 'jdumps.csv').write_text('Top,0,1.0e9\n')
+    (run / 'exc_2' / 'J_Top_f0.bin').write_bytes(b'\x00' * 8)
+
+    with server.app.test_client() as c:
+        d = c.get(f'/api/results/{run.name}/diagnostics').get_json()
+        assert d['meshCells'] == 123456 and d['state'] == 'done'
+        assert [s['label'] for s in d['stages']] == ['Exc 2', 'Exc 1']
+        assert d['stages'][0]['samples'][0]['db'] == -5.0
+
+        j = c.get(f'/api/results/{run.name}/jdumps').get_json()
+        assert j['excs'] == [2]          # stage 2 has its own dumps
+        j2 = c.get(f'/api/results/{run.name}/jdumps?exc=2').get_json()
+        assert j2['dumps'] == [{'layer': 'Top', 'k': 0, 'freq': 1.0e9}]
+        b = c.get(f'/api/results/{run.name}/jdump/Top/0?exc=2')
+        assert b.status_code == 200
+        assert c.get(f'/api/results/{run.name}/jdump/Top/0').status_code == 404
+        assert c.get(f'/api/results/{run.name}/diagnostics?exc=2').status_code == 200
+        assert c.get('/api/results/no_such/diagnostics').status_code == 404

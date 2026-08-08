@@ -331,6 +331,8 @@
             <div class="card-head">
               <span class="grip" draggable="true" title="Drag to rearrange">&#x2630;</span>
               <span>Current density</span>
+              <select id="jExc" class="mini" hidden
+                      title="Which excitation's fields to show — every solver run of a multi-excitation simulation records its own current density"></select>
               <select id="jMode" class="mini">
                 <option value="fd">Phasor (single f)</option>
                 <option value="td">Recorded J(t)</option>
@@ -480,6 +482,7 @@
       </div>
 
       <nav id="runTabs" class="runtabs" hidden title="One tab per excitation — each solver run restarts at timestep 0, so they are charted separately"></nav>
+      <p id="runDiagNote" class="muted" hidden style="margin:4px 0 0"></p>
 
       <div class="stats">
         <div class="stat"><b id="stTs">–</b><span>timestep</span></div>

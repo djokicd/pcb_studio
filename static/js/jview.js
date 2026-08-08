@@ -32,6 +32,7 @@ class JView {
     this.infoEl = infoEl;
     this.maxEl = maxEl;
     this.data = null;
+    this.query = '';      // '?exc=N' when viewing a non-primary excitation
     this.phase = 0;       // degrees (fd mode)
     this.frame = 0;       // frame index (td mode)
     this.smooth = true;   // bilinear resampling; false = nearest mesh node
@@ -99,9 +100,9 @@ class JView {
 
   /* fetch + parse one FD dump (cached) */
   async _fetchFD(runId, layer, k) {
-    const key = `${runId}:${layer}:${k}`;
+    const key = `${runId}${this.query}:${layer}:${k}`;
     if (this._fdCache.has(key)) return this._fdCache.get(key);
-    const buf = await this._fetchBuf(`/api/results/${runId}/jdump/${encodeURIComponent(layer)}/${k}`);
+    const buf = await this._fetchBuf(`/api/results/${runId}/jdump/${encodeURIComponent(layer)}/${k}${this.query}`);
     const iv = new Int32Array(buf, 0, 2);
     const nx = iv[0], ny = iv[1];
     let off = 8;
@@ -164,7 +165,7 @@ class JView {
 
   /* time-domain |J| frame stack */
   async loadTD(runId, layer, overlay) {
-    const buf = await this._fetchBuf(`/api/results/${runId}/jtdump/${encodeURIComponent(layer)}`);
+    const buf = await this._fetchBuf(`/api/results/${runId}/jtdump/${encodeURIComponent(layer)}${this.query}`);
     const iv = new Int32Array(buf, 0, 3);
     const nx = iv[0], ny = iv[1], nf = iv[2];
     let off = 12;

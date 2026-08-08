@@ -218,7 +218,18 @@ FDTD simulations of planar PCB structures via GNU Octave.
     recorded frames in J(t) mode).
     The non-uniform FDTD grid is resampled with bilinear interpolation
     in physical coordinates (toggleable — off shows the raw mesh cells),
-    with a color-scale bar.
+    with a color-scale bar. In a multi-excitation simulation **every
+    solver run records its own current density** — an excitation
+    selector on the card switches between them — and the processed
+    dumps ride along when the run is stored with its project, so the
+    J viewer works for past runs too.
+  - **Saved run diagnostics**: when a run finishes (or fails), the Run
+    tab's diagnostic data — the per-excitation energy-decay and solver
+    speed series, the engine facts table (timestep, FDTD size,
+    excitation length, final speed…) and solver warnings — is written
+    to `diagnostics.json` next to the results and stored with the run.
+    Clicking any past run restores the plots and the table exactly as
+    they looked live, with a note naming the run and its finish time.
 
   With three or more ports, the legend chips on the Transmission and
   Time-domain cards toggle individual traces on/off (persisted).
