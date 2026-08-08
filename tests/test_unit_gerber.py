@@ -185,3 +185,78 @@ def test_export_via_pads_only_on_crossed_layers():
     assert 'D03*' not in files['Top_Cu.gbr']      # top not crossed
     assert 'D03*' in files['Mid.gbr']
     assert 'D03*' in files['Bottom.gbr']
+
+
+AM_HEAD = "%FSLAX46Y46*%\n%MOMM*%\n"
+
+
+def test_macro_roundrect_pad_flash():
+    """KiCad-style RoundRect pad macros (the default SMD pad) import as
+    one rounded-rectangle polygon per flash."""
+    import math
+    src = (AM_HEAD
+           + "%AMRoundRect*\n0 comment*\n"
+           + "4,1,4,$2,$3,$4,$5,$6,$7,$8,$9,$2,$3,0*\n"
+           + "1,1,$1+$1,$2,$3*\n1,1,$1+$1,$4,$5*\n1,1,$1+$1,$6,$7*\n1,1,$1+$1,$8,$9*\n"
+           + "20,1,$1+$1,$2,$3,$4,$5,0*\n20,1,$1+$1,$4,$5,$6,$7,0*\n"
+           + "20,1,$1+$1,$6,$7,$8,$9,0*\n20,1,$1+$1,$8,$9,$2,$3,0*%\n"
+           + "%ADD14RoundRect,0.135X-0.615X-0.365X0.615X-0.365X0.615X0.365X-0.615X0.365X0*%\n"
+           + "D14*\nX10000000Y5000000D03*\nM02*\n")
+    r = parse_gerber(src)
+    assert not r['warnings']
+    assert len(r['shapes']) == 1
+    s = r['shapes'][0]
+    assert s['type'] == 'poly'
+    xs = [p[0] for p in s['pts']]
+    ys = [p[1] for p in s['pts']]
+    assert abs(min(xs) - 9.25) < 1e-3 and abs(max(xs) - 10.75) < 1e-3
+    assert abs(min(ys) - 4.5) < 1e-3 and abs(max(ys) - 5.5) < 1e-3
+    # corners are rounded: no vertex reaches the sharp corner
+    d = min(math.hypot(px - 10.75, py - 5.5) for px, py in s['pts'])
+    assert 0.03 < d < 0.09
+
+
+def test_macro_assignment_and_rotated_rect():
+    """$n=expr assignments and the rotation argument work; a single
+    primitive is emitted without hull merging."""
+    src = (AM_HEAD
+           + "%AMROT*\n$4=$3x1*\n21,1,$1,$2,0,0,$4*%\n"
+           + "%ADD15ROT,2.0X1.0X90*%\nD15*\nX0Y0D03*\nM02*\n")
+    r = parse_gerber(src)
+    assert not r['warnings']
+    s = r['shapes'][0]
+    assert len(s['pts']) == 4
+    xs = [p[0] for p in s['pts']]
+    ys = [p[1] for p in s['pts']]
+    # the 2.0 x 1.0 rect is rotated by $4 = $3 = 90 deg -> bbox swaps
+    assert abs(max(xs) - min(xs) - 1.0) < 1e-6
+    assert abs(max(ys) - min(ys) - 2.0) < 1e-6
+
+
+def test_macro_exposure_off_and_unknown_primitive_warn():
+    src = (AM_HEAD
+           + "%AMCUT*\n21,1,2,1,0,0,0*\n21,0,1,0.5,0,0,0*\n7,0,0,1,0.8,0.1,45*%\n"
+           + "%ADD16CUT*%\nD16*\nX0Y0D03*\nM02*\n")
+    r = parse_gerber(src)
+    assert any('exposure-off' in w for w in r['warnings'])
+    assert any('thermal' in w for w in r['warnings'])
+    assert len(r['shapes']) == 1          # the exposed rect still lands
+
+
+def test_macro_concave_outline_not_hulled():
+    """A single outline primitive keeps its exact (possibly concave)
+    shape - only multi-primitive flashes are hull-merged."""
+    src = (AM_HEAD
+           + "%AMLSHAPE*\n4,1,6,0,0,2,0,2,1,1,1,1,2,0,2,0,0,0*%\n"
+           + "%ADD17LSHAPE*%\nD17*\nX0Y0D03*\nM02*\n")
+    r = parse_gerber(src)
+    assert not r['warnings']
+    s = r['shapes'][0]
+    assert len(s['pts']) == 6
+    assert [1.0, 1.0] in [[round(a, 4), round(b, 4)] for a, b in s['pts']]
+
+
+def test_unknown_aperture_still_warns():
+    src = AM_HEAD + "%ADD18WEIRD,1.0*%\nD18*\nX0Y0D03*\nM02*\n%ADD10C,0.2*%\nD10*\nX0Y0D03*\n"
+    r = parse_gerber(src)
+    assert any('unsupported aperture' in w for w in r['warnings'])

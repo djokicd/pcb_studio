@@ -1,10 +1,18 @@
 """Minimal RS-274X (Gerber) and Excellon drill parsers for layer import.
 
 Supported Gerber subset: FS (LA/TA), MO, AD with standard apertures
-(C/R/O/P), G01/G02/G03 interpolation, D01/D02/D03, G36/G37 regions,
+(C/R/O/P), aperture macros (AM) with the standard primitives (circle 1,
+vector line 2/20, centre/lower-left rect 21/22, outline 4, polygon 5)
+including $n parameters, arithmetic and assignments - this is how KiCad
+et al. flash component pads (rounded/chamfered rectangles). Macro
+flashes with several exposed primitives are merged into one polygon via
+their convex hull (exact for the standard convex pad shapes); a single
+primitive is emitted as-is, so concave custom outlines survive. Moire/
+thermal primitives (6/7) and exposure-off cutouts are skipped with a
+warning. Also: G01/G02/G03 interpolation, D01/D02/D03, G36/G37 regions,
 G74/G75 quadrant modes, LP (dark only - clear polarity primitives are
-skipped with a warning), G04 comments, M02. Aperture macros (AM) and
-step-repeat (SR) are not supported and reported as warnings.
+skipped with a warning), G04 comments, M02. Step-repeat (SR) is not
+supported and reported as a warning.
 
 All output geometry is in mm:
   {'type': 'circle', 'cx', 'cy', 'r'}
@@ -53,6 +61,111 @@ def _ngon(cx, cy, r, n, rot_deg=0.0):
             for k in range(max(3, int(n)))]
 
 
+def _rot(pts, deg):
+    """Rotate points CCW about the macro origin (per the AM spec)."""
+    if abs(deg) < 1e-12:
+        return list(pts)
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    return [(x * c - y * s, x * s + y * c) for x, y in pts]
+
+
+def _hull(pts):
+    """Convex hull (Andrew monotone chain)."""
+    pts = sorted(set((round(x, 6), round(y, 6)) for x, y in pts))
+    if len(pts) < 3:
+        return pts
+
+    def half(seq):
+        out = []
+        for p in seq:
+            while len(out) >= 2 and ((out[-1][0] - out[-2][0]) * (p[1] - out[-2][1])
+                                     - (out[-1][1] - out[-2][1]) * (p[0] - out[-2][0])) <= 0:
+                out.pop()
+            out.append(p)
+        return out
+
+    lower = half(pts)
+    upper = half(reversed(pts))
+    return lower[:-1] + upper[:-1]
+
+
+class _MacroExpr:
+    """Evaluator for AM macro expressions: numbers, $n variables,
+    + - x X / and parentheses."""
+
+    def __init__(self, text, env):
+        self.t = text
+        self.i = 0
+        self.env = env
+
+    def peek(self):
+        while self.i < len(self.t) and self.t[self.i] in ' \t':
+            self.i += 1
+        return self.t[self.i] if self.i < len(self.t) else ''
+
+    def expr(self):
+        v = self.term()
+        while True:
+            c = self.peek()
+            if c == '+':
+                self.i += 1
+                v += self.term()
+            elif c == '-':
+                self.i += 1
+                v -= self.term()
+            else:
+                return v
+
+    def term(self):
+        v = self.factor()
+        while True:
+            c = self.peek()
+            if c and c in 'xX':
+                self.i += 1
+                v *= self.factor()
+            elif c == '/':
+                self.i += 1
+                d = self.factor()
+                v = v / d if d else 0.0
+            else:
+                return v
+
+    def factor(self):
+        c = self.peek()
+        if c == '-':
+            self.i += 1
+            return -self.factor()
+        if c == '+':
+            self.i += 1
+            return self.factor()
+        if c == '(':
+            self.i += 1
+            v = self.expr()
+            if self.peek() == ')':
+                self.i += 1
+            return v
+        if c == '$':
+            self.i += 1
+            j = self.i
+            while j < len(self.t) and self.t[j].isdigit():
+                j += 1
+            n = int(self.t[self.i:j] or '0')
+            self.i = j
+            return float(self.env.get(n, 0.0))
+        j = self.i
+        while j < len(self.t) and (self.t[j].isdigit() or self.t[j] == '.'):
+            j += 1
+        if j == self.i:
+            raise GerberError(f'bad macro expression: {self.t!r}')
+        v = float(self.t[self.i:j])
+        self.i = j
+        return v
+
+
+def _macro_eval(text, env):
+    return _MacroExpr(text, env).expr()
+
+
 def _tokenize(text):
     out = []
     text = text.replace('\r', '')
@@ -95,7 +208,8 @@ class _Gerber:
         self.zeros = 'L'          # leading zeros omitted
         self.digits = 9           # total digits (for trailing-zero mode)
         self.apertures = {}
-        self.macros = set()
+        self.macro_defs = {}      # name -> list of body statements
+        self._am = None           # macro name while collecting its body
         self.ap = None
         self.x = 0.0
         self.y = 0.0
@@ -156,6 +270,15 @@ class _Gerber:
 
     # ---- extended commands ----------------------------------------
     def ext(self, cmd):
+        # while an AM definition is open, statements starting with a
+        # digit, '$' or '0' (primitives, assignments, comments) belong to
+        # the macro body; any named command ends the collection
+        if self._am is not None:
+            if cmd[:1] in '0123456789$':
+                if not cmd.startswith('0'):        # '0 ...' is a comment
+                    self.macro_defs[self._am].append(cmd)
+                return
+            self._am = None
         if cmd.startswith('FS'):
             m = re.match(r'FS([LT])[AI]X(\d)(\d)Y\d\d', cmd)
             if m:
@@ -165,8 +288,8 @@ class _Gerber:
         elif cmd.startswith('MO'):
             self.scale = 25.4 if 'IN' in cmd else 1.0
         elif cmd.startswith('AM'):
-            self.macros.add(cmd[2:].split('*')[0])
-            self.warn('aperture macros (AM) are not supported - macro flashes skipped')
+            self._am = cmd[2:].split('*')[0]
+            self.macro_defs[self._am] = []
         elif cmd.startswith('ADD'):
             m = re.match(r'ADD(\d+)([A-Za-z_.$][\w.$]*)(?:,(.*))?$', cmd)
             if not m:
@@ -176,8 +299,8 @@ class _Gerber:
             params = [float(p) for p in (m.group(3) or '').split('X') if p]
             if name in ('C', 'R', 'O', 'P'):
                 self.apertures[code] = (name, params)
-            elif name in self.macros:
-                self.apertures[code] = ('MACRO', params)
+            elif name in self.macro_defs:
+                self.apertures[code] = ('AM', (name, params))
             else:
                 self.apertures[code] = ('MACRO', params)
                 self.warn(f'unsupported aperture "{name}" - flashes skipped')
@@ -213,7 +336,86 @@ class _Gerber:
         elif kind == 'P' and len(p) >= 2:
             pts = _ngon(x, y, p[0] * s / 2, int(p[1]), p[2] if len(p) > 2 else 0)
             self.emit({'type': 'poly', 'pts': [[_r4(a), _r4(b)] for a, b in pts]})
-        # MACRO: skipped (warned at AD/AM time)
+        elif kind == 'AM':
+            self.flash_macro(*p)
+        # MACRO (unknown aperture): skipped (warned at AD time)
+
+    def flash_macro(self, name, params):
+        """Flash an AM macro aperture at the current position: evaluate
+        its primitives, then emit one shape (a single primitive as-is,
+        several merged via their convex hull - exact for the standard
+        convex pad shapes)."""
+        env = {i + 1: v for i, v in enumerate(params)}
+        prims = []                       # (code, pts) with exposure on
+        for stmt in self.macro_defs.get(name, ()):
+            if stmt.startswith('$'):     # variable assignment $n=expr
+                m = re.match(r'\$(\d+)\s*=\s*(.+)$', stmt)
+                if m:
+                    env[int(m.group(1))] = _macro_eval(m.group(2), env)
+                continue
+            try:
+                args = [_macro_eval(a, env) for a in stmt.split(',')]
+            except (GerberError, ValueError):
+                self.warn(f'macro "{name}": unreadable statement skipped')
+                continue
+            code = int(args[0])
+            a = args[1:]
+            if code in (6, 7):
+                self.warn(f'macro "{name}": moire/thermal primitive skipped')
+                continue
+            if not a:
+                continue
+            if a[0] == 0:                # exposure off = cutout
+                self.warn(f'macro "{name}": exposure-off cutout ignored')
+                continue
+            if code == 1 and len(a) >= 4:
+                pts = _rot(_ngon(a[2], a[3], a[1] / 2, 32),
+                           a[4] if len(a) > 4 else 0)
+            elif code in (2, 20) and len(a) >= 6:
+                w2 = a[1] / 2
+                dx, dy = a[4] - a[2], a[5] - a[3]
+                ln = math.hypot(dx, dy) or 1.0
+                nx, ny = -dy / ln * w2, dx / ln * w2
+                pts = _rot([(a[2] + nx, a[3] + ny), (a[4] + nx, a[5] + ny),
+                            (a[4] - nx, a[5] - ny), (a[2] - nx, a[3] - ny)],
+                           a[6] if len(a) > 6 else 0)
+            elif code == 21 and len(a) >= 5:
+                w2, h2 = a[1] / 2, a[2] / 2
+                cx, cy = a[3], a[4]
+                pts = _rot([(cx - w2, cy - h2), (cx + w2, cy - h2),
+                            (cx + w2, cy + h2), (cx - w2, cy + h2)],
+                           a[5] if len(a) > 5 else 0)
+            elif code == 22 and len(a) >= 5:
+                w, h = a[1], a[2]
+                x0, y0 = a[3], a[4]
+                pts = _rot([(x0, y0), (x0 + w, y0), (x0 + w, y0 + h), (x0, y0 + h)],
+                           a[5] if len(a) > 5 else 0)
+            elif code == 4 and len(a) >= 4:
+                n = int(a[1])
+                coords = a[2:2 + 2 * (n + 1)]
+                pts = list(zip(coords[0::2], coords[1::2]))
+                if len(pts) > 1 and pts[0] == pts[-1]:
+                    pts = pts[:-1]
+                pts = _rot(pts, a[2 + 2 * (n + 1)] if len(a) > 2 + 2 * (n + 1) else 0)
+            elif code == 5 and len(a) >= 5:
+                pts = _ngon(a[2], a[3], a[4] / 2, int(a[1]),
+                            a[5] if len(a) > 5 else 0)
+            else:
+                self.warn(f'macro "{name}": primitive {code} skipped')
+                continue
+            if len(pts) >= 3:
+                prims.append((code, pts))
+        if not prims:
+            self.warn(f'macro "{name}": flash produced no copper')
+            return
+        s = self.scale
+        x, y = self.x * s, self.y * s
+        if len(prims) == 1:
+            pts = prims[0][1]
+        else:
+            pts = _hull(p for _c, ps in prims for p in ps)
+        self.emit({'type': 'poly',
+                   'pts': [[_r4(x + px * s), _r4(y + py * s)] for px, py in pts]})
 
     def arc_points(self, x0, y0, x1, y1, i, j):
         """Sampled points along the current arc (excluding the start)."""
