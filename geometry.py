@@ -542,6 +542,18 @@ def mesh_lines_xy(model, edge_res, fringe=None):
         x, y = float(v['x']), float(v['y'])
         rd, rp = float(v['drill']) / 2, float(v['pad']) / 2
         res, _ = _obj_mesh(v)
+        # per-via economy setting mesh.lines: how many mesh lines the via
+        # may pin per axis. None/0 = auto (full round staircase),
+        # 5 = centre + drill and pad tangent extremes, 3 = centre + drill
+        # extremes, 1 = centre line only. A fence of 100+ stitching vias
+        # meshed in full detail dominates the cell budget of a board, and
+        # for stitching the barrel position matters far more than its
+        # roundness.
+        nlines = (v.get('mesh') or {}).get('lines')
+        try:
+            nlines = int(nlines) if nlines else None
+        except (TypeError, ValueError):
+            nlines = None
         # a via is a cylinder: pin the centre (hard) and put the tangent
         # extremes plus samples of the drill/pad circles in the soft set,
         # so the staircase is round (~3 cells across the drill) instead of
@@ -558,15 +570,21 @@ def mesh_lines_xy(model, edge_res, fringe=None):
         # mesh.res override remains available for critical signal vias).
         rv = res or min(edge_res, max(2 * rp / 3.0, MIN_SOFT_RES))
         tol = rv
-        # tangent extremes at high priority (exact feature positions);
-        # generic circle samples fill in between where room remains
-        xsoft += [(x - rp, tol, 1), (x - rd, tol, 1), (x + rd, tol, 1), (x + rp, tol, 1)]
-        ysoft += [(y - rp, tol, 1), (y - rd, tol, 1), (y + rd, tol, 1), (y + rp, tol, 1)]
-        for r in {rd, rp}:
-            # multiple of 4: vertices land exactly on the tangent extremes,
-            # so no near-vertical edge straddles them a few um off
-            n = max(16, 4 * int(math.ceil(math.pi * r / (2 * max(rv, 1e-3)))))
-            outline_edge_lines(circle_points(x, y, r, n), tol, xs, ys, xsoft, ysoft)
+        if nlines != 1:
+            # tangent extremes at high priority (exact feature positions)
+            xsoft += [(x - rd, tol, 1), (x + rd, tol, 1)]
+            ysoft += [(y - rd, tol, 1), (y + rd, tol, 1)]
+            if nlines != 3:
+                xsoft += [(x - rp, tol, 1), (x + rp, tol, 1)]
+                ysoft += [(y - rp, tol, 1), (y + rp, tol, 1)]
+        if nlines is None:
+            # full detail: generic circle samples fill in between the
+            # extremes where room remains
+            for r in {rd, rp}:
+                # multiple of 4: vertices land exactly on the tangent
+                # extremes, so no near-vertical edge straddles them
+                n = max(16, 4 * int(math.ceil(math.pi * r / (2 * max(rv, 1e-3)))))
+                outline_edge_lines(circle_points(x, y, r, n), tol, xs, ys, xsoft, ysoft)
         region(res, x - rp, x + rp, y - rp, y + rp)
     shapes = model.get('shapes') or []
     for c in model.get('components') or []:

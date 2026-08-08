@@ -251,3 +251,36 @@ def test_mesh_worst_ratio_bounded():
     mesh = build_mesh(m)
     assert mesh['worstRatio'] <= 1.5 ** 1.5 * 1.05
     assert mesh['minCell'] >= 0.05
+
+
+def test_via_mesh_lines_economy_settings():
+    """mesh.lines caps how many lines a via pins per axis: 1 = centre
+    only, 3 = + drill tangents, 5 = + pad tangents, unset = full circle
+    staircase."""
+    from geometry import mesh_lines_xy
+
+    def lines_for(setting):
+        m = _model([rect('t', 10, 8, 10, 3)])
+        via = {'x': 30, 'y': 10, 'drill': 0.6, 'pad': 1.2,
+               'from': 'top', 'to': 'bot', 'mesh': {}}
+        if setting is not None:
+            via['mesh'] = {'lines': setting}
+        m['vias'] = [via]
+        xs, ys, xsoft, ysoft, xreg, yreg = mesh_lines_xy(m, 0.4)
+        near_h = [v for v in xs if 28.5 < v < 31.5]
+        near_s = [c for c in xsoft if 28.5 < c[0] < 31.5]
+        return near_h, near_s
+
+    h1, s1 = lines_for(1)
+    assert h1 == [30] and s1 == []                       # centre only
+
+    h3, s3 = lines_for(3)
+    assert h3 == [30]
+    assert sorted(round(c[0], 3) for c in s3) == [29.7, 30.3]   # drill only
+
+    h5, s5 = lines_for(5)
+    assert sorted(round(c[0], 3) for c in s5) == [29.4, 29.7, 30.3, 30.6]
+
+    ha, sa = lines_for(None)                             # auto: staircase too
+    assert len(sa) > 4
+    assert {29.4, 29.7, 30.3, 30.6} <= {round(c[0], 3) for c in sa}

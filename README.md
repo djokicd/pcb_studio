@@ -275,7 +275,16 @@ FDTD simulations of planar PCB structures via GNU Octave.
   native **centerline traces** (one shape per drawn line, lightly
   decimated to 10 µm) instead of one rounded stroke polygon per
   segment, so imported boards arrive with editable widths and mesh
-  cleanly from the start.
+  cleanly from the start. The drill-import dialog asks how many **mesh
+  lines each via** may pin per axis — auto (full round staircase),
+  5 (centre + drill & pad edges), 3 (centre + drill edges) or
+  1 (centre only) — because a fence of 100+ stitching vias meshed in
+  full detail can dominate the cell budget (on the bundled CPW test
+  board, drill-only import at 1 line/via meshes with ~21 % fewer
+  cells *and* a larger timestep). The choice is remembered, applied to
+  the imported vias, and editable per via afterwards (Properties →
+  Meshing → Mesh lines), so critical signal vias can be set back to
+  full detail individually.
 - **Geometry simplification** (Tools → Simplify geometry…): rebuilds
   chains of previously imported stroke polygons into centerline
   traces (each stroke is validated by regenerating its outline before

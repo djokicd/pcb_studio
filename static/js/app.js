@@ -1018,6 +1018,16 @@ function renderProps() {
       + 'narrower than 3 mm — and leaves pads/planes coarse.';
     mform.append(fld('Edge refinement', thS));
   }
+  if (kind === 'via') {
+    const linesSel = selIn(VIA_LINES_OPTIONS, String(obj.mesh.lines || ''), v => {
+      obj.mesh.lines = v ? parseInt(v, 10) : null;
+      upd();
+    });
+    linesSel.title = 'How many mesh lines this via may pin per axis. Fewer '
+      + 'lines mean fewer cells — for stitching-via fences the barrel '
+      + 'position matters far more than its roundness.';
+    mform.append(fld('Mesh lines', linesSel));
+  }
   body.append(mh, mform);
 
   const del = document.createElement('button');
@@ -2324,7 +2334,33 @@ async function simplifyApply() {
   }
 }
 
-async function importDrillFile(file) {
+/* how many mesh lines a via may pin per axis (shared by the via
+   properties panel and the drill-import dialog) */
+const VIA_LINES_OPTIONS = [
+  ['', 'auto — full round staircase'],
+  ['5', '5 — centre + drill & pad edges'],
+  ['3', '3 — centre + drill edges'],
+  ['1', '1 — centre line only'],
+];
+
+function openDrillModal(file) {
+  $('drillFile').textContent = file.name;
+  $('drillLines').value = uiSettings.drillLines || '';
+  $('drillModal').hidden = false;
+  const done = choice => {
+    $('drillModal').hidden = true;
+    $('drillOk').onclick = $('drillCancel').onclick = $('drillClose').onclick = null;
+    if (choice === null) return;
+    uiSettings.drillLines = choice;
+    saveUiSettings();
+    importDrillFile(file, choice ? parseInt(choice, 10) : null);
+  };
+  $('drillOk').onclick = () => done($('drillLines').value);
+  $('drillCancel').onclick = () => done(null);
+  $('drillClose').onclick = () => done(null);
+}
+
+async function importDrillFile(file, meshLines) {
   try {
     const res = await apiJson('/api/import/drill', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2342,6 +2378,7 @@ async function importDrillFile(file) {
         pad: Math.round(v.drill * 1.6 * 100) / 100,
         from: layers[layers.length - 1].id,
         to: layers[0].id,
+        ...(meshLines ? { mesh: { lines: meshLines } } : {}),
       });
     }
     expandBoardTo(res.bbox, off);
@@ -3713,6 +3750,13 @@ window.addEventListener('DOMContentLoaded', () => {
     } catch (e) { uiNotice(e.message, 'err', 5000); }
   });
   $('btnAddLoaded').addEventListener('click', () => openProjectsModal('pick'));
+  for (const [v, label] of VIA_LINES_OPTIONS) {
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = label;
+    $('drillLines').append(o);
+  }
+
   $('simpClose').addEventListener('click', () => { $('simpModal').hidden = true; });
   $('simpCancel').addEventListener('click', () => { $('simpModal').hidden = true; });
   $('simpModal').addEventListener('click', e => {
@@ -3907,9 +3951,9 @@ window.addEventListener('DOMContentLoaded', () => {
     if (f && app._importLayer) await importGerberFile(app._importLayer, f);
     e.target.value = '';
   });
-  $('drillInput').addEventListener('change', async e => {
+  $('drillInput').addEventListener('change', e => {
     const f = e.target.files[0];
-    if (f) await importDrillFile(f);
+    if (f) openDrillModal(f);
     e.target.value = '';
   });
 
