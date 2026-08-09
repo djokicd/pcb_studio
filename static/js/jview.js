@@ -17,6 +17,16 @@
 /* sequential blue ramp, dark surface -> light (near-zero recedes into surface) */
 const J_RAMP = ['#1a1a19', '#10305c', '#184f95', '#2a78d6', '#5598e7', '#9ec5f4', '#cde2fb'];
 
+function phaseColor(t) {
+  // cyclic hue wheel for phase maps; t in [0,1) -> RGB
+  const h = ((t % 1) + 1) % 1 * 6;
+  const k = Math.floor(h), f = h - k;
+  const q = 1 - f;
+  const rgb = [[1, f, 0], [q, 1, 0], [0, 1, f], [0, q, 1], [f, 0, 1], [1, 0, q]][k % 6];
+  return [Math.round(40 + 200 * rgb[0]), Math.round(40 + 200 * rgb[1]),
+          Math.round(40 + 200 * rgb[2])];
+}
+
 function rampColor(t) {
   t = Math.max(0, Math.min(1, t));
   const n = J_RAMP.length - 1;
@@ -35,6 +45,8 @@ class JView {
     this.query = '';      // '?exc=N' when viewing a non-primary excitation
     this.fdPath = 'jdump';  // 'jsteady' for the folded steady-state view
     this.logScale = false;  // dB color scale (40 dB below peak) vs sqrt
+    this.dispMode = 'anim'; // fd display: 'anim' | 'amp' (envelope) | 'phase'
+    this.marks = null;      // Z-probe slice overlay: {axis,pos,w0,w1,s0,s1}
     this.phase = 0;       // degrees (fd mode)
     this.frame = 0;       // frame index (td mode)
     this.smooth = true;   // bilinear resampling; false = nearest mesh node
@@ -188,6 +200,7 @@ class JView {
   _after(overlay) {
     this.overlay = overlay || null;
     this._mag = new Float32Array(this.data.nx * this.data.ny);
+    this._mag2 = new Float32Array(this.data.nx * this.data.ny);
     this._rasters = new Map();
     if (this.maxEl) this.maxEl.textContent = `${this.data.max.toExponential(2)} A/m`;
     this.render();
@@ -228,7 +241,42 @@ class JView {
       // sqrt scale for visibility; log mode maps a 40 dB range below the
       // peak onto the ramp (reveals weak return currents)
       const log = this.logScale;
+      const mode = this.dispMode;
+      const mag2 = this._mag2;
       for (let i = 0; i < nx * ny; i++) {
+        if (mode === 'combo') {
+          // hue = phase, brightness = amplitude: keep the VALUE-scaled
+          // complex of the dominant component so bilinear interpolation
+          // stays wrap-safe (interpolating raw hue glitches at ±180°)
+          const env = Math.hypot(Math.hypot(d.jxr[i], d.jxi[i]),
+                                 Math.hypot(d.jyr[i], d.jyi[i]));
+          const r = env * inv;
+          const V = log ? (r > 1e-12 ? Math.max(0, 1 + Math.log10(r) / 2) : 0)
+                        : Math.sqrt(r);
+          const useX = Math.hypot(d.jxr[i], d.jxi[i]) >= Math.hypot(d.jyr[i], d.jyi[i]);
+          const ph = useX ? Math.atan2(d.jxi[i], d.jxr[i])
+                          : Math.atan2(d.jyi[i], d.jyr[i]);
+          mag[i] = V * Math.cos(ph);
+          mag2[i] = V * Math.sin(ph);
+          continue;
+        }
+        if (mode === 'amp' || mode === 'phase') {
+          const env = Math.hypot(Math.hypot(d.jxr[i], d.jxi[i]),
+                                 Math.hypot(d.jyr[i], d.jyi[i]));
+          const r = env * inv;
+          if (mode === 'amp') {
+            mag[i] = log ? (r > 1e-12 ? Math.max(0, 1 + Math.log10(r) / 2) : 0)
+                         : Math.sqrt(r);
+          } else {
+            // phase of the dominant component; blank where no current
+            if (r < 1e-3) { mag[i] = -1; continue; }
+            const useX = Math.hypot(d.jxr[i], d.jxi[i]) >= Math.hypot(d.jyr[i], d.jyi[i]);
+            const ph = useX ? Math.atan2(d.jxi[i], d.jxr[i])
+                            : Math.atan2(d.jyi[i], d.jyr[i]);
+            mag[i] = (ph + Math.PI) / (2 * Math.PI);
+          }
+          continue;
+        }
         const jx = d.jxr[i] * c - d.jxi[i] * s;
         const jy = d.jyr[i] * c - d.jyi[i] * s;
         const r = Math.sqrt(jx * jx + jy * jy) * inv;
@@ -247,6 +295,16 @@ class JView {
     }
   }
 
+  /* canvas pixel -> world mm (no grid clamp), or null before first render */
+  worldAt(cv, px, py) {
+    const d = this.data, vw = cv._jvView;
+    if (!d || !vw) return null;
+    const z = this.view;
+    const wx = (px - z.x) / z.s, wy = (py - z.y) / z.s;
+    return { X: d.x[0] + (wx - vw.ox) / vw.fit,
+             Y: d.y[0] + (vw.ih - (wy - vw.oy)) / vw.fit };
+  }
+
   /* value under a canvas pixel: {xmm, ymm, val, db} or null. val is the
      phasor envelope |J| (A/m) in fd mode / the frame magnitude in td. */
   probe(cv, px, py) {
@@ -262,15 +320,18 @@ class JView {
     for (let k = 1; k < d.nx; k++) if (Math.abs(d.x[k] - X) < Math.abs(d.x[i] - X)) i = k;
     for (let k = 1; k < d.ny; k++) if (Math.abs(d.y[k] - Y) < Math.abs(d.y[j] - Y)) j = k;
     const idx = j * d.nx + i;
-    let val;
+    let val, ph = null;
     if (d.mode === 'fd') {
       val = Math.hypot(Math.hypot(d.jxr[idx], d.jxi[idx]),
                        Math.hypot(d.jyr[idx], d.jyi[idx]));
+      const useX = Math.hypot(d.jxr[idx], d.jxi[idx]) >= Math.hypot(d.jyr[idx], d.jyi[idx]);
+      ph = 180 / Math.PI * (useX ? Math.atan2(d.jxi[idx], d.jxr[idx])
+                                 : Math.atan2(d.jyi[idx], d.jyr[idx]));
     } else {
       val = d.frames[Math.min(this.frame, d.frames.length - 1)][idx];
     }
     const db = val > 0 && d.max > 0 ? 20 * Math.log10(val / d.max) : -Infinity;
-    return { xmm: X, ymm: Y, val, db };
+    return { xmm: X, ymm: Y, val, db, ph };
   }
 
   /* paint the current mag field into a cached raster of the given size */
@@ -286,19 +347,35 @@ class JView {
     }
     const { nx } = this.data;
     const mag = this._mag;
+    const mag2 = this._mag2;
     const { ix, fx, iy, fy, img } = st;
     const px = img.data;
     const smooth = this.smooth;
+    const combo = this.dispMode === 'combo' && this.data.mode === 'fd';
+    const phMode = this.dispMode === 'phase' && this.data.mode === 'fd';
+    const lerp = (arr, jn, jn1, i, fxx, fyy) => smooth
+      ? (arr[jn + i] * (1 - fxx) + arr[jn + i + 1] * fxx) * (1 - fyy)
+      + (arr[jn1 + i] * (1 - fxx) + arr[jn1 + i + 1] * fxx) * fyy
+      : arr[(fyy > 0.5 ? jn1 : jn) + i + (fxx > 0.5 ? 1 : 0)];
     let o = 0;
     for (let r = 0; r < H; r++) {
       const j = iy[r], fyy = fy[r], jn = j * nx, jn1 = (j + 1) * nx;
       for (let q = 0; q < W; q++) {
         const i = ix[q], fxx = fx[q];
-        const t = smooth
-          ? (mag[jn + i] * (1 - fxx) + mag[jn + i + 1] * fxx) * (1 - fyy)
-          + (mag[jn1 + i] * (1 - fxx) + mag[jn1 + i + 1] * fxx) * fyy
-          : mag[(fyy > 0.5 ? jn1 : jn) + i + (fxx > 0.5 ? 1 : 0)];
-        const [R, G, B] = rampColor(t);
+        const t = lerp(mag, jn, jn1, i, fxx, fyy);
+        let R, G, B;
+        if (combo) {
+          const u = lerp(mag2, jn, jn1, i, fxx, fyy);
+          const V = Math.min(1, Math.hypot(t, u));
+          const hue = (Math.atan2(u, t) + Math.PI) / (2 * Math.PI);
+          const [hr, hg, hb] = phaseColor(hue);
+          // scale the hue colour by the amplitude value (dark = no current)
+          R = Math.round(hr * V); G = Math.round(hg * V); B = Math.round(hb * V);
+        } else {
+          [R, G, B] = phMode
+            ? (t < 0 ? [26, 26, 25] : phaseColor(t))
+            : rampColor(t < 0 ? 0 : t);
+        }
         px[o] = R; px[o + 1] = G; px[o + 2] = B; px[o + 3] = 255;
         o += 4;
       }
@@ -356,6 +433,25 @@ class JView {
       ctx.imageSmoothingEnabled = this.smooth;
       ctx.drawImage(buf, ox, oy, iw, ih);
       this._drawOverlay(ctx, fit, ox, oy, ih, 1 / v.s);
+      if (this.marks) {
+        const m = this.marks;
+        const px = (wx, wy) => [ox + (wx - x[0]) * fit, oy + ih - (wy - y[0]) * fit];
+        ctx.lineWidth = 2 / v.s;
+        ctx.strokeStyle = 'rgba(255,235,120,0.95)';
+        ctx.beginPath();
+        const a = m.axis === 'x' ? px(m.pos, m.w0) : px(m.w0, m.pos);
+        const b = m.axis === 'x' ? px(m.pos, m.w1) : px(m.w1, m.pos);
+        ctx.moveTo(...a); ctx.lineTo(...b); ctx.stroke();
+        // fit window bracket (dashed) on the source side
+        ctx.setLineDash([4 / v.s, 3 / v.s]);
+        ctx.strokeStyle = 'rgba(255,235,120,0.55)';
+        ctx.beginPath();
+        const mid = (m.w0 + m.w1) / 2;
+        const c1 = m.axis === 'x' ? px(m.s0, mid) : px(mid, m.s0);
+        const c2 = m.axis === 'x' ? px(m.s1, mid) : px(mid, m.s1);
+        ctx.moveTo(...c1); ctx.lineTo(...c2); ctx.stroke();
+        ctx.setLineDash([]);
+      }
       cv._jvView = { fit, ox, oy, ih };
     }
     if (this.infoEl) {

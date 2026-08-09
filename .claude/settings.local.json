@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(octave --version)"
+      "Bash(octave --version)",
+      "Bash(python3 -)"
     ]
   }
 }

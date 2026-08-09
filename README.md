@@ -244,6 +244,29 @@ FDTD simulations of planar PCB structures via GNU Octave.
     selector on the card switches between them — and the processed
     dumps ride along when the run is stored with its project, so the
     J viewer works for past runs too.
+    A **display selector** switches the frequency-domain view between
+    the phasor animation and three static images — **amplitude** (the
+    |J| envelope), **phase** (hue wheel, blanked where no current
+    flows) and **amp · phase**, the combined map with the phase as hue
+    and the amplitude as brightness (interpolated wrap-safe via the
+    value-scaled complex field) — all with the same zoom, pan and
+    cursor probe, and the choice is remembered. The cursor readout
+    lives in a fixed status strip under the plot, so hovering never
+    reflows the controls.
+  - **Slice-impedance probe** (its own results card): arm “place
+    cut” and click a straight run of line in the Current-density view and the complex standing-wave pattern
+    of the total current on the source side of the cut is fitted as
+    I(s) = A·e^{+jβs} + B·e^{−jβs} (β scanned, A/B least squares; the
+    fit window is clipped against port/component/via footprints and
+    drawn as a bracket). Γ = −B/A at the cut gives the impedance
+    looking into the chosen side, drawn on its own **Smith chart over
+    every dumped frequency** with a ring marking the frequency shown in
+    the current view (Z de-normalised by an adjustable reference).
+    Validated against an open-ended line: |Γ| = 0.996 across 21
+    frequencies, phase within 1° of −2βℓ, correct clockwise rotation;
+    a matched port measures |Γ| = 0.11. Looking toward the *driven*
+    port is flagged — that side is active, so the wave ratio is not a
+    passive impedance.
   - **Saved run diagnostics**: when a run finishes (or fails), the Run
     tab's diagnostic data — the per-excitation energy-decay and solver
     speed series, the engine facts table (timestep, FDTD size,

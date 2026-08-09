@@ -1821,7 +1821,7 @@ function makeTdChart(canvas, tip) {
 
 /* ---------- results pane configuration ---------- */
 const resultsPrefs = (() => {
-  let p = { refl: true, trans: true, td: true, j: true, smat: true,
+  let p = { refl: true, trans: true, td: true, j: true, smat: true, z: true,
             cols: 'auto', order: [], sizes: {}, hidden: {} };
   try { p = { ...p, ...JSON.parse(localStorage.getItem('openems_results_prefs') || '{}') }; } catch (e) { /* defaults */ }
   p.hidden = p.hidden || {};
@@ -1855,6 +1855,7 @@ function applyResultsConfig() {
   $('transCard').hidden = !resultsPrefs.trans || nTrans === 0;
   $('tdCard').hidden = !resultsPrefs.td || !app.tdData;
   $('jCard').hidden = !resultsPrefs.j || !((app.jdumps || []).length || (app.jtdumps || []).length);
+  $('zCard').hidden = !resultsPrefs.z || !(app.jdumps || []).length;
   $('smatCard').hidden = !resultsPrefs.smat || !app.smat;
 }
 
@@ -2283,10 +2284,303 @@ async function loadJFrame() {
       $('jFreqNum').value = (app.jview.data.freqHz / 1e9).toFixed(3);
     }
     jSlider(mode);
+    jApplyDispMode();
+    // Z probe follows the view: recompute when the data selection
+    // (run / layer / excitation / steady) changes, else just move the
+    // frequency marker
+    const sig = `${app.currentRunId}|${layer}|${app.jview.fdPath}|${app.jview.query}`;
+    if (zprobe.on && zprobe.slice) {
+      if (sig !== zprobe.sig) {
+        zprobe.sig = sig;
+        zProbeCompute();
+      } else {
+        zProbeMark();
+      }
+    } else {
+      zprobe.sig = sig;
+    }
   } catch (e) {
     $('jInfo').textContent = 'failed: ' + e.message;
   } finally {
     veil.hidden = true;
+  }
+}
+
+/* ---------- static amplitude / phase display modes ---------- */
+function jApplyDispMode() {
+  const isFd = $('jMode').value === 'fd';
+  $('jDisp').hidden = !isFd;
+  const mode = isFd ? $('jDisp').value : 'anim';
+  app.jview.dispMode = mode;
+  const stat = mode !== 'anim';
+  $('jPlay').hidden = stat;
+  $('jPhase').hidden = stat;
+  $('jLog').parentElement.style.opacity = mode === 'phase' ? 0.4 : '';
+  $('jLog').disabled = mode === 'phase';
+  if (mode === 'phase' || mode === 'combo') {
+    // hue wheel; in combo the brightness carries the amplitude, so the
+    // peak-|J| label on the right stays meaningful there
+    $('jScaleBar').style.background =
+      'linear-gradient(to right, #f02828, #e8e828, #28e828, #28e8e8, #2828f0, #e828e8, #f02828)';
+    $('jScaleLo').textContent = '−180°';
+    if (mode === 'phase') {
+      if (!$('jMax').dataset.saved) $('jMax').dataset.saved = $('jMax').textContent;
+      $('jMax').textContent = '+180°';
+    } else if ($('jMax').dataset.saved) {
+      $('jMax').textContent = $('jMax').dataset.saved;
+      delete $('jMax').dataset.saved;
+    }
+  } else {
+    $('jScaleBar').style.background = `linear-gradient(to right, ${J_RAMP.join(', ')})`;
+    $('jScaleLo').textContent = $('jLog').checked ? '−40 dB' : '0';
+    if ($('jMax').dataset.saved) {
+      $('jMax').textContent = $('jMax').dataset.saved;
+      delete $('jMax').dataset.saved;
+    }
+  }
+  if (stat) { app.jview.pause(); $('jPlay').innerHTML = '&#9654;'; }
+  if (app.jview.data) app.jview.render();
+}
+
+/* ---------- slice-impedance probe (Smith chart over dump freqs) ------
+   Click a straight run of line: the total current crossing each mesh
+   column on the SOURCE side of the cut is integrated across the strip
+   and fitted as I(s) = A·e^{−jβs} + B·e^{+jβs} (β scanned, A/B linear
+   LSQ). Γ_I = B/A at the cut, Γ_V = −Γ_I, z = (1+Γ)/(1−Γ) — looking
+   into the far side. One Smith locus point per dumped frequency. */
+let zChart = null;
+const zprobe = { on: false, slice: null, data: null };
+
+function zProbeReset() {
+  zprobe.slice = null;
+  zprobe.data = null;
+  app.jview.marks = null;
+  if (zChart) { zChart.destroy(); zChart = null; }
+  const ctx = $('zCanvas').getContext('2d');
+  ctx.clearRect(0, 0, $('zCanvas').width, $('zCanvas').height);
+  $('jZInfo').textContent = zprobe.on ? 'click a line in the Current density view' : '';
+  $('zHint').textContent = 'Tick "place cut", then click a straight line section '
+    + 'in the Current density view.';
+  if (app.jview.data) app.jview.render();
+}
+
+function zEnvAt(d, i, j) {
+  const idx = j * d.nx + i;
+  return Math.hypot(Math.hypot(d.jxr[idx], d.jxi[idx]),
+                    Math.hypot(d.jyr[idx], d.jyi[idx]));
+}
+
+async function zProbeClick(X, Y) {
+  const d = app.jview.data;
+  if (!d || d.mode !== 'fd') return;
+  let i0 = 0, j0 = 0;
+  for (let k = 1; k < d.nx; k++) if (Math.abs(d.x[k] - X) < Math.abs(d.x[i0] - X)) i0 = k;
+  for (let k = 1; k < d.ny; k++) if (Math.abs(d.y[k] - Y) < Math.abs(d.y[j0] - Y)) j0 = k;
+  const idx = j0 * d.nx + i0;
+  const eHere = zEnvAt(d, i0, j0);
+  if (!eHere || eHere < 1e-4 * d.max) {
+    $('jZInfo').textContent = 'no current here — click on a line';
+    return;
+  }
+  const ax = Math.hypot(d.jxr[idx], d.jxi[idx]) >= Math.hypot(d.jyr[idx], d.jyi[idx]) ? 'x' : 'y';
+  // transverse copper extent: walk while the envelope stays significant
+  const [tArr, tIdx] = ax === 'x' ? [d.y, j0] : [d.x, i0];
+  const thr = eHere * 0.15;
+  let tw0 = tIdx, tw1 = tIdx;
+  const envT = t => ax === 'x' ? zEnvAt(d, i0, t) : zEnvAt(d, t, j0);
+  while (tw0 > 0 && envT(tw0 - 1) > thr) tw0--;
+  while (tw1 < tArr.length - 1 && envT(tw1 + 1) > thr) tw1++;
+  const look = $('jZSide').value;   // '+' look toward +axis, fit on − side
+  const w0 = tArr[Math.max(0, tw0 - 1)];
+  const w1 = tArr[Math.min(tArr.length - 1, tw1 + 1)];
+  // the wave fit needs UNIFORM line: exclude the along-axis footprints of
+  // ports, components and vias that overlap this strip (plus a margin) -
+  // their local fields are not travelling-wave samples
+  const excl = [];
+  const M = 0.4;
+  const tOverlap = (t0, t1) => t1 >= w0 - M && t0 <= w1 + M;
+  for (const p of app.project.ports || []) {
+    const [a0, a1, t0, t1] = ax === 'x'
+      ? [p.x, p.x + p.w, p.y, p.y + p.h] : [p.y, p.y + p.h, p.x, p.x + p.w];
+    if (tOverlap(t0, t1)) excl.push([a0 - M, a1 + M]);
+  }
+  for (const c of app.project.components || []) {
+    const bb = app.compBody(c);
+    const [a0, a1, t0, t1] = ax === 'x'
+      ? [bb[0], bb[2], bb[1], bb[3]] : [bb[1], bb[3], bb[0], bb[2]];
+    if (tOverlap(t0, t1)) excl.push([a0 - M, a1 + M]);
+  }
+  for (const v of app.project.vias || []) {
+    const [av, tv] = ax === 'x' ? [v.x, v.y] : [v.y, v.x];
+    const r = (v.pad || 0.6) / 2;
+    if (tOverlap(tv - r, tv + r)) excl.push([av - r - M, av + r + M]);
+  }
+  zprobe.slice = { axis: ax, pos: (ax === 'x' ? d.x[i0] : d.y[j0]), w0, w1, look, excl };
+  await zProbeCompute();
+}
+
+function zSliceGamma(d, sl, freqHz, eeff) {
+  const ax = sl.axis;
+  const [along, across] = ax === 'x' ? [d.x, d.y] : [d.y, d.x];
+  // transverse integration indices
+  const tSel = [];
+  for (let t = 0; t < across.length; t++)
+    if (across[t] >= sl.w0 - 1e-9 && across[t] <= sl.w1 + 1e-9) tSel.push(t);
+  if (tSel.length < 2) return null;
+  const comp = ax === 'x' ? [d.jxr, d.jxi] : [d.jyr, d.jyi];
+  const iOf = (a, t) => ax === 'x' ? t * d.nx + a : a * d.nx + t;
+  const cur = a => {          // trapezoidal ∫ J_along d(across) at column a
+    let re = 0, im = 0;
+    for (let m = 1; m < tSel.length; m++) {
+      const t0 = tSel[m - 1], t1 = tSel[m];
+      const dw = across[t1] - across[t0];
+      re += 0.5 * dw * (comp[0][iOf(a, t0)] + comp[0][iOf(a, t1)]);
+      im += 0.5 * dw * (comp[1][iOf(a, t0)] + comp[1][iOf(a, t1)]);
+    }
+    return [re, im];
+  };
+  // fit window: source side of the cut, up to ~0.45 guided wavelength,
+  // stopping where the line's current dies (end of the straight run)
+  const beta0 = 2 * Math.PI * freqHz * Math.sqrt(eeff) / 3e11;   // rad/mm
+  const Lmax = 0.45 * 2 * Math.PI / beta0;
+  const dir = sl.look === '+' ? -1 : +1;      // window direction from cut
+  const samples = [];
+  let peak = 0;
+  for (let a = 0; a < along.length; a++) {
+    const s = (along[a] - sl.pos) * (dir > 0 ? 1 : -1);
+    if (s < 0.02 || s > Lmax) continue;
+    const [re, im] = cur(a);
+    const mag = Math.hypot(re, im);
+    peak = Math.max(peak, mag);
+    samples.push({ s, along: along[a], re, im, mag });
+  }
+  const inExcl = p => (sl.excl || []).some(([a, b]) => p >= a && p <= b);
+  const good = [];
+  let prevMag = null;
+  for (const smp of samples.sort((p, q) => p.s - q.s)) {
+    if (smp.mag < peak * 0.03) break;         // line ended
+    if (inExcl(smp.along)) break;             // reached a port/component/via
+    // an abrupt current step is a backstop for unmodelled discontinuities
+    if (prevMag !== null && (smp.mag > prevMag * 2.2 || smp.mag < prevMag / 2.2)) break;
+    good.push(smp);
+    prevMag = smp.mag;
+  }
+  if (good.length < 5) return null;
+  // scan beta, linear LSQ for A, B at each; s runs AWAY from the cut on
+  // the source side, so the wave travelling TOWARD the cut is e^{+jβs}
+  // in this coordinate: I(s) = A e^{+jβs} + B e^{−jβs}, Γ_I = B/A at s=0
+  let best = null;
+  for (let q = 0; q < 90; q++) {
+    const b = beta0 * (0.45 + 0.02 * q);
+    let m11r = 0, m12r = 0, m12i = 0, m22r = 0;
+    let v1r = 0, v1i = 0, v2r = 0, v2i = 0;
+    for (const { s, re, im } of good) {
+      const c = Math.cos(b * s), sn = Math.sin(b * s);
+      // e1 = e^{+jbs}, e2 = e^{−jbs}
+      m11r += 1; m22r += 1;
+      m12r += c * c - sn * sn;   // Re(conj(e1)·e2) = cos 2bs
+      m12i += -2 * sn * c;       // Im(conj(e1)·e2) = −sin 2bs
+      v1r += c * re + sn * im;   // conj(e1)·I
+      v1i += c * im - sn * re;
+      v2r += c * re - sn * im;   // conj(e2)·I
+      v2i += c * im + sn * re;
+    }
+    const det_r = m11r * m22r - (m12r * m12r + m12i * m12i);
+    if (Math.abs(det_r) < 1e-9) continue;
+    const Ar = (m22r * v1r - (m12r * v2r - m12i * v2i)) / det_r;
+    const Ai = (m22r * v1i - (m12r * v2i + m12i * v2r)) / det_r;
+    const Br = (m11r * v2r - (m12r * v1r + m12i * v1i)) / det_r;
+    const Bi = (m11r * v2i - (m12r * v1i - m12i * v1r)) / det_r;
+    let res = 0;
+    for (const { s, re, im } of good) {
+      const c = Math.cos(b * s), sn = Math.sin(b * s);
+      const fr = Ar * c - Ai * sn + Br * c + Bi * sn;
+      const fi = Ar * sn + Ai * c - Br * sn + Bi * c;
+      res += (re - fr) ** 2 + (im - fi) ** 2;
+    }
+    if (!best || res < best.res) best = { res, Ar, Ai, Br, Bi, b };
+  }
+  if (!best) return null;
+  const den = best.Ar ** 2 + best.Ai ** 2;
+  if (den < 1e-30) return null;
+  // Γ_I = B/A; Γ_V = −Γ_I
+  const gr = -(best.Br * best.Ar + best.Bi * best.Ai) / den;
+  const gi = -(best.Bi * best.Ar - best.Br * best.Ai) / den;
+  return { re: gr, im: gi, beta: best.b, n: good.length,
+           span: good[good.length - 1].s };
+}
+
+async function zProbeCompute() {
+  const sl = zprobe.slice;
+  if (!sl || !zprobe.on) return;
+  const layer = $('jLayer').value;
+  const dumps = app.jdumps.filter(x => x.layer === layer)
+    .sort((a, b) => a.freq - b.freq);
+  if (!dumps.length) return;
+  const ers = (app.project.stackup || [])
+    .filter(l => l.type === 'dielectric').map(l => +l.er || 1);
+  const eeff = ((ers.length ? Math.max(...ers) : 4.3) + 1) / 2;
+  $('jZInfo').textContent = 'fitting…';
+  const freq = [], re = [], im = [];
+  let last = null;
+  for (const dk of dumps) {
+    try {
+      const dd = await app.jview._fetchFD(app.currentRunId, layer, dk.k);
+      const g = zSliceGamma(dd, sl, dk.freq, eeff);
+      if (g) { freq.push(dk.freq); re.push(g.re); im.push(g.im); last = g; }
+    } catch (e) { /* skip this frequency */ }
+  }
+  if (!freq.length) {
+    $('jZInfo').textContent = 'fit failed — click a longer straight section';
+    return;
+  }
+  // slice overlay incl. the fitted window bracket
+  const dir = sl.look === '+' ? -1 : +1;
+  app.jview.marks = { axis: sl.axis, pos: sl.pos, w0: sl.w0, w1: sl.w1,
+                      s0: sl.pos + dir * 0.02,
+                      s1: sl.pos + dir * (last ? last.span : 2) };
+  app.jview.render();
+  zprobe.data = { freq, series: [{ label: `Γ looking ${sl.look === '+' ? '→' : '←'} at `
+    + `${sl.axis}=${sl.pos.toFixed(2)} mm`, re, im, ci: 0 }],
+    z0: parseFloat($('jZ0').value) || 50 };
+  renderZChart();
+  const magsAll = re.map((r, i) => Math.hypot(r, im[i])).sort((a, b) => a - b);
+  const median = magsAll[Math.floor(magsAll.length / 2)];
+  if (median > 1.1) {
+    // the looked-at side contains the driven port: the fitted wave ratio
+    // is (source emission)/(returning echo), not a passive reflection
+    $('jZInfo').textContent = '⚠ this side contains the driven port — the ratio '
+      + 'is not a passive impedance; look the other way or drive another port';
+    $('zHint').textContent = 'Locus outside the unit circle: the looked-at side is active.';
+  } else {
+    $('jZInfo').textContent =
+      `${freq.length} freq points · fit ${last.n} samples over ${last.span.toFixed(1)} mm`;
+    $('zHint').textContent = `Looking ${sl.look === '+' ? '→/↑' : '←/↓'} at `
+      + `${sl.axis} = ${sl.pos.toFixed(2)} mm · ring marks the current view's frequency`;
+  }
+}
+
+function zNearestK() {
+  if (!zprobe.data) return null;
+  const cur = parseFloat($('jFreqNum').value) * 1e9;
+  let k = 0;
+  zprobe.data.freq.forEach((f, i) => {
+    if (Math.abs(f - cur) < Math.abs(zprobe.data.freq[k] - cur)) k = i;
+  });
+  return k;
+}
+
+function renderZChart() {
+  if (!zprobe.data) return;
+  if (zChart) zChart.destroy();
+  zChart = new SmithChart($('zCanvas'), $('zTip'));
+  zChart.setData({ ...zprobe.data, mark: zNearestK() });
+}
+
+function zProbeMark() {
+  if (zChart && zprobe.data) {
+    zChart.data.mark = zNearestK();
+    zChart.draw();
   }
 }
 
@@ -4124,6 +4418,34 @@ window.addEventListener('DOMContentLoaded', () => {
       : '';
   });
   $('jCanvas').addEventListener('mouseleave', () => { $('jProbe').textContent = ''; });
+  $('jDisp').value = resultsPrefs.jdisp || 'anim';
+  $('jDisp').addEventListener('change', () => {
+    resultsPrefs.jdisp = $('jDisp').value;
+    saveResultsPrefs();
+    jApplyDispMode();
+  });
+  $('jZOn').addEventListener('change', e => {
+    zprobe.on = e.target.checked;
+    zProbeReset();
+  });
+  $('jZSide').addEventListener('change', () => {
+    if (zprobe.slice) {
+      zprobe.slice.look = $('jZSide').value;
+      zProbeCompute();
+    }
+  });
+  $('jZ0').addEventListener('change', () => {
+    if (zprobe.data) {
+      zprobe.data.z0 = parseFloat($('jZ0').value) || 50;
+      renderZChart();
+    }
+  });
+  $('jCanvas').addEventListener('click', e => {
+    if (!zprobe.on) return;
+    const r = e.target.getBoundingClientRect();
+    const w = app.jview.worldAt(e.target, e.clientX - r.left, e.clientY - r.top);
+    if (w) zProbeClick(w.X, w.Y);
+  });
   $('jLog').checked = !!resultsPrefs.jlog;
   app.jview.logScale = !!resultsPrefs.jlog;
   $('jScaleLo').textContent = resultsPrefs.jlog ? '−40 dB' : '0';
@@ -4136,7 +4458,7 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   // results pane configuration + export
-  for (const key of ['refl', 'trans', 'td', 'j', 'smat']) {
+  for (const key of ['refl', 'trans', 'td', 'j', 'smat', 'z']) {
     const cb = $('cfg_' + key);
     cb.checked = resultsPrefs[key];
     cb.addEventListener('change', () => {
@@ -4168,6 +4490,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const cardChart = {
     reflCanvas: () => reflChart, transCanvas: () => transChart,
     tdCanvas: () => tdChart, smatCanvas: () => smatChart,
+    zCanvas: () => zChart,
   };
   const rszPending = new Set();
   let rszRaf = 0;

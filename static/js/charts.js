@@ -326,7 +326,18 @@ class SmithChart extends ChartBase {
       ctx.arc(X(s.re[freq.length - 1]), Y(s.im[freq.length - 1]), 3.5, 0, 7);
       ctx.fill();
     });
+    // optional marker: ring + frequency label at index data.mark
+    if (this.data.mark != null && series.length) {
+      const km = Math.max(0, Math.min(freq.length - 1, this.data.mark));
+      const s = series[0];
+      ctx.strokeStyle = CH.ink; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(X(s.re[km]), Y(s.im[km]), 6.5, 0, 7); ctx.stroke();
+      ctx.fillStyle = CH.ink; ctx.font = '11px system-ui';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(`${(freq[km] / 1e9).toFixed(3)} GHz`, X(s.re[km]) + 10, Y(s.im[km]));
+    }
     ctx.fillStyle = CH.muted; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+    ctx.font = '10px system-ui';
     const names = series.map(s => s.label).join(', ');
     ctx.fillText(`${names}  (■ ${(freq[0] / 1e9).toFixed(2)} GHz, ● ${(freq[freq.length - 1] / 1e9).toFixed(2)} GHz)`, 6, h - 4);
     if (this.hover) {

@@ -233,6 +233,7 @@
           <label class="mini-check"><input type="checkbox" id="cfg_td" checked> Time domain</label>
           <label class="mini-check"><input type="checkbox" id="cfg_j" checked> Current density</label>
           <label class="mini-check" title="Full N×N S-matrix from multi-excitation runs"><input type="checkbox" id="cfg_smat" checked> S-matrix</label>
+          <label class="mini-check" title="Impedance at a clicked transmission-line cut, on a Smith chart over the dumped frequencies"><input type="checkbox" id="cfg_z" checked> Slice impedance</label>
           <span class="muted" style="margin-left:12px">Columns:</span>
           <select id="rCols" class="mini">
             <option value="auto">auto</option>
@@ -296,6 +297,28 @@
             <div class="plotwrap rsz"><canvas id="tdCanvas"></canvas><div class="tooltip" id="tdTip" hidden></div></div>
           </div>
 
+          <div class="card" id="zCard" hidden>
+            <div class="card-head">
+              <span class="grip" draggable="true" title="Drag to rearrange">&#x2630;</span>
+              <span title="Impedance at a transmission-line cut over every dumped frequency, from the fitted standing-wave pattern of the current image; the ring marks the frequency shown in the Current density view">Slice impedance</span>
+              <button class="mini-btn" data-png="zCanvas" title="Export PNG">PNG</button>
+            </div>
+            <div class="jrow">
+              <label class="check mini-check"
+                     title="Arm the probe, then click a straight run of line in the CURRENT DENSITY view to place the cut. The complex standing-wave pattern of the total current on the source side is fitted (I = Ae&#8314;&#690;&#946;&#115; + Be&#8315;&#690;&#946;&#115;), giving the reflection coefficient and impedance looking into the other side">
+                <input id="jZOn" type="checkbox"> place cut</label>
+              <select id="jZSide" class="mini"
+                      title="Which side of the cut to look INTO (the wave fit uses the opposite side)">
+                <option value="+">look &rarr;/&uarr;</option>
+                <option value="-">look &larr;/&darr;</option>
+              </select>
+              <input id="jZ0" type="number" class="mini jfnum" value="50" step="1" min="1"
+                     title="Reference impedance for de-normalising Z (the Smith chart itself is normalised)">
+              <span id="jZInfo" class="muted"></span>
+            </div>
+            <p class="muted" id="zHint" style="margin:2px 0 4px">Tick &ldquo;place cut&rdquo;, then click a straight line section in the Current density view.</p>
+            <div class="plotwrap rsz"><canvas id="zCanvas"></canvas><div class="tooltip" id="zTip" hidden></div></div>
+          </div>
           <div class="card" id="smatCard" hidden>
             <div class="card-head">
               <span class="grip" draggable="true" title="Drag to rearrange">&#x2630;</span>
@@ -346,6 +369,13 @@
               </button>
             </div>
             <div class="jrow">
+              <select id="jDisp" class="mini" hidden
+                      title="Animation: instantaneous current over the RF cycle. Amplitude: static |J| envelope. Phase: static phase map (hue wheel) — both zoom, pan and probe like the animation">
+                <option value="anim">animation</option>
+                <option value="amp">amplitude</option>
+                <option value="phase">phase</option>
+                <option value="combo">amp &middot; phase</option>
+              </select>
               <select id="jLayer" class="mini"></select>
               <select id="jFreq" class="mini" title="Dumped frequencies (quick pick)"></select>
               <input id="jFreqNum" type="number" class="mini jfnum" step="0.01"
@@ -356,11 +386,13 @@
                 <input id="jInterp" type="checkbox" checked> interp</label>
               <label class="check mini-check" title="Logarithmic color scale mapping the 40 dB below the peak — reveals weak return currents the linear scale hides">
                 <input id="jLog" type="checkbox"> log</label>
-              <span id="jInfo" class="muted"></span>
-              <span id="jProbe" class="muted" title="|J| under the cursor: phasor envelope (fd) / frame magnitude (td), and dB below the view's peak"></span>
             </div>
             <div class="plotwrap rsz"><canvas id="jCanvas"></canvas>
               <div class="loadveil" id="jLoad" hidden>Loading&hellip;</div></div>
+            <div class="jstatus">
+              <span id="jInfo"></span>
+              <span id="jProbe" title="|J| under the cursor: phasor envelope (fd) / frame magnitude (td), dB below the view's peak, and phase"></span>
+            </div>
             <div class="jscale">
               <span id="jScaleLo">0</span>
               <div class="jscale-bar" id="jScaleBar"></div>
