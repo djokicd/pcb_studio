@@ -284,6 +284,8 @@
             <div class="card-head">
               <span class="grip" draggable="true" title="Drag to rearrange">&#x2630;</span>
               <span title="Raw port signals: voltages u(t) in V, currents plotted as i(t)·Z&#8320; so both share one axis — click legend chips to toggle signals">Time domain</span>
+              <select id="tdExc" class="mini" hidden
+                      title="Which excitation's port signals to show — every solver run of a multi-excitation simulation records all voltages and currents"></select>
               <button class="mini-btn" data-png="tdCanvas" title="Export PNG">PNG</button>
               <button class="mini-btn" data-csv="td" title="Export CSV">CSV</button>
               <button class="icon-btn" id="tdPop" title="Pop out">
@@ -354,7 +356,8 @@
                 <input id="jInterp" type="checkbox" checked> interp</label>
               <span id="jInfo" class="muted"></span>
             </div>
-            <div class="plotwrap rsz"><canvas id="jCanvas"></canvas></div>
+            <div class="plotwrap rsz"><canvas id="jCanvas"></canvas>
+              <div class="loadveil" id="jLoad" hidden>Loading&hellip;</div></div>
             <div class="jscale">
               <span>0</span>
               <div class="jscale-bar" id="jScaleBar"></div>
@@ -463,7 +466,8 @@
         <label>Frequencies (GHz) <input id="s_dumpFreqs" type="text" placeholder='f0 · "all" · 2.4, 5.8'></label>
         <label class="check"><input id="s_dumpJt" type="checkbox"> Record J(t) (time domain)</label>
         <label>Window start (ns) <input id="s_jtStart" type="number" step="0.1" min="0"></label>
-        <label>Window stop (ns) <input id="s_jtStop" type="number" step="0.1" min="0.1"></label>
+        <label title="Up to 500 ns — frames are recorded at the engine's Nyquist interval and decimated to ≤160 for playback, so a window covering the whole run is fine">
+          Window stop (ns) <input id="s_jtStop" type="number" step="0.1" min="0.1"></label>
         <label>Spatial subsampling
           <select id="s_jtSub">
             <option value="1">1 (full)</option>

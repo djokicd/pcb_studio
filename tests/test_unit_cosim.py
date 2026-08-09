@@ -319,3 +319,35 @@ def test_diagnostics_written_and_served(tmp_path, monkeypatch):
         assert c.get(f'/api/results/{run.name}/jdump/Top/0').status_code == 404
         assert c.get(f'/api/results/{run.name}/diagnostics?exc=2').status_code == 200
         assert c.get('/api/results/no_such/diagnostics').status_code == 404
+
+
+def test_timedomain_per_excitation(tmp_path, monkeypatch):
+    """Every stage's port u/i signals are reachable via ?exc= and the
+    root response lists which stages carry their own."""
+    monkeypatch.setattr(server, 'SIM_ROOT', tmp_path)
+    run = tmp_path / 'run_00000000_000011'
+    (run / 'exc_2').mkdir(parents=True)
+    probe = '% time\tvalue\n' + ''.join(f'{k * 1e-12}\t{k * 0.1}\n' for k in range(10))
+    for d, scale in ((run, 1.0), (run / 'exc_2', 2.0)):
+        (d / 'port_ut1').write_text(probe)
+        (d / 'port_it1').write_text(probe)
+    with server.app.test_client() as c:
+        r = c.get(f'/api/results/{run.name}/timedomain').get_json()
+        assert r['excs'] == [2]
+        assert r['ports'][0]['n'] == 1 and len(r['ports'][0]['t']) == 10
+        r2 = c.get(f'/api/results/{run.name}/timedomain?exc=2').get_json()
+        assert r2['ports'][0]['n'] == 1 and r2['excs'] == []
+        assert c.get(f'/api/results/{run.name}/timedomain?exc=9').status_code == 400
+
+
+def test_copy_results_keeps_stage_port_signals(tmp_path):
+    src = tmp_path / 'run_src3'
+    (src / 'exc_2').mkdir(parents=True)
+    (src / 'sparams.csv').write_text('#\n')
+    (src / 'exc_2' / 'sparams.csv').write_text('#\n')
+    (src / 'exc_2' / 'port_ut1').write_text('%\n0\t0\n')
+    (src / 'exc_2' / 'port_it1').write_text('%\n0\t0\n')
+    dst = tmp_path / 'results3'
+    server._copy_results(src, dst)
+    assert (dst / 'exc_2' / 'port_ut1').is_file()
+    assert (dst / 'exc_2' / 'port_it1').is_file()

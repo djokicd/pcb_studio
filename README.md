@@ -184,7 +184,16 @@ FDTD simulations of planar PCB structures via GNU Octave.
     currents are drawn as i(t)·Z₀ so they are directly comparable with
     the voltages (equal traces = matched wave); tooltips report the
     raw current in amperes. Legend chips toggle each signal
-    (voltages shown by default, currents hidden).
+    (voltages shown by default, currents hidden). The signals span the
+    **full run duration** (decimated to ≤4000 points for plotting), and
+    in a multi-excitation run an excitation selector on the card
+    switches between the recorded u/i of **every** solver stage — the
+    per-stage probe files are stored with the run, so this works for
+    past runs too. The J(t) recording window may now span up to 500 ns
+    (frames land at the engine's Nyquist interval, so whole-run
+    windows stay small), and switching the current-density view to
+    another excitation shows a loading veil instead of silently
+    keeping the previous fields on screen.
   - **S-matrix (raw)**: for multi-excitation runs (the "Full S-matrix"
     option, a multi-port excitation selection, or any run with devices)
     the complete N×N matrix assembled from every excitation, shown as a

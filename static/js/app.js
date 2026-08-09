@@ -1536,18 +1536,7 @@ async function loadResults(runId, show = true) {
     const res = await fetch(`/api/results/${runId}/sparams.csv`);
     if (!res.ok) throw new Error('no results file');
     app.sparams = parseSparamsCsv(await res.text());
-    app.tdData = null;
-    try {
-      const td = await apiJson(`/api/results/${runId}/timedomain`);
-      if (td.ports && td.ports.length) {
-        app.tdData = td;
-        // currents start hidden unless the user has toggled them before
-        for (const p of td.ports) {
-          if (resultsPrefs.hidden[`td:i${p.n}`] === undefined)
-            resultsPrefs.hidden[`td:i${p.n}`] = true;
-        }
-      }
-    } catch (e) { /* no TD data - card stays hidden */ }
+    await loadTimeDomain(runId);
     $('results').hidden = false;
     $('noResults').hidden = true;
     $('btnResults').hidden = false;
@@ -1579,6 +1568,47 @@ async function loadResults(runId, show = true) {
   } catch (e) {
     appendLog(['[gui] failed to load results: ' + e.message]);
     throw e;
+  }
+}
+
+/* port u(t)/i(t) of the run — full duration, every port. In a
+   multi-excitation run each stage records its own signals; the card's
+   selector switches between them. */
+async function loadTimeDomain(runId, exc) {
+  app.tdExc = exc || null;
+  app.tdData = null;
+  try {
+    const td = await apiJson(`/api/results/${runId}/timedomain${exc ? `?exc=${exc}` : ''}`);
+    if (td.ports && td.ports.length) {
+      app.tdData = td;
+      if (!exc) app.tdExcList = td.excs || [];
+      // currents start hidden unless the user has toggled them before
+      for (const p of td.ports) {
+        if (resultsPrefs.hidden[`td:i${p.n}`] === undefined)
+          resultsPrefs.hidden[`td:i${p.n}`] = true;
+      }
+    }
+  } catch (e) { /* no TD data - card stays hidden */ }
+  const sel = $('tdExc');
+  const list = app.tdExcList || [];
+  sel.hidden = list.length === 0;
+  if (!sel.hidden) {
+    sel.innerHTML = '';
+    const o0 = document.createElement('option');
+    o0.value = '';
+    o0.textContent = 'final exc';
+    sel.append(o0);
+    for (const n of list) {
+      const o = document.createElement('option');
+      o.value = String(n);
+      o.textContent = `Exc ${n}`;
+      sel.append(o);
+    }
+    sel.value = app.tdExc || '';
+    sel.onchange = async () => {
+      await loadTimeDomain(runId, sel.value || null);
+      renderCharts();
+    };
   }
 }
 
@@ -2100,6 +2130,11 @@ function exportSMatrixCsv() {
 async function loadJDumps(runId, exc) {
   app.jExc = exc || null;
   const q = app.jExc ? `?exc=${app.jExc}` : '';
+  // veil the stale frame right away: fetching another excitation's
+  // dumps takes a moment and the old fields must not linger silently
+  const veil = $('jLoad');
+  veil.textContent = exc ? `Loading Exc ${exc}…` : 'Loading…';
+  veil.hidden = false;
   app.jdumps = [];
   app.jtdumps = [];
   try {
@@ -2133,7 +2168,10 @@ async function loadJDumps(runId, exc) {
   }
   const any = app.jdumps.length || app.jtdumps.length;
   $('jCard').hidden = !any && !excs.length;
-  if (!any) return;
+  if (!any) {
+    veil.hidden = true;
+    return;
+  }
   // mode availability
   const modeSel = $('jMode');
   modeSel.querySelector('[value=fd]').disabled = !app.jdumps.length;
@@ -2203,6 +2241,11 @@ async function loadJFrame() {
   app.jview.query = app.jExc ? `?exc=${app.jExc}` : '';
   app.jview.pause();
   $('jPlay').innerHTML = '&#9654;';
+  const veil = $('jLoad');
+  if (veil.hidden) {
+    veil.textContent = 'Loading…';
+    veil.hidden = false;
+  }
   try {
     if (mode === 'td') {
       if (!app.jtdumps.find(d => d.layer === layer)) return;
@@ -2218,6 +2261,8 @@ async function loadJFrame() {
     jSlider(mode);
   } catch (e) {
     $('jInfo').textContent = 'failed: ' + e.message;
+  } finally {
+    veil.hidden = true;
   }
 }
 

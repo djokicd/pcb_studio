@@ -469,8 +469,11 @@ def generate_script(model):
         t1 = float(sim.get('jtStop') or 3.0) * 1e-9
         if t1 <= t0:
             raise ValidationError('J(t) recording: stop time must be after start time')
-        if t1 - t0 > 20e-9:
-            raise ValidationError('J(t) recording window too long (max 20 ns)')
+        # frames land at the engine's Nyquist-linked dump interval (tens
+        # of ps), not every timestep, so even a whole-run window stays
+        # manageable; the export decimates to <=160 frames either way
+        if t1 - t0 > 500e-9:
+            raise ValidationError('J(t) recording window too long (max 500 ns)')
         sub = int(sim.get('jtSub') or 2)
         if sub not in (1, 2, 4):
             raise ValidationError('J(t) subsampling must be 1, 2 or 4')

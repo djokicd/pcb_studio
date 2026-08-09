@@ -836,8 +836,11 @@ def _read_probe(path):
 
 @app.get('/api/results/<run_id>/timedomain')
 def api_timedomain(run_id):
-    """Port voltage/current signals u(t), i(t) recorded by the ports."""
-    sim_dir = _run_dir(run_id)
+    """Port voltage/current signals u(t), i(t) recorded by the ports -
+    the full run duration, decimated to a plottable size. ?exc=<port>
+    serves the signals of that excitation stage instead of the final
+    one; the root response lists the stages that carry their own."""
+    sim_dir = _dump_dir(run_id)
     if sim_dir is None:
         return jsonify({'error': 'bad run id'}), 400
     # lumped ports write port_ut{N}; MSL ports write port_ut{N}A/B/C probes
@@ -877,7 +880,7 @@ def api_timedomain(run_id):
         return jsonify({'error': 'no time-domain data for this run'}), 404
     # decimate to a plottable size on a common stride
     nmax = max(len(p['t']) for p in ports)
-    stride = max(1, nmax // 1500)
+    stride = max(1, nmax // 4000)
     out = []
     for p in ports:
         out.append({
@@ -886,7 +889,11 @@ def api_timedomain(run_id):
             'u': p['u'][::stride],
             'i': p['i'][::stride],
         })
-    return jsonify({'ports': out})
+    excs = []
+    if not request.args.get('exc'):
+        excs = sorted(int(p.name[4:]) for p in sim_dir.glob('exc_*')
+                      if p.name[4:].isdigit() and any(p.glob('port_ut*')))
+    return jsonify({'ports': out, 'excs': excs})
 
 
 @app.get('/api/results/<run_id>/sparams.csv')
@@ -1360,7 +1367,8 @@ def _copy_results(src, dst):
                     if not g.is_file():
                         continue
                     if (g.name == 'sparams.csv' or g.suffix == '.bin'
-                            or g.name in ('jdumps.csv', 'jtdumps.csv')):
+                            or g.name in ('jdumps.csv', 'jtdumps.csv')
+                            or g.name.startswith(('port_ut', 'port_it'))):
                         shutil.copy2(g, dst / f.name / g.name)
             continue
         # skip bulky raw field dumps - the GUI uses the .bin exports
