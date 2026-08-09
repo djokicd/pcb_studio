@@ -538,3 +538,12 @@ select.mini { font-size: 12px; padding: 2px 5px; }
   backdrop-filter: blur(1px);
   z-index: 3;
 }
+
+/* visible affordance for the native resize corner of result cards */
+.rgrid > .card { position: relative; }
+.rgrid > .card::after {
+  content: ''; position: absolute; right: 3px; bottom: 3px;
+  width: 10px; height: 10px; pointer-events: none;
+  background: linear-gradient(135deg, transparent 55%, var(--border) 55%);
+  opacity: 0.7;
+}

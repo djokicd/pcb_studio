@@ -4116,16 +4116,34 @@ window.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('[data-csv]').forEach(btn =>
     btn.addEventListener('click', () => exportCSVFor(btn.dataset.csv)));
 
-  // user-resizable plot wraps: re-render the owning chart while dragging
-  let rszT = null;
-  const rszObs = new ResizeObserver(() => {
-    clearTimeout(rszT);
-    rszT = setTimeout(() => {
-      if (!$('results').hidden) {
-        renderCharts();
-        if (app.jview && app.jview.data) app.jview.render();
+  // user-resizable plot wraps: while the corner is dragged, redraw ONLY
+  // the affected card's chart, coalesced to animation frames. The chart
+  // instances re-measure their wrap on draw() and keep their data and
+  // zoom state, so this follows the cursor live. A full renderCharts()
+  // here would destroy/rebuild every chart AND re-apply the previously
+  // saved card size mid-drag - the card visibly snapped back while
+  // resizing (that was the jank).
+  const cardChart = {
+    reflCanvas: () => reflChart, transCanvas: () => transChart,
+    tdCanvas: () => tdChart, smatCanvas: () => smatChart,
+  };
+  const rszPending = new Set();
+  let rszRaf = 0;
+  const rszObs = new ResizeObserver(entries => {
+    for (const e of entries) rszPending.add(e.target);
+    if (rszRaf) return;
+    rszRaf = requestAnimationFrame(() => {
+      rszRaf = 0;
+      for (const el of rszPending) {
+        const canvas = el.querySelector('canvas');
+        const get = canvas && cardChart[canvas.id];
+        const ch = get && get();
+        if (ch) ch.draw();
+        else if (canvas && canvas.id === 'jCanvas' && app.jview && app.jview.data)
+          app.jview.render();
       }
-    }, 80);
+      rszPending.clear();
+    });
   });
   document.querySelectorAll('.plotwrap.rsz').forEach(el => rszObs.observe(el));
 
