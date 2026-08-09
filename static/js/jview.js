@@ -247,6 +247,32 @@ class JView {
     }
   }
 
+  /* value under a canvas pixel: {xmm, ymm, val, db} or null. val is the
+     phasor envelope |J| (A/m) in fd mode / the frame magnitude in td. */
+  probe(cv, px, py) {
+    const d = this.data;
+    const vw = cv._jvView;
+    if (!d || !vw) return null;
+    const z = this.view;
+    const wx = (px - z.x) / z.s, wy = (py - z.y) / z.s;
+    const X = d.x[0] + (wx - vw.ox) / vw.fit;
+    const Y = d.y[0] + (vw.ih - (wy - vw.oy)) / vw.fit;
+    if (X < d.x[0] || X > d.x[d.nx - 1] || Y < d.y[0] || Y > d.y[d.ny - 1]) return null;
+    let i = 0, j = 0;
+    for (let k = 1; k < d.nx; k++) if (Math.abs(d.x[k] - X) < Math.abs(d.x[i] - X)) i = k;
+    for (let k = 1; k < d.ny; k++) if (Math.abs(d.y[k] - Y) < Math.abs(d.y[j] - Y)) j = k;
+    const idx = j * d.nx + i;
+    let val;
+    if (d.mode === 'fd') {
+      val = Math.hypot(Math.hypot(d.jxr[idx], d.jxi[idx]),
+                       Math.hypot(d.jyr[idx], d.jyi[idx]));
+    } else {
+      val = d.frames[Math.min(this.frame, d.frames.length - 1)][idx];
+    }
+    const db = val > 0 && d.max > 0 ? 20 * Math.log10(val / d.max) : -Infinity;
+    return { xmm: X, ymm: Y, val, db };
+  }
+
   /* paint the current mag field into a cached raster of the given size */
   _rasterize(W, H) {
     const key = `${W}x${H}`;
@@ -330,6 +356,7 @@ class JView {
       ctx.imageSmoothingEnabled = this.smooth;
       ctx.drawImage(buf, ox, oy, iw, ih);
       this._drawOverlay(ctx, fit, ox, oy, ih, 1 / v.s);
+      cv._jvView = { fit, ox, oy, ih };
     }
     if (this.infoEl) {
       if (d.mode === 'fd') {

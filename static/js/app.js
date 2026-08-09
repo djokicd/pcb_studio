@@ -4116,6 +4116,14 @@ window.addEventListener('DOMContentLoaded', () => {
     app.jview.smooth = e.target.checked;
     app.jview.render();
   });
+  $('jCanvas').addEventListener('mousemove', e => {
+    const r = e.target.getBoundingClientRect();
+    const p = app.jview.probe(e.target, e.clientX - r.left, e.clientY - r.top);
+    $('jProbe').textContent = p
+      ? `· ${p.xmm.toFixed(2)}, ${p.ymm.toFixed(2)} mm: ${p.val.toExponential(2)} A/m (${p.db.toFixed(1)} dB)`
+      : '';
+  });
+  $('jCanvas').addEventListener('mouseleave', () => { $('jProbe').textContent = ''; });
   $('jLog').checked = !!resultsPrefs.jlog;
   app.jview.logScale = !!resultsPrefs.jlog;
   $('jScaleLo').textContent = resultsPrefs.jlog ? '−40 dB' : '0';
