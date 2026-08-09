@@ -288,6 +288,14 @@ FDTD simulations of planar PCB structures via GNU Octave.
   shrunk to the copper-free gap they bridge, so the nominal value
   applies across the gap regardless of how the body overlaps the pads;
   unconnected component ends are flagged as design-rule warnings.
+  The element sheet is **lifted 0.2 mm above the copper plane** like a
+  real chip part, with vertical PEC terminals connecting its ends down
+  to the pads — copper crossing under a component body (a trace routed
+  beneath a resistor) therefore couples only capacitively instead of
+  galvanically shorting part of the distributed element (measured: a
+  100 Ω series resistor with a strip crossing its gap reads −5.97 dB
+  |S21| against −6.02 dB ideal; the coplanar model read ~−3.5 dB, i.e.
+  ~50 Ω). The lift plane gets its own mesh line automatically.
   Capacitors and inductors carry a **series ESR** (default 0.25 Ω for
   C, 0.3 Ω for L — typical for chip parts; editable per component,
   0 restores the ideal element), realised as a second lumped sheet in

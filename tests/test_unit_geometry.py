@@ -266,7 +266,7 @@ def test_via_mesh_lines_economy_settings():
         if setting is not None:
             via['mesh'] = {'lines': setting}
         m['vias'] = [via]
-        xs, ys, xsoft, ysoft, xreg, yreg = mesh_lines_xy(m, 0.4)
+        xs, ys, xsoft, ysoft, xreg, yreg, _xp, _yp = mesh_lines_xy(m, 0.4)
         near_h = [v for v in xs if 28.5 < v < 31.5]
         near_s = [c for c in xsoft if 28.5 < c[0] < 31.5]
         return near_h, near_s
@@ -284,3 +284,36 @@ def test_via_mesh_lines_economy_settings():
     ha, sa = lines_for(None)                             # auto: staircase too
     assert len(sa) > 4
     assert {29.4, 29.7, 30.3, 30.6} <= {round(c[0], 3) for c in sa}
+
+
+def test_mesh_has_component_lift_plane():
+    """A lumped component adds an exact z line at its lifted element
+    plane (COMP_LIFT above the copper), so the element and the air gap
+    under the body are resolved."""
+    m = _model([rect('t', 10, 8, 10, 3)])
+    m['components'] = [{'id': 9, 'ref': 'R1', 'ctype': 'R', 'value': 100,
+                        'package': '0603', 'x': 20, 'y': 10, 'rot': 0,
+                        'layer': 'top'}]
+    mesh = build_mesh(m)
+    assert any(abs(v - 1.0) < 1e-6 for v in mesh['z'])   # 0.8 + 0.2
+
+
+def test_component_terminal_lines_survive_mesh_merge():
+    """meshMerge must not move the mesh lines under a component's
+    zero-thickness element sheet and terminal walls - a wall 20 um off
+    its line rasterizes to nothing and silently disconnects the part."""
+    m = _model([rect('t', 10, 8, 10, 3)], meshMerge=0.1)
+    # a copper edge 30 um away from the element-box end tempts the merge
+    m['shapes'].append(rect('near', 19.23, 12, 2, 1))
+    m['components'] = [{'id': 9, 'ref': 'R1', 'ctype': 'R', 'value': 100,
+                        'package': '0603', 'x': 20, 'y': 10, 'rot': 0,
+                        'layer': 'top'}]
+    from geometry import comp_element_box
+    x0, y0, x1, y1, ny, _ = comp_element_box(m['components'][0], m['shapes'])
+    mesh = build_mesh(m)
+    for want in (x0, x1):
+        assert any(abs(v - want) < 1e-6 for v in mesh['x']), \
+            f'element line {want} missing from x mesh'
+    for want in (y0, y1):
+        assert any(abs(v - want) < 1e-6 for v in mesh['y']), \
+            f'element line {want} missing from y mesh'

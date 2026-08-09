@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 
 from geometry import (PACKAGES, sim_shapes, stackup_z, shape_outline, comp_body,
-                      comp_element_box, circle_points)
+                      comp_element_box, comp_lift, circle_points)
 from meshlines import build_mesh
 
 C0 = 299792458.0
@@ -352,8 +352,11 @@ def generate_script(model):
     if comps:
         a('%% --- discrete components (lumped elements) ----------------------')
         a('% element boxes are shrunk to the copper-free gap they bridge, so')
-        a('% the nominal R/L/C applies across the gap (copper overlapping the')
-        a('% box would otherwise short part of the distributed element).')
+        a('% the nominal R/L/C applies across the gap. The element sheet is')
+        a('% LIFTED above the copper plane like a real chip part; vertical')
+        a('% PEC terminals connect its ends down to the pads. Copper crossing')
+        a('% under the body (a trace below a resistor) therefore couples only')
+        a('% capacitively instead of shorting the element.')
         a('% C and L carry a series ESR in the second half of the gap: an')
         a('% ideal lossless element forms an undamped resonator with the')
         a('% mounting-loop parasitics (the tank rings forever after the')
@@ -363,10 +366,21 @@ def generate_script(model):
             ref = _ident(c.get('ref') or f"{c['ctype']}{i + 1}")
             x0, y0, x1, y1, ny, connected = comp_element_box(c, shapes)
             z = cond_z[c['layer']]
+            zl, _sign = comp_lift(cond_z, total_h, c['layer'])
             val = float(c['value']) * unit_scale[c['ctype']]
             esr = c.get('esr')
             esr = float(esr) if esr not in (None, '') else DEFAULT_ESR.get(c['ctype'], 0.0)
             note = '' if connected else '  % WARNING: ends do not touch copper'
+            # vertical terminals at the gap ends, pad plane -> element plane
+            a(f"CSX = AddMetal(CSX, 'term_{ref}');")
+            if ny == 0:
+                walls = [((x0, y0, z), (x0, y1, zl)), ((x1, y0, z), (x1, y1, zl))]
+            else:
+                walls = [((x0, y0, z), (x1, y0, zl)), ((x0, y1, z), (x1, y1, zl))]
+            for (wx0, wy0, wz0), (wx1, wy1, wz1) in walls:
+                a(f"CSX = AddBox(CSX, 'term_{ref}', 30, [{_fmt(wx0)} {_fmt(wy0)} {_fmt(wz0)}], "
+                  f"[{_fmt(wx1)} {_fmt(wy1)} {_fmt(wz1)}]);{note}")
+                note = ''
             if esr > 0 and c['ctype'] in ('C', 'L'):
                 # series connection: two lumped-element sheets split at the
                 # gap centre (a guaranteed mesh line), joined by their caps
@@ -377,15 +391,15 @@ def generate_script(model):
                     ym = round((y0 + y1) / 2.0, 6)
                     halves = [(x0, y0, x1, ym), (x0, ym, x1, y1)]
                 a(f"CSX = AddLumpedElement(CSX, '{ref}', {ny}, 'Caps', 1, '{c['ctype']}', {_fmt(val)});")
-                a(f"CSX = AddBox(CSX, '{ref}', 20, [{_fmt(halves[0][0])} {_fmt(halves[0][1])} {_fmt(z)}], "
-                  f"[{_fmt(halves[0][2])} {_fmt(halves[0][3])} {_fmt(z)}]);{note}")
+                a(f"CSX = AddBox(CSX, '{ref}', 20, [{_fmt(halves[0][0])} {_fmt(halves[0][1])} {_fmt(zl)}], "
+                  f"[{_fmt(halves[0][2])} {_fmt(halves[0][3])} {_fmt(zl)}]);")
                 a(f"CSX = AddLumpedElement(CSX, '{ref}_esr', {ny}, 'Caps', 1, 'R', {_fmt(esr)});")
-                a(f"CSX = AddBox(CSX, '{ref}_esr', 20, [{_fmt(halves[1][0])} {_fmt(halves[1][1])} {_fmt(z)}], "
-                  f"[{_fmt(halves[1][2])} {_fmt(halves[1][3])} {_fmt(z)}]);")
+                a(f"CSX = AddBox(CSX, '{ref}_esr', 20, [{_fmt(halves[1][0])} {_fmt(halves[1][1])} {_fmt(zl)}], "
+                  f"[{_fmt(halves[1][2])} {_fmt(halves[1][3])} {_fmt(zl)}]);")
             else:
                 a(f"CSX = AddLumpedElement(CSX, '{ref}', {ny}, 'Caps', 1, '{c['ctype']}', {_fmt(val)});")
-                a(f"CSX = AddBox(CSX, '{ref}', 20, [{_fmt(x0)} {_fmt(y0)} {_fmt(z)}], "
-                  f"[{_fmt(x1)} {_fmt(y1)} {_fmt(z)}]);{note}")
+                a(f"CSX = AddBox(CSX, '{ref}', 20, [{_fmt(x0)} {_fmt(y0)} {_fmt(zl)}], "
+                  f"[{_fmt(x1)} {_fmt(y1)} {_fmt(zl)}]);")
         a('')
 
     a('%% --- mesh (pre-computed, matches the GUI preview) ---------------')

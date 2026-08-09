@@ -498,7 +498,7 @@ function validateProject() {
       const bb = bboxOf(outlinePts(s));
       const [sd0, sd1, st0, st1] = ny === 0 ? [bb[0], bb[2], bb[1], bb[3]] : [bb[1], bb[3], bb[0], bb[2]];
       if (st1 <= t0 + 1e-9 || st0 >= t1 - 1e-9) continue;
-      spans.push([sd0, sd1]);
+      spans.push([sd0, sd1, s.name || s.type]);
     }
     for (let it = 0; it < 4; it++) {
       for (const [sd0, sd1] of spans) {
@@ -508,6 +508,9 @@ function validateProject() {
     }
     if (!(lo > d0 + 1e-9 && hi < d1 - 1e-9))
       w.push(`${c.ref}: body ends do not touch copper — the R/L/C will not be connected`);
+    // copper crossing UNDER the body is fine: the element sheet floats
+    // above the copper plane (COMP_LIFT) with vertical terminals down to
+    // the pads, so a trace below a component couples only capacitively
   }
   for (const dev of p.devices || []) {
     const lib = (app.devLib || []).find(l => l.file === dev.file);

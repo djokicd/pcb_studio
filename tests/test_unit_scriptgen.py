@@ -139,3 +139,54 @@ def test_negative_esr_rejected():
         'x': 20, 'y': 10, 'rot': 0, 'layer': 'top', 'esr': -1}])
     with pytest.raises(ValidationError):
         generate_script(m)
+
+
+def _boxes_of(script, prop):
+    import re as _re
+    out = []
+    for l in script.splitlines():
+        if f"AddBox(CSX, '{prop}'," in l:
+            out.append([[float(v) for v in g.split()]
+                        for g in _re.findall(r'\[([^\]]+)\]', l)])
+    return out
+
+
+def test_component_lifted_above_copper_with_terminals():
+    """The element sheet floats COMP_LIFT above the pads; two vertical
+    PEC terminal walls connect it down to the copper plane, so a trace
+    crossing under the body cannot short the element."""
+    m = base_model(components=[{
+        'id': 9, 'ref': 'R1', 'ctype': 'R', 'value': 100, 'package': '0603',
+        'x': 20, 'y': 10, 'rot': 0, 'layer': 'top'}])
+    s = generate_script(m)
+    (start, stop), = _boxes_of(s, 'R1')
+    assert abs(start[2] - 1.0) < 1e-9 and abs(stop[2] - 1.0) < 1e-9   # 0.8 + 0.2
+    terms = _boxes_of(s, 'term_R1')
+    assert len(terms) == 2
+    for (ts, te) in terms:
+        assert abs(min(ts[2], te[2]) - 0.8) < 1e-9    # pad plane
+        assert abs(max(ts[2], te[2]) - 1.0) < 1e-9    # element plane
+        assert ts[0] == te[0]                          # wall, not a slab
+    # the walls sit exactly at the element ends
+    xs = sorted(t[0][0] for t in terms)
+    assert xs == [start[0], stop[0]]
+
+
+def test_component_on_bottom_lifts_downwards():
+    m = base_model(components=[{
+        'id': 9, 'ref': 'R1', 'ctype': 'R', 'value': 100, 'package': '0603',
+        'x': 20, 'y': 10, 'rot': 0, 'layer': 'bot'}])
+    s = generate_script(m)
+    (start, stop), = _boxes_of(s, 'R1')
+    assert abs(start[2] - (-0.2)) < 1e-9              # away from the board
+
+
+def test_esr_halves_share_the_lifted_plane():
+    m = base_model(components=[{
+        'id': 9, 'ref': 'C1', 'ctype': 'C', 'value': 47, 'package': '0603',
+        'x': 20, 'y': 10, 'rot': 0, 'layer': 'top'}])
+    s = generate_script(m)
+    (cs, ce), = _boxes_of(s, 'C1')
+    (rs, re_), = _boxes_of(s, 'C1_esr')
+    assert cs[2] == ce[2] == rs[2] == re_[2]
+    assert abs(cs[2] - 1.0) < 1e-9

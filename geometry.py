@@ -22,6 +22,22 @@ PACKAGES = {'0402': (1.0, 0.5), '0603': (1.6, 0.8), '0805': (2.0, 1.25)}
 # visible in the editor, invisible to mesh, simulation and fabrication
 REF_LAYER = '__ref'
 
+# lumped components are modelled slightly ABOVE the copper plane, like a
+# real chip part: the element sheet floats at the lift height and vertical
+# PEC terminals connect its ends down to the pads. Copper crossing under
+# the body (a trace below a resistor) then couples only capacitively
+# instead of galvanically shorting the coplanar element sheet.
+COMP_LIFT = 0.2
+
+
+def comp_lift(cond_z, total, layer):
+    """(element-plane z, outward sign) for a component on `layer`: the
+    body is lifted away from the board (up on the top side, down on the
+    bottom side)."""
+    z = cond_z[layer]
+    sign = 1.0 if z >= total / 2.0 else -1.0
+    return z + sign * COMP_LIFT, sign
+
 
 def sim_shapes(model):
     """The model's shapes that take part in the simulation (i.e. not on
@@ -587,10 +603,24 @@ def mesh_lines_xy(model, edge_res, fringe=None):
                 outline_edge_lines(circle_points(x, y, r, n), tol, xs, ys, xsoft, ysoft)
         region(res, x - rp, x + rp, y - rp, y + rp)
     shapes = model.get('shapes') or []
+    # component element boxes and their vertical terminals are zero-
+    # thickness structures: they only rasterize when the mesh has lines
+    # at their EXACT positions. These coordinates are returned as pinned
+    # lines that the coincidence merge must not move - a terminal wall
+    # 20 um off its mesh line silently disconnects the component.
+    xpin, ypin = [], []
     for c in model.get('components') or []:
         x0, y0, x1, y1, _ny, _conn = comp_element_box(c, shapes)
         xs += [x0, x1, (x0 + x1) / 2]
         ys += [y0, y1, (y0 + y1) / 2]
+        xpin += [x0, x1]
+        ypin += [y0, y1]
+        # the ESR split joins two element sheets at the gap centre - a
+        # zero-width junction that needs its exact line as well
+        if _ny == 0:
+            xpin.append(round((x0 + x1) / 2.0, 6))
+        else:
+            ypin.append(round((y0 + y1) / 2.0, 6))
         res, _ = _obj_mesh(c)
         region(res, x0, x1, y0, y1)
     for p in model.get('ports') or []:
@@ -611,4 +641,4 @@ def mesh_lines_xy(model, edge_res, fringe=None):
 
     xreg += _coalesce(nreg_x)
     yreg += _coalesce(nreg_y)
-    return xs, ys, xsoft, ysoft, xreg, yreg
+    return xs, ys, xsoft, ysoft, xreg, yreg, xpin, ypin

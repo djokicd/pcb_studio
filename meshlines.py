@@ -19,7 +19,7 @@ ground side).
 import bisect
 import math
 
-from geometry import stackup_z, mesh_lines_xy, sim_shapes
+from geometry import stackup_z, mesh_lines_xy, sim_shapes, comp_lift
 
 C0 = 299792458.0
 
@@ -177,7 +177,7 @@ def _thin_soft(soft, hard):
 
 
 def _smooth_axis(fixed, lo, hi, edge_res, max_res, margin, regions=(), merge=0.0,
-                 ratio=1.5, soft=()):
+                 ratio=1.5, soft=(), pinned=()):
     # region boundaries must be mesh lines themselves, otherwise a fine
     # region inside a large gap never splits it (the gap midpoint decides
     # the fill resolution and may lie outside the region)
@@ -189,6 +189,16 @@ def _smooth_axis(fixed, lo, hi, edge_res, max_res, margin, regions=(), merge=0.0
         if span_lo < rhi < span_hi:
             fixed.append(rhi)
     lines = _merge_close(fixed, merge) if merge > 0 else _dedupe(fixed)
+    # pinned positions must survive the coincidence merge EXACTLY:
+    # zero-thickness structures (component element sheets and their
+    # vertical terminals) only rasterize on their precise mesh line. Any
+    # merged line the pin's cluster produced is moved back onto the pin.
+    if pinned:
+        tol = max(merge, 1e-4)
+        for pv in sorted({round(p, 6) for p in pinned}):
+            lines = [v for v in lines if abs(v - pv) > tol - 1e-12]
+            lines.append(pv)
+        lines = _dedupe(lines)
     # deliberate fine structure (curve samples, edge-refinement pairs) is
     # inserted after the coincidence merge, so meshMerge cannot collapse
     # it; candidates duplicating a hard line are dropped instead
@@ -272,10 +282,12 @@ def build_mesh(model):
     ratio = 1.5 if not ratio else min(2.0, max(1.2, float(ratio)))
     # fringing length scale: total dielectric height of the stackup
     _, _diel, _total = stackup_z(model.get('stackup') or [])
-    xs, ys, xsoft, ysoft, xreg, yreg = mesh_lines_xy(model, edge_res,
-                                                     fringe=_total or None)
-    x = _smooth_axis(xs, 0.0, W, edge_res, max_res, margin, xreg, merge, ratio, xsoft)
-    y = _smooth_axis(ys, 0.0, H, edge_res, max_res, margin, yreg, merge, ratio, ysoft)
+    xs, ys, xsoft, ysoft, xreg, yreg, xpin, ypin = mesh_lines_xy(
+        model, edge_res, fringe=_total or None)
+    x = _smooth_axis(xs, 0.0, W, edge_res, max_res, margin, xreg, merge, ratio,
+                     xsoft, xpin)
+    y = _smooth_axis(ys, 0.0, H, edge_res, max_res, margin, yreg, merge, ratio,
+                     ysoft, ypin)
 
     # z: conductor sheets + dielectric interfaces. Field detail lives at
     # the conductor faces that carry geometry (strips, ports, pads); plane
@@ -323,6 +335,12 @@ def build_mesh(model):
         for k in range(3):
             pos -= s * ratio ** k
             z.append(pos)
+    # lumped components float above the copper plane; their element plane
+    # needs an exact z line (and the air gap under the body gets a cell)
+    for c in model.get('components') or []:
+        if c.get('layer') in cond_z:
+            zl, _ = comp_lift(cond_z, total, c['layer'])
+            z.append(zl)
     z = _smooth_axis(z, 0.0, total, edge_res, max_res, margin, (), 0.0, ratio)
 
     mesh = {'x': x, 'y': y, 'z': z, 'cells': len(x) * len(y) * len(z),
