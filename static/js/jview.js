@@ -33,6 +33,7 @@ class JView {
     this.maxEl = maxEl;
     this.data = null;
     this.query = '';      // '?exc=N' when viewing a non-primary excitation
+    this.logScale = false;  // dB color scale (40 dB below peak) vs sqrt
     this.phase = 0;       // degrees (fd mode)
     this.frame = 0;       // frame index (td mode)
     this.smooth = true;   // bilinear resampling; false = nearest mesh node
@@ -223,15 +224,25 @@ class JView {
     if (d.mode === 'fd') {
       const c = Math.cos(this.phase * Math.PI / 180), s = Math.sin(this.phase * Math.PI / 180);
       const inv = 1 / (d.max || 1);
+      // sqrt scale for visibility; log mode maps a 40 dB range below the
+      // peak onto the ramp (reveals weak return currents)
+      const log = this.logScale;
       for (let i = 0; i < nx * ny; i++) {
         const jx = d.jxr[i] * c - d.jxi[i] * s;
         const jy = d.jyr[i] * c - d.jyi[i] * s;
-        mag[i] = Math.sqrt(Math.sqrt(jx * jx + jy * jy) * inv);   // sqrt scale for visibility
+        const r = Math.sqrt(jx * jx + jy * jy) * inv;
+        mag[i] = log ? (r > 1e-12 ? Math.max(0, 1 + Math.log10(r) / 2) : 0)
+                     : Math.sqrt(r);
       }
     } else {
       const fr = d.frames[Math.min(this.frame, d.frames.length - 1)];
       const inv = 1 / d.max;
-      for (let i = 0; i < nx * ny; i++) mag[i] = Math.sqrt(fr[i] * inv);
+      const log = this.logScale;
+      for (let i = 0; i < nx * ny; i++) {
+        const r = fr[i] * inv;
+        mag[i] = log ? (r > 1e-12 ? Math.max(0, 1 + Math.log10(r) / 2) : 0)
+                     : Math.sqrt(r);
+      }
     }
   }
 

@@ -227,7 +227,9 @@ FDTD simulations of planar PCB structures via GNU Octave.
     recorded frames in J(t) mode).
     The non-uniform FDTD grid is resampled with bilinear interpolation
     in physical coordinates (toggleable — off shows the raw mesh cells),
-    with a color-scale bar. In a multi-excitation simulation **every
+    with a color-scale bar. A **log** toggle switches the color scale to
+    logarithmic (the 40 dB below the peak), revealing weak return
+    currents that the default scale hides; the choice persists. In a multi-excitation simulation **every
     solver run records its own current density** — an excitation
     selector on the card switches between them — and the processed
     dumps ride along when the run is stored with its project, so the

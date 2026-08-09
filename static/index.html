@@ -354,12 +354,14 @@
               <input id="jPhase" type="range" min="0" max="360" value="0" step="2">
               <label class="check mini-check" title="Bilinear resampling of the non-uniform FDTD grid; off shows raw mesh cells">
                 <input id="jInterp" type="checkbox" checked> interp</label>
+              <label class="check mini-check" title="Logarithmic color scale mapping the 40 dB below the peak — reveals weak return currents the linear scale hides">
+                <input id="jLog" type="checkbox"> log</label>
               <span id="jInfo" class="muted"></span>
             </div>
             <div class="plotwrap rsz"><canvas id="jCanvas"></canvas>
               <div class="loadveil" id="jLoad" hidden>Loading&hellip;</div></div>
             <div class="jscale">
-              <span>0</span>
+              <span id="jScaleLo">0</span>
               <div class="jscale-bar" id="jScaleBar"></div>
               <span id="jMax"></span>
             </div>

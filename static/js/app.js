@@ -4095,6 +4095,16 @@ window.addEventListener('DOMContentLoaded', () => {
     app.jview.smooth = e.target.checked;
     app.jview.render();
   });
+  $('jLog').checked = !!resultsPrefs.jlog;
+  app.jview.logScale = !!resultsPrefs.jlog;
+  $('jScaleLo').textContent = resultsPrefs.jlog ? '−40 dB' : '0';
+  $('jLog').addEventListener('change', e => {
+    app.jview.logScale = e.target.checked;
+    resultsPrefs.jlog = e.target.checked;
+    saveResultsPrefs();
+    $('jScaleLo').textContent = e.target.checked ? '−40 dB' : '0';
+    app.jview.render();
+  });
 
   // results pane configuration + export
   for (const key of ['refl', 'trans', 'td', 'j', 'smat']) {
