@@ -1,0 +1,4 @@
+! ideal thru (S21=S12=1) for steady-state display verification
+# GHz S RI R 50
+0.1 0 0 1 0 1 0 0 0
+5.0 0 0 1 0 1 0 0 0

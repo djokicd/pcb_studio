@@ -229,7 +229,17 @@ FDTD simulations of planar PCB structures via GNU Octave.
     in physical coordinates (toggleable — off shows the raw mesh cells),
     with a color-scale bar. A **log** toggle switches the color scale to
     logarithmic (the 40 dB below the peak), revealing weak return
-    currents that the default scale hides; the choice persists. In a multi-excitation simulation **every
+    currents that the default scale hides; the choice persists.
+    With S-parameter devices, the excitation selector offers **steady
+    (folded)**: the true steady state of the combined network at each
+    dumped frequency, computed as the complex superposition of every
+    excitation run's field weighted by the incident waves the device
+    networks impose (the same fold math as the S-matrix combination),
+    driven at the primary port. Verified with an ideal thru device
+    bridging a gapped line: a single excitation shows the current dying
+    at the gap (downstream/upstream ≈ 0.003), the folded steady state
+    restores continuity through the device (≈ 0.97). Phasor-only — the
+    per-stage time-domain frames share no phase reference. In a multi-excitation simulation **every
     solver run records its own current density** — an excitation
     selector on the card switches between them — and the processed
     dumps ride along when the run is stored with its project, so the

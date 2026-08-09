@@ -22,7 +22,8 @@ from flask import Flask, jsonify, request, send_file, send_from_directory
 
 from gerber import parse_gerber, parse_excellon, GerberError
 from scriptgen import generate_script, ValidationError, dump_layers
-from touchstone import parse_touchstone, interpolate, connect, TouchstoneError
+from touchstone import (parse_touchstone, interpolate, connect, TouchstoneError,
+                        _matmul, _solve)
 from meshlines import build_mesh
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -931,13 +932,22 @@ def api_jdumps(run_id):
             parts = line.split(',')
             if len(parts) == 3 and (d / f'J_{re.sub(r"[^A-Za-z0-9]", "_", parts[0])}_f{parts[1]}.bin').is_file():
                 dumps.append({'layer': parts[0], 'k': int(parts[1]), 'freq': float(parts[2])})
-    # which other excitations of this run carry their own dumps
+    # which other excitations of this run carry their own dumps, and
+    # whether the folded steady-state view is available (devices + full
+    # board matrix + a frequency dump in every stage)
     excs = []
+    steady = False
     if not request.args.get('exc'):
         excs = sorted(int(p.name[4:]) for p in d.glob('exc_*')
                       if p.name[4:].isdigit()
                       and ((p / 'jdumps.csv').is_file() or (p / 'jtdumps.csv').is_file()))
-    return jsonify({'dumps': dumps, 'excs': excs})
+        ctx, _err = _steady_context(d)
+        if ctx is not None:
+            _model, port_nums, primary, _devices, _ts = ctx
+            steady = bool(dumps) and all(
+                (_stage_dump_dir(d, n, primary) / 'jdumps.csv').is_file()
+                for n in port_nums)
+    return jsonify({'dumps': dumps, 'excs': excs, 'steady': steady})
 
 
 @app.get('/api/results/<run_id>/jdump/<layer>/<int:k>')
@@ -947,6 +957,136 @@ def api_jdump(run_id, layer, k):
     if d is None or not (d / fname).is_file():
         return jsonify({'error': 'no such dump'}), 404
     return send_from_directory(d, fname, mimetype='application/octet-stream')
+
+
+def _stage_dump_dir(root, port_num, primary):
+    return root if port_num == primary else root / f'exc_{port_num}'
+
+
+def _steady_context(root):
+    """(port_nums, primary, devices, board_ts) of a run whose stages can
+    be superposed into the folded steady state, or (None, reason)."""
+    pj = root / 'project.json'
+    if not pj.is_file():
+        return None, 'run has no stored model'
+    model = json.loads(pj.read_text())
+    devices = model.get('devices') or []
+    if not devices:
+        return None, 'steady state needs S-parameter devices'
+    port_nums = sorted(int(p['number']) for p in model.get('ports') or [])
+    excited = [int(p['number']) for p in model['ports'] if p.get('excite')]
+    primary = min(excited) if excited else port_nums[0]
+    board = next(iter(root.glob('board_full.s*p')), None)
+    if board is None:
+        return None, 'run has no full board S-matrix'
+    m = re.fullmatch(r'board_full\.s(\d+)p', board.name)
+    ts = parse_touchstone(board.read_text(), int(m.group(1)))
+    return (model, port_nums, primary, devices, ts), None
+
+
+@app.get('/api/results/<run_id>/jsteady/<layer>/<int:k>')
+def api_jsteady(run_id, layer, k):
+    """Steady-state current density of the COMBINED network (device
+    networks folded in) at dump frequency k: the complex superposition
+    of every excitation stage's field, weighted by the incident waves
+    the devices impose. ?drive=<port> picks the driven external port
+    (default: the primary excitation)."""
+    root = _run_dir(run_id)
+    if root is None:
+        return jsonify({'error': 'bad run id'}), 400
+    ctx, err = _steady_context(root)
+    if ctx is None:
+        return jsonify({'error': err}), 404
+    model, port_nums, primary, devices, board_ts = ctx
+
+    # dump frequency for k (all stages share the dump list)
+    freq = None
+    jd = root / 'jdumps.csv'
+    if jd.is_file():
+        for line in jd.read_text().strip().splitlines():
+            parts = line.split(',')
+            if len(parts) == 3 and parts[0] == layer and int(parts[1]) == k:
+                freq = float(parts[2])
+    if freq is None:
+        return jsonify({'error': 'no such dump'}), 404
+
+    # incident-wave vector: unit wave into the driven external port, the
+    # device pins reflect/transmit the board's outgoing waves
+    drive = request.args.get('drive')
+    drive = int(drive) if drive and drive.isdigit() else primary
+    pins_all = [p for dev in devices for p in dev['pins']]
+    if drive in pins_all or drive not in port_nums:
+        return jsonify({'error': f'port {drive} is not an external port'}), 400
+    idx = {num: i for i, num in enumerate(port_nums)}
+    board = interpolate(board_ts, [freq])[0][0]
+    kk = len(pins_all)
+    sd = [[0j] * kk for _ in range(kk)]
+    off = 0
+    for dev in devices:
+        f = DEV_ROOT / dev['file']
+        m = re.search(r'\.s(\d+)p$', dev['file'], re.I)
+        if not f.is_file() or not m:
+            return jsonify({'error': f'device file {dev["file"]} missing'}), 404
+        dts = parse_touchstone(f.read_text(), int(m.group(1)))
+        dmat = interpolate(dts, [freq])[0][0]
+        for i in range(len(dmat)):
+            for j in range(len(dmat)):
+                sd[off + i][off + j] = dmat[i][j]
+        off += len(dmat)
+    pin_idx = [idx[p] for p in pins_all]
+    ext_idx = [i for i in range(len(port_nums)) if i not in pin_idx]
+    a_e = {i: (1.0 + 0j) if port_nums[i] == drive else 0j for i in ext_idx}
+    sce = [[board[pin_idx[i]][j] for j in ext_idx] for i in range(kk)]
+    scc = [[board[pin_idx[i]][pin_idx[j]] for j in range(kk)] for i in range(kk)]
+    sdscc = _matmul(sd, scc)
+    i_minus = [[(1 if i == j else 0) - sdscc[i][j] for j in range(kk)]
+               for i in range(kk)]
+    rhs = _matmul(sd, [[sum(sce[i][c] * a_e[ext_idx[c]] for c in range(len(ext_idx)))]
+                       for i in range(kk)])
+    a_c = _solve(i_minus, rhs)
+    a = [0j] * len(port_nums)
+    for i in ext_idx:
+        a[i] = a_e[i]
+    for i in range(kk):
+        a[pin_idx[i]] = a_c[i][0]
+
+    # superpose the per-stage complex dumps (identical grids by
+    # construction: same run, same mesh)
+    fname = f'J_{re.sub(r"[^A-Za-z0-9]", "_", layer)}_f{k}.bin'
+    import struct
+    out_head = None
+    out_coords = None
+    acc = None
+    for num in port_nums:
+        sdir = _stage_dump_dir(root, num, primary)
+        fpath = sdir / fname
+        if not fpath.is_file():
+            return jsonify({'error': f'excitation {num} has no dump for this '
+                            'frequency - re-run with field dumps enabled'}), 404
+        raw = fpath.read_bytes()
+        n1, n2 = struct.unpack_from('<2i', raw, 0)
+        ncoord = n1 + n2
+        nfield = n1 * n2
+        vals = struct.unpack_from(f'<{ncoord + 4 * nfield}f', raw, 8)
+        head, coords = raw[:8], vals[:ncoord]
+        fields = vals[ncoord:]
+        if acc is None:
+            out_head, out_coords = head, coords
+            acc = [0.0] * (4 * nfield)
+        elif head != out_head:
+            return jsonify({'error': 'stage dumps have mismatched grids'}), 500
+        w = a[idx[num]]
+        for comp in range(2):                     # jx then jy
+            re_off = (2 * comp) * nfield
+            im_off = (2 * comp + 1) * nfield
+            for i in range(nfield):
+                jr = fields[re_off + i]
+                ji = fields[im_off + i]
+                acc[re_off + i] += w.real * jr - w.imag * ji
+                acc[im_off + i] += w.real * ji + w.imag * jr
+    blob = out_head + struct.pack(f'<{len(out_coords)}f', *out_coords) \
+        + struct.pack(f'<{len(acc)}f', *acc)
+    return app.response_class(blob, mimetype='application/octet-stream')
 
 
 @app.get('/api/results/<run_id>/diagnostics')

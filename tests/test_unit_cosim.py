@@ -1,6 +1,7 @@
 """Unit test of the device co-simulation combine step, with synthetic
 board data (no octave): two ideal lines whose inner ports are bridged by
 an ideal through device must combine into an ideal through network."""
+import json
 import sys
 from pathlib import Path
 
@@ -351,3 +352,64 @@ def test_copy_results_keeps_stage_port_signals(tmp_path):
     server._copy_results(src, dst)
     assert (dst / 'exc_2' / 'port_ut1').is_file()
     assert (dst / 'exc_2' / 'port_it1').is_file()
+
+
+def test_jsteady_superposes_stage_dumps(tmp_path, monkeypatch):
+    """The folded steady-state dump is the complex superposition of the
+    per-stage fields weighted by the incident waves the device network
+    imposes: with board S21=0.8, S31=0.6 and a THRU device on ports 2/3,
+    the weights are a=(1, 0.6, 0.8)."""
+    import struct
+    monkeypatch.setattr(server, 'SIM_ROOT', tmp_path)
+    monkeypatch.setattr(server, 'DEV_ROOT', tmp_path / 'devices')
+    (tmp_path / 'devices').mkdir()
+    (tmp_path / 'devices' / 'thru.s2p').write_text(
+        '# GHz S RI R 50\n0.5 0 0 1 0 1 0 0 0\n2.0 0 0 1 0 1 0 0 0\n')
+
+    run = tmp_path / 'run_00000000_000021'
+    for sub in ('exc_2', 'exc_3'):
+        (run / sub).mkdir(parents=True)
+    ports = [{'id': 1, 'number': 1, 'excite': True, 'impedance': 50,
+              'x': 0, 'y': 0, 'w': 1, 'h': 1},
+             {'id': 2, 'number': 2, 'excite': False, 'impedance': 50,
+              'x': 0, 'y': 0, 'w': 1, 'h': 1},
+             {'id': 3, 'number': 3, 'excite': False, 'impedance': 50,
+              'x': 0, 'y': 0, 'w': 1, 'h': 1}]
+    (run / 'project.json').write_text(json.dumps({
+        'ports': ports,
+        'devices': [{'ref': 'X1', 'file': 'thru.s2p', 'pins': [2, 3]}]}))
+    # board matrix at both band edges: S21=0.8, S31=0.6, rest 0
+    m = [[0j] * 3 for _ in range(3)]
+    m[1][0] = 0.8
+    m[2][0] = 0.6
+    server._write_touchstone(run / 'board_full.s3p', [0.5e9, 2e9], [m, m])
+
+    def bin_for(jx):
+        nx, ny = 2, 2
+        vals = [0.0, 1.0, 0.0, 1.0]                     # x coords, y coords
+        vals += [jx.real] * 4 + [jx.imag] * 4           # jxr, jxi
+        vals += [0.0] * 8                               # jyr, jyi
+        return struct.pack('<2i', nx, ny) + struct.pack(f'<{len(vals)}f', *vals)
+
+    for d, val in ((run, 1 + 0j), (run / 'exc_2', 1j), (run / 'exc_3', 2 + 0j)):
+        (d / 'jdumps.csv').write_text('top,0,1.0e9\n')
+        (d / 'J_top_f0.bin').write_bytes(bin_for(val))
+
+    with server.app.test_client() as c:
+        j = c.get(f'/api/results/{run.name}/jdumps').get_json()
+        assert j['steady'] is True
+        r = c.get(f'/api/results/{run.name}/jsteady/top/0')
+        assert r.status_code == 200
+        raw = r.data
+        nx, ny = struct.unpack_from('<2i', raw, 0)
+        vals = struct.unpack_from('<20f', raw, 8)
+        jxr, jxi = vals[4:8], vals[8:12]
+        # steady = 1*(1) + 0.6*(i) + 0.8*(2) = 2.6 + 0.6i
+        for v in jxr:
+            assert abs(v - 2.6) < 1e-5
+        for v in jxi:
+            assert abs(v - 0.6) < 1e-5
+        # driving a device pin is rejected
+        assert c.get(f'/api/results/{run.name}/jsteady/top/0?drive=2').status_code == 400
+        # a run without devices reports no steady view
+        assert c.get('/api/results/no_such/jsteady/top/0').status_code == 400

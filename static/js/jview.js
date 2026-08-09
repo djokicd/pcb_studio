@@ -33,6 +33,7 @@ class JView {
     this.maxEl = maxEl;
     this.data = null;
     this.query = '';      // '?exc=N' when viewing a non-primary excitation
+    this.fdPath = 'jdump';  // 'jsteady' for the folded steady-state view
     this.logScale = false;  // dB color scale (40 dB below peak) vs sqrt
     this.phase = 0;       // degrees (fd mode)
     this.frame = 0;       // frame index (td mode)
@@ -101,9 +102,9 @@ class JView {
 
   /* fetch + parse one FD dump (cached) */
   async _fetchFD(runId, layer, k) {
-    const key = `${runId}${this.query}:${layer}:${k}`;
+    const key = `${runId}${this.fdPath}${this.query}:${layer}:${k}`;
     if (this._fdCache.has(key)) return this._fdCache.get(key);
-    const buf = await this._fetchBuf(`/api/results/${runId}/jdump/${encodeURIComponent(layer)}/${k}${this.query}`);
+    const buf = await this._fetchBuf(`/api/results/${runId}/${this.fdPath}/${encodeURIComponent(layer)}/${k}${this.query}`);
     const iv = new Int32Array(buf, 0, 2);
     const nx = iv[0], ny = iv[1];
     let off = 8;

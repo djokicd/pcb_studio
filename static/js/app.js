@@ -2131,29 +2131,39 @@ function exportSMatrixCsv() {
 
 /* ---------- current density ---------- */
 async function loadJDumps(runId, exc) {
-  app.jExc = exc || null;
+  // '__steady': the folded steady-state view — the superposition of all
+  // excitation stages weighted by the waves the device networks impose;
+  // it lists the ROOT dump frequencies and fetches via /jsteady
+  app.jSteady = exc === '__steady';
+  app.jExc = exc && !app.jSteady ? exc : null;
   const q = app.jExc ? `?exc=${app.jExc}` : '';
   // veil the stale frame right away: fetching another excitation's
   // dumps takes a moment and the old fields must not linger silently
   const veil = $('jLoad');
-  veil.textContent = exc ? `Loading Exc ${exc}…` : 'Loading…';
+  veil.textContent = app.jSteady ? 'Loading steady state…'
+    : exc ? `Loading Exc ${exc}…` : 'Loading…';
   veil.hidden = false;
   app.jdumps = [];
   app.jtdumps = [];
   try {
     const r = await apiJson(`/api/results/${runId}/jdumps${q}`);
     app.jdumps = r.dumps;
-    if (!app.jExc) app.jExcList = r.excs || [];
+    if (!app.jExc) {
+      app.jExcList = r.excs || [];
+      app.jSteadyAvail = !!r.steady;
+    }
   } catch (e) { /* none */ }
   try {
     const { dumps } = await apiJson(`/api/results/${runId}/jtdumps${q}`);
     app.jtdumps = dumps;
   } catch (e) { /* none */ }
   // excitation selector: every stage of a multi-excitation run keeps its
-  // own dumps; the run root holds the final (primary) stage's
+  // own dumps; the run root holds the final (primary) stage's. With
+  // devices, the folded steady state (all stages superposed with the
+  // waves the devices impose) is offered as well.
   const excSel = $('jExc');
   const excs = app.jExcList || [];
-  excSel.hidden = excs.length === 0;
+  excSel.hidden = excs.length === 0 && !app.jSteadyAvail;
   if (!excSel.hidden) {
     excSel.innerHTML = '';
     const o0 = document.createElement('option');
@@ -2166,21 +2176,31 @@ async function loadJDumps(runId, exc) {
       o.textContent = `Exc ${n}`;
       excSel.append(o);
     }
-    excSel.value = app.jExc || '';
+    if (app.jSteadyAvail) {
+      const os = document.createElement('option');
+      os.value = '__steady';
+      os.textContent = 'steady (folded)';
+      os.title = 'Steady state of the combined network at the dumped frequency: '
+        + 'every excitation run superposed with the complex waves the S-parameter '
+        + 'devices impose, driven at the primary port';
+      excSel.append(os);
+    }
+    excSel.value = app.jSteady ? '__steady' : (app.jExc || '');
     excSel.onchange = () => loadJDumps(runId, excSel.value || null);
   }
   const any = app.jdumps.length || app.jtdumps.length;
-  $('jCard').hidden = !any && !excs.length;
+  $('jCard').hidden = !any && !excs.length && !app.jSteadyAvail;
   if (!any) {
     veil.hidden = true;
     return;
   }
-  // mode availability
+  // mode availability (the steady view is phasor-only: time-domain
+  // frames of different stages have no common phase reference)
   const modeSel = $('jMode');
   modeSel.querySelector('[value=fd]').disabled = !app.jdumps.length;
-  modeSel.querySelector('[value=td]').disabled = !app.jtdumps.length;
+  modeSel.querySelector('[value=td]').disabled = !app.jtdumps.length || app.jSteady;
   if (modeSel.options[modeSel.selectedIndex].disabled)
-    modeSel.value = app.jdumps.length ? 'fd' : 'td';
+    modeSel.value = modeSel.querySelector('[value=fd]').disabled ? 'td' : 'fd';
   const layers = [...new Set([...app.jdumps.map(d => d.layer), ...app.jtdumps.map(d => d.layer)])];
   const jl = $('jLayer');
   jl.innerHTML = '';
@@ -2242,6 +2262,7 @@ async function loadJFrame() {
   const mode = $('jMode').value;
   const layer = $('jLayer').value;
   app.jview.query = app.jExc ? `?exc=${app.jExc}` : '';
+  app.jview.fdPath = app.jSteady ? 'jsteady' : 'jdump';
   app.jview.pause();
   $('jPlay').innerHTML = '&#9654;';
   const veil = $('jLoad');
