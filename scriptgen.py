@@ -27,6 +27,14 @@ from meshlines import build_mesh
 C0 = 299792458.0
 EPS0 = 8.8541878128e-12
 
+# default series resistance of lumped elements (ohms), used when the
+# component has no explicit ESR. Typical for 0402-0805 MLCC / chip
+# inductors at RF; more importantly, a nonzero ESR damps the resonator
+# every ideal C or L forms with its mounting-loop parasitics - lossless
+# elements trap the excitation's residual energy and the FDTD energy
+# decay plateaus instead of reaching the end criteria.
+DEFAULT_ESR = {'C': 0.25, 'L': 0.3}
+
 
 class ValidationError(Exception):
     pass
@@ -128,6 +136,10 @@ def validate(model):
         if c.get('package') == 'custom':
             _num(c.get('len'), f'{ref} length', positive=True)
             _num(c.get('wid'), f'{ref} width', positive=True)
+        if c.get('esr') not in (None, ''):
+            _num(c.get('esr'), f'{ref} ESR')
+            if float(c['esr']) < 0:
+                raise ValidationError(f'{ref}: ESR must not be negative')
 
     ports = model.get('ports') or []
     if not ports:
@@ -341,17 +353,39 @@ def generate_script(model):
         a('%% --- discrete components (lumped elements) ----------------------')
         a('% element boxes are shrunk to the copper-free gap they bridge, so')
         a('% the nominal R/L/C applies across the gap (copper overlapping the')
-        a('% box would otherwise short part of the distributed element)')
+        a('% box would otherwise short part of the distributed element).')
+        a('% C and L carry a series ESR in the second half of the gap: an')
+        a('% ideal lossless element forms an undamped resonator with the')
+        a('% mounting-loop parasitics (the tank rings forever after the')
+        a('% excitation and the energy decay never reaches the end criteria)')
         unit_scale = {'R': 1.0, 'C': 1e-12, 'L': 1e-9}
         for i, c in enumerate(comps):
             ref = _ident(c.get('ref') or f"{c['ctype']}{i + 1}")
             x0, y0, x1, y1, ny, connected = comp_element_box(c, shapes)
             z = cond_z[c['layer']]
             val = float(c['value']) * unit_scale[c['ctype']]
-            a(f"CSX = AddLumpedElement(CSX, '{ref}', {ny}, 'Caps', 1, '{c['ctype']}', {_fmt(val)});")
+            esr = c.get('esr')
+            esr = float(esr) if esr not in (None, '') else DEFAULT_ESR.get(c['ctype'], 0.0)
             note = '' if connected else '  % WARNING: ends do not touch copper'
-            a(f"CSX = AddBox(CSX, '{ref}', 20, [{_fmt(x0)} {_fmt(y0)} {_fmt(z)}], "
-              f"[{_fmt(x1)} {_fmt(y1)} {_fmt(z)}]);{note}")
+            if esr > 0 and c['ctype'] in ('C', 'L'):
+                # series connection: two lumped-element sheets split at the
+                # gap centre (a guaranteed mesh line), joined by their caps
+                if ny == 0:
+                    xm = round((x0 + x1) / 2.0, 6)
+                    halves = [(x0, y0, xm, y1), (xm, y0, x1, y1)]
+                else:
+                    ym = round((y0 + y1) / 2.0, 6)
+                    halves = [(x0, y0, x1, ym), (x0, ym, x1, y1)]
+                a(f"CSX = AddLumpedElement(CSX, '{ref}', {ny}, 'Caps', 1, '{c['ctype']}', {_fmt(val)});")
+                a(f"CSX = AddBox(CSX, '{ref}', 20, [{_fmt(halves[0][0])} {_fmt(halves[0][1])} {_fmt(z)}], "
+                  f"[{_fmt(halves[0][2])} {_fmt(halves[0][3])} {_fmt(z)}]);{note}")
+                a(f"CSX = AddLumpedElement(CSX, '{ref}_esr', {ny}, 'Caps', 1, 'R', {_fmt(esr)});")
+                a(f"CSX = AddBox(CSX, '{ref}_esr', 20, [{_fmt(halves[1][0])} {_fmt(halves[1][1])} {_fmt(z)}], "
+                  f"[{_fmt(halves[1][2])} {_fmt(halves[1][3])} {_fmt(z)}]);")
+            else:
+                a(f"CSX = AddLumpedElement(CSX, '{ref}', {ny}, 'Caps', 1, '{c['ctype']}', {_fmt(val)});")
+                a(f"CSX = AddBox(CSX, '{ref}', 20, [{_fmt(x0)} {_fmt(y0)} {_fmt(z)}], "
+                  f"[{_fmt(x1)} {_fmt(y1)} {_fmt(z)}]);{note}")
         a('')
 
     a('%% --- mesh (pre-computed, matches the GUI preview) ---------------')

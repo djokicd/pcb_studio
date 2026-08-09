@@ -91,3 +91,51 @@ def test_bad_dump_freq_rejected():
     m['sim'].update(dumpJ=True, dumpFreqs='banana')
     with pytest.raises(ValidationError):
         generate_script(m)
+
+
+def test_capacitor_gets_series_esr_by_default():
+    """An ideal lossless C forms an undamped tank with its mounting
+    parasitics; the generated element carries a series ESR half."""
+    m = base_model(components=[{
+        'id': 9, 'ref': 'C1', 'ctype': 'C', 'value': 47, 'package': '0603',
+        'x': 20, 'y': 10, 'rot': 0, 'layer': 'top'}])
+    s = generate_script(m)
+    assert "AddLumpedElement(CSX, 'C1', 0, 'Caps', 1, 'C', 4.7e-11)" in s
+    assert "AddLumpedElement(CSX, 'C1_esr', 0, 'Caps', 1, 'R', 0.25)" in s
+    # the two element boxes split the gap at its centre and abut there
+    lines = [l for l in s.splitlines() if "AddBox(CSX, 'C1" in l]
+    assert len(lines) == 2
+    import re as _re
+
+    def boxes(line):
+        return [[float(v) for v in g.split()]
+                for g in _re.findall(r'\[([^\]]+)\]', line)]
+
+    (c_start, c_stop), (r_start, r_stop) = boxes(lines[0]), boxes(lines[1])
+    assert c_stop[0] == r_start[0]              # C ends where ESR begins
+    assert c_start[1] == r_start[1] and c_stop[1] == r_stop[1]
+
+
+def test_esr_zero_restores_ideal_element():
+    m = base_model(components=[{
+        'id': 9, 'ref': 'C1', 'ctype': 'C', 'value': 47, 'package': '0603',
+        'x': 20, 'y': 10, 'rot': 0, 'layer': 'top', 'esr': 0}])
+    s = generate_script(m)
+    assert "'C', 4.7e-11" in s
+    assert '_esr' not in s
+
+
+def test_esr_explicit_and_rotated():
+    m = base_model(components=[{
+        'id': 9, 'ref': 'L1', 'ctype': 'L', 'value': 10, 'package': '0603',
+        'x': 20, 'y': 10, 'rot': 90, 'layer': 'top', 'esr': 1.5}])
+    s = generate_script(m)
+    assert "AddLumpedElement(CSX, 'L1_esr', 1, 'Caps', 1, 'R', 1.5)" in s
+
+
+def test_negative_esr_rejected():
+    m = base_model(components=[{
+        'id': 9, 'ref': 'C1', 'ctype': 'C', 'value': 47, 'package': '0603',
+        'x': 20, 'y': 10, 'rot': 0, 'layer': 'top', 'esr': -1}])
+    with pytest.raises(ValidationError):
+        generate_script(m)

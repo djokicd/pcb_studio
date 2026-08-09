@@ -279,6 +279,15 @@ FDTD simulations of planar PCB structures via GNU Octave.
   shrunk to the copper-free gap they bridge, so the nominal value
   applies across the gap regardless of how the body overlaps the pads;
   unconnected component ends are flagged as design-rule warnings.
+  Capacitors and inductors carry a **series ESR** (default 0.25 Ω for
+  C, 0.3 Ω for L — typical for chip parts; editable per component,
+  0 restores the ideal element), realised as a second lumped sheet in
+  the second half of the gap. This is not only realism: an *ideal*
+  C or L forms an undamped resonator with its mounting-loop
+  parasitics — after the excitation ends, the tank rings forever, the
+  J(t) view shows energy circulating in the component loops, and the
+  energy decay plateaus without ever reaching the end criteria. The
+  ESR damps exactly that loop.
 - **Fabrication data import**: per-layer Gerber (RS-274X subset:
   standard apertures, strokes, arcs, regions) via the ⇪ button on a
   stackup conductor layer, and Excellon drill files creating PTH vias.

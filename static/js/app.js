@@ -848,6 +848,18 @@ function renderProps() {
     F('Type', selIn([['R', 'Resistor'], ['C', 'Capacitor'], ['L', 'Inductor']], obj.ctype,
       v => { obj.ctype = v; rerender(); }));
     F(`Value (${COMP_UNITS[obj.ctype]})`, numIn(obj.value, 0.1, v => { obj.value = v; upd(); }));
+    if (obj.ctype !== 'R') {
+      const esrI = numIn(obj.esr ?? '', 0.05, v => {
+        obj.esr = isFinite(v) && v >= 0 ? v : null;
+        upd();
+      });
+      esrI.placeholder = obj.ctype === 'C' ? '0.25 (default)' : '0.3 (default)';
+      esrI.title = 'Series resistance of the element (ohms). An ideal lossless '
+        + 'C or L forms an undamped resonator with its mounting parasitics — '
+        + 'the ring-down never ends and the energy decay gets stuck. The '
+        + 'default is typical for chip parts; 0 restores the ideal element.';
+      F('ESR (Ω)', esrI);
+    }
     F('Package', selIn([['0402', '0402'], ['0603', '0603'], ['0805', '0805'], ['custom', 'custom']],
       obj.package, v => { obj.package = v; rerender(); }));
     if (obj.package === 'custom') {
