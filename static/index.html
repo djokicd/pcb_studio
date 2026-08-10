@@ -213,6 +213,14 @@
             <svg viewBox="0 0 16 16"><path d="M3 2 L3 13 L6.2 10.2 L8.2 14 L10 13 L8 9.4 L12 9.2 Z"/></svg>
             <span>Select</span>
           </button>
+          <button class="tool" data-mtool="box" title="Box select — drag a rectangle over objects (B). Shift adds to the selection, Alt takes everything the box touches">
+            <svg viewBox="0 0 16 16"><rect x="2" y="3.5" width="12" height="9" stroke-dasharray="3 2"/><circle cx="6" cy="8" r="1.4" fill="currentColor" stroke="none"/><circle cx="10.5" cy="8" r="1.4" fill="currentColor" stroke="none"/></svg>
+            <span>Box</span>
+          </button>
+          <button class="tool" data-mtool="lasso" title="Loop select — draw a freehand loop around objects (L). Shift adds to the selection, Alt takes everything the loop touches">
+            <svg viewBox="0 0 16 16"><path d="M10.6 12.1 C4.5 14.3 1.4 8.2 5.2 5.2 C8.6 2.5 13.7 4.2 13.2 8.2 C13 10.3 10.6 12.1 10.6 12.1 Z"/><path d="M10.6 12.1 L12.2 14.8"/></svg>
+            <span>Loop</span>
+          </button>
           <button class="tool" data-mtool="point" title="Pin one x and one y mesh line at a point — snaps to geometry corners (P)">
             <svg viewBox="0 0 16 16"><path d="M8 1 v14 M1 8 h14" stroke-dasharray="3 2"/><circle cx="8" cy="8" r="2.2"/></svg>
             <span>Point</span>
@@ -248,9 +256,12 @@
       <div id="meshObjSlot"></div>
       <div class="panel hint">
         Clicking the view selects <b>objects</b> &mdash; their mesh overrides
-        appear in the right-hand panel. <b>Ranges and pinned lines</b> live in
-        the bottom (x) and left (y) strips: click to select, drag the band to
-        move it, drag its edge to resize. Esc returns to Select.
+        appear in the right-hand panel. Box and Loop select many at once
+        (<kbd>Shift</kbd> adds, <kbd>Alt</kbd> takes anything they touch
+        rather than only what is fully enclosed). <b>Ranges and pinned
+        lines</b> live in the bottom (x) and left (y) strips: click to
+        select, drag the band to move it, drag its edge to resize.
+        Esc returns to Select.
       </div>
     </div>
   </aside>
@@ -750,6 +761,12 @@
         <input id="simpTraces" type="checkbox" checked> Merge stroke chains into traces</label>
       <label title="Thin the outlines of filled polygons (pours, regions) to the tolerance">
         <input id="simpPolys" type="checkbox" checked> Thin polygon outlines</label>
+      <label title="Delete shapes that lie wholly inside another shape on the same layer — a pad buried in a pour adds nothing but mesh lines. Exact: no copper changes">
+        <input id="simpDedupe" type="checkbox" checked> Drop shapes covered by another</label>
+      <label title="Replace each group of overlapping shapes on a layer with their common outline, so buried seams stop pinning mesh lines. Exact: the copper region is unchanged, and any group whose union would need a hole is left alone">
+        <input id="simpUnion" type="checkbox" checked> Merge overlapping shapes</label>
+      <label title="Let transmission lines take part in the merge too. Off by default: a trace carries its width parametrically and the mesher refines across it along its whole run, which a merged polygon cannot express">
+        <input id="simpUnionTraces" type="checkbox"> &hellip; including transmission lines</label>
     </div>
     <p class="muted" id="simpStats" style="margin:10px 0 0">&nbsp;</p>
     <div class="uic-btns">
@@ -818,6 +835,8 @@
       <tr><td><kbd>X</kbd></td><td>measure tool — drag between two points</td></tr>
       <tr><td><kbd>N</kbd></td><td>note — click to place; click its triangle (or double-click) to collapse/expand</td></tr>
       <tr><td><kbd>G</kbd> / <kbd>M</kbd> / <kbd>F</kbd></td><td>toggle grid / Meshing tab / fit view</td></tr>
+      <tr><td><kbd>V</kbd> <kbd>B</kbd> <kbd>L</kbd> <kbd>P</kbd> <kbd>X</kbd> <kbd>Y</kbd></td>
+          <td>Meshing tab tools: select, box select, loop select, point, x line, y line</td></tr>
       <tr><td><kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd></td><td>undo / redo (Ctrl+Shift+Z also redoes)</td></tr>
       <tr><td><kbd>Ctrl+C/X/V</kbd></td><td>copy / cut / paste the selection</td></tr>
       <tr><td><kbd>Ctrl+D</kbd></td><td>duplicate</td></tr>

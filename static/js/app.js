@@ -2722,6 +2722,9 @@ function simplifyOpts() {
     maxSeg: Math.max(0, parseFloat($('simpSeg').value) || 0),
     traces: $('simpTraces').checked,
     polys: $('simpPolys').checked,
+    dedupe: $('simpDedupe').checked,
+    union: $('simpUnion').checked,
+    unionTraces: $('simpUnionTraces').checked,
   };
   if ($('simpScope').value === 'sel') {
     const ids = app.multi.filter(m => m.kind === 'shape').map(m => m.id);
@@ -2743,6 +2746,9 @@ function simplifyStatsText(res) {
   const parts = [];
   if (s.traces) parts.push(`${s.strokesMerged} strokes → ${s.traces} traces`);
   if (s.polysSimplified) parts.push(`${s.polysSimplified} outlines thinned`);
+  if (s.contained) parts.push(`${s.contained} covered shapes dropped`);
+  if (s.merged) parts.push(`${s.merged} overlapping → ${s.mergedInto}`);
+  if (s.mergeSkipped) parts.push(`${s.mergeSkipped} left (would need holes)`);
   parts.push(`shapes ${s.shapes} → ${s.shapesAfter}`);
   parts.push(`vertices ${s.vertices} → ${s.verticesAfter}`);
   if (res.meshBefore && res.meshAfter)
@@ -4252,7 +4258,8 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   $('simpOk').addEventListener('click', simplifyApply);
   let simpT = null;
-  for (const id of ['simpScope', 'simpTol', 'simpSeg', 'simpTraces', 'simpPolys'])
+  for (const id of ['simpScope', 'simpTol', 'simpSeg', 'simpTraces', 'simpPolys',
+                    'simpDedupe', 'simpUnion', 'simpUnionTraces'])
     $(id).addEventListener('input', () => {
       clearTimeout(simpT);
       simpT = setTimeout(simplifyRefresh, 300);
@@ -4694,6 +4701,8 @@ window.addEventListener('DOMContentLoaded', () => {
       const mt = app.meshTab;
       switch (e.key) {
         case 'v': case 'V': case 'Escape': mt.setTool('select'); break;
+        case 'b': case 'B': mt.setTool('box'); break;
+        case 'l': case 'L': mt.setTool('lasso'); break;
         case 'p': case 'P': mt.setTool('point'); break;
         case 'x': case 'X': mt.setTool('xline'); break;
         case 'y': case 'Y': mt.setTool('yline'); break;

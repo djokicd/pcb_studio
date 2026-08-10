@@ -134,7 +134,13 @@ FDTD simulations of planar PCB structures via GNU Octave.
     view is only ever about objects, so a click on copper can never
     grab a band lying over it.
   - **Selection and bulk edits**: click objects, shift-click to add, or
-    drag a marquee; "all vias" / "all shapes" select in one go. With
+    reach for the two marquee tools — **Box** drags a rectangle, **Loop**
+    draws a freehand lasso, which is what you want for a curved via fence
+    or a diagonal run (on the bundled amplifier a corridor loop takes 25
+    vias where its own bounding box would take 93). Both default to
+    what they fully enclose; <kbd>Shift</kbd> adds to the selection and
+    <kbd>Alt</kbd> switches to "anything touched". "all vias" /
+    "all shapes" select in one go. With
     several objects selected, the panel applies **local resolution,
     edge refinement and per-via mesh lines to all of them at once** —
     dropping a 57-via fence from full detail to centre-line-only is one
@@ -412,6 +418,29 @@ FDTD simulations of planar PCB structures via GNU Octave.
   counts and the mesh size before/after; applying is one undo step.
   On the bundled CPW test board this turns 236 stroke polygons into
   15 traces and cuts the shape list from 378 to 175.
+  Two further passes clean up **overlapping copper**, which imports
+  produce in quantity and which costs mesh lines for nothing — every
+  buried edge still pins one:
+  - *Drop shapes covered by another* deletes any shape lying wholly
+    inside another on the same layer (a pad buried in a pour). Nothing
+    is rewritten, so this one is exactly lossless.
+  - *Merge overlapping shapes* replaces each overlapping group with its
+    common outline, computed by a small pure-Python boolean union
+    (`polybool.py`: edges are split at every crossing, each piece is
+    classified by probing both sides — which is what makes the shared
+    and collinear edges of stroke soup fall out correctly — and the
+    survivors are chained into rings). Transmission lines stay out by
+    default, since a trace carries its width parametrically and the
+    mesher refines across it along its whole run.
+
+  Both are **verified before they are accepted**: every merge is
+  re-checked by sampling membership against the original shapes, and a
+  group whose union would need a *hole* (a ground pour around its slots)
+  is left alone rather than filled — filling one would short whatever
+  the gap separates. Where the whole group cannot merge, the pairs that
+  can still do. On the bundled board the full pass takes 378 shapes to
+  61 and the generated Octave script from 618 polygon calls to 304,
+  with copper membership identical over 40 000 sample points.
   A shared import offset keeps all imported files aligned; the board
   outline grows to fit. Imported geometry meshes by bounding box to
   keep cell counts sane.

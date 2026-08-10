@@ -63,7 +63,8 @@ class MeshTab {
     this.snap = null;
     document.querySelectorAll('#meshTools .tool')
       .forEach(b => b.classList.toggle('active', b.dataset.mtool === t));
-    this.canvas.style.cursor = t === 'select' ? 'default' : 'crosshair';
+    this.canvas.style.cursor = t === 'select' ? 'default'
+      : t === 'lasso' ? 'cell' : 'crosshair';
     $('meshToolHint').textContent = MESH_TOOL_HINTS[t] || '';
     this.render();
   }
@@ -275,6 +276,16 @@ class MeshTab {
     const strip = this.stripAt(sx, sy);
     if (strip) { this.onStripDown(strip, strip === 'y' ? sy : sx); return; }
 
+    // marquee tools: drag out a shape, then take whatever it encloses
+    if (this.tool === 'box' || this.tool === 'lasso') {
+      this.sel = null;
+      this.drag = this.tool === 'box'
+        ? { type: 'box', x0: wx, y0: wy, x1: wx, y1: wy, add: e.shiftKey, touch: e.altKey }
+        : { type: 'lasso', pts: [[wx, wy]], add: e.shiftKey, touch: e.altKey };
+      renderMeshItems();
+      this.render();
+      return;
+    }
     if (this.tool !== 'select') { this.placeWithTool(wx, wy); return; }
 
     const hit = this.objectAt(wx, wy);
@@ -385,6 +396,11 @@ class MeshTab {
 
     if (!this.drag) {
       if (!over) return;
+      if (this.tool === 'box' || this.tool === 'lasso') {
+        // marquee tools have nothing to preview until the drag starts
+        if (this.snap) { this.snap = null; this.render(); }
+        return;
+      }
       if (this.tool !== 'select') {
         // live snap preview
         const prev = JSON.stringify(this.snap);
@@ -437,6 +453,10 @@ class MeshTab {
       renderMeshItems(true);
     } else if (d.type === 'box') {
       d.x1 = wx; d.y1 = wy;
+    } else if (d.type === 'lasso') {
+      // sample the path at ~3 screen px so the loop stays light
+      const last = d.pts[d.pts.length - 1];
+      if (Math.hypot(wx - last[0], wy - last[1]) * this.view.scale > 3) d.pts.push([wx, wy]);
     }
     this.render();
   }
@@ -446,6 +466,7 @@ class MeshTab {
     this.drag = null;
     if (!d || d.type === 'pan') return;
     if (d.type === 'box') { this.finishBox(d); return; }
+    if (d.type === 'lasso') { this.finishLasso(d); return; }
     if (d.r) {
       const r = d.r;
       if (r.from > r.to) [r.from, r.to] = [r.to, r.from];
@@ -463,37 +484,77 @@ class MeshTab {
     this.app.refreshMesh();
   }
 
-  finishBox(d) {
-    if (Math.hypot(d.x1 - d.x0, d.y1 - d.y0) * this.view.scale < 4) {
-      if (!d.add) this.app.select(null);
-      this.render();
-      return;
-    }
-    const r = [Math.min(d.x0, d.x1), Math.min(d.y0, d.y1),
-               Math.max(d.x0, d.x1), Math.max(d.y0, d.y1)];
+  /* every object the mesh view can select */
+  candidates() {
     const p = this.app.project;
-    const cand = [
+    return [
       ...p.shapes.filter(s => s.layer !== REF_LAYER).map(o => ({ kind: 'shape', obj: o })),
       ...p.vias.map(o => ({ kind: 'via', obj: o })),
       ...p.components.map(o => ({ kind: 'component', obj: o })),
       ...p.ports.map(o => ({ kind: 'port', obj: o })),
     ];
-    const items = cand.filter(it => {
-      const b = this.objBounds(it.kind, it.obj);
-      return b && b[0] >= r[0] && b[1] >= r[1] && b[2] <= r[2] && b[3] <= r[3];
-    }).map(it => ({ kind: it.kind, id: it.obj.id }));
-    if (d.add) {
+  }
+
+  /* commit a selection, optionally merged into the current one */
+  applySelection(items, add) {
+    if (add) {
       const have = this.app.multi.length ? [...this.app.multi]
         : (this.app.selection ? [this.app.selection] : []);
       for (const it of items)
         if (!have.some(q => q.kind === it.kind && q.id === it.id)) have.push(it);
-      items.length = 0;
-      items.push(...have);
+      items = have;
     }
     if (!items.length) this.app.select(null);
     else if (items.length === 1) this.app.select(items[0].kind, items[0].id);
     else this.app.selectMulti(items);
     this.render();
+  }
+
+  finishBox(d) {
+    if (Math.hypot(d.x1 - d.x0, d.y1 - d.y0) * this.view.scale < 4) {
+      // a click rather than a drag: fall back to picking what is under it
+      const hit = this.objectAt(d.x0, d.y0);
+      this.applySelection(hit ? [{ kind: hit.kind, id: hit.obj.id }] : [], d.add && !!hit);
+      return;
+    }
+    const r = [Math.min(d.x0, d.x1), Math.min(d.y0, d.y1),
+               Math.max(d.x0, d.x1), Math.max(d.y0, d.y1)];
+    const items = this.candidates().filter(it => {
+      const b = this.objBounds(it.kind, it.obj);
+      if (!b) return false;
+      return d.touch ? !(b[2] < r[0] || b[0] > r[2] || b[3] < r[1] || b[1] > r[3])
+        : (b[0] >= r[0] && b[1] >= r[1] && b[2] <= r[2] && b[3] <= r[3]);
+    }).map(it => ({ kind: it.kind, id: it.obj.id }));
+    this.applySelection(items, d.add);
+  }
+
+  /* freehand loop: an object is taken when its whole bounding box lies
+     inside the drawn loop (Alt = anything the loop touches) */
+  finishLasso(d) {
+    const poly = d.pts;
+    if (poly.length < 3) {
+      const hit = this.objectAt(poly[0][0], poly[0][1]);
+      this.applySelection(hit ? [{ kind: hit.kind, id: hit.obj.id }] : [], d.add && !!hit);
+      return;
+    }
+    const items = this.candidates().filter(it => {
+      const b = this.objBounds(it.kind, it.obj);
+      if (!b) return false;
+      const corners = [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]];
+      const inside = corners.map(c => pointInPoly(c[0], c[1], poly));
+      if (!d.touch) return inside.every(Boolean);
+      if (inside.some(Boolean)) return true;
+      if (poly.some(pt => pt[0] >= b[0] && pt[0] <= b[2] && pt[1] >= b[1] && pt[1] <= b[3]))
+        return true;
+      // a loop can cross a shape without any vertex or corner landing in it
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i], c = poly[(i + 1) % poly.length];
+        for (let k = 0; k < 4; k++)
+          if (segSeg(a, c, corners[k], corners[(k + 1) % 4])) return true;
+      }
+      return false;
+    }).map(it => ({ kind: it.kind, id: it.obj.id }));
+    this.applySelection(items, d.add);
   }
 
   onWheel(e) {
@@ -739,7 +800,7 @@ class MeshTab {
 
   drawSnapPreview(w, h) {
     const s = this.snap;
-    if (!s || this.tool === 'select') return;
+    if (!s || this.tool === 'select' || this.tool === 'box' || this.tool === 'lasso') return;
     const ctx = this.ctx;
     ctx.strokeStyle = hexRgba(s.hit ? MLINE_COLOR : ED.select, 0.75);
     ctx.lineWidth = 1.2;
@@ -772,6 +833,7 @@ class MeshTab {
 
   drawBox() {
     const d = this.drag;
+    if (d && d.type === 'lasso') { this.drawLasso(d); return; }
     if (!d || d.type !== 'box') return;
     const ctx = this.ctx;
     const [sx, sy] = this.toScreen(Math.min(d.x0, d.x1), Math.max(d.y0, d.y1));
@@ -783,6 +845,30 @@ class MeshTab {
     ctx.setLineDash([4, 3]);
     ctx.lineWidth = 1;
     ctx.strokeRect(sx, sy, w, h);
+    ctx.setLineDash([]);
+  }
+
+  drawLasso(d) {
+    if (d.pts.length < 2) return;
+    const ctx = this.ctx;
+    ctx.beginPath();
+    d.pts.forEach(([x, y], i) => {
+      const [sx, sy] = this.toScreen(x, y);
+      i ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy);
+    });
+    ctx.closePath();
+    ctx.fillStyle = ED.selectFill;
+    ctx.fill();
+    ctx.strokeStyle = ED.select;
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+    // dashed hint of where the loop will close
+    const [ax, ay] = this.toScreen(...d.pts[d.pts.length - 1]);
+    const [bx, by] = this.toScreen(...d.pts[0]);
+    ctx.setLineDash([4, 3]);
+    ctx.globalAlpha = 0.6;
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+    ctx.globalAlpha = 1;
     ctx.setLineDash([]);
   }
 
@@ -989,12 +1075,24 @@ class MeshTab {
 const MESH_TOOL_HINTS = {
   select: 'View selects objects (shift adds, drag a box for many) · '
     + 'ranges and pinned lines are selected and dragged in the bottom/left strips',
+  box: 'Drag a rectangle around objects · shift adds to the selection, '
+    + 'Alt takes everything the box touches',
+  lasso: 'Draw a loop around objects · shift adds to the selection, '
+    + 'Alt takes everything the loop touches',
   point: 'Click to pin one x and one y line — snaps to nearby geometry corners',
   xline: 'Click to pin a single x mesh line — snaps to nearby copper edges',
   yline: 'Click to pin a single y mesh line — snaps to nearby copper edges',
   xrange: 'Drag across x — on the view or in the bottom strip — to add a density range',
   yrange: 'Drag across y — on the view or in the left strip — to add a density range',
 };
+
+/* do segments ab and cd cross? (orientation test, collinear cases fall
+   through to "no" - good enough for hit testing a hand-drawn loop) */
+function segSeg(a, b, c, d) {
+  const o = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  const d1 = o(a, b, c), d2 = o(a, b, d), d3 = o(c, d, a), d4 = o(c, d, b);
+  return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0));
+}
 
 function round3(v) { return Math.round(v * 1000) / 1000; }
 function fmtRes(r) { return r >= 1 ? `${r} mm` : `${Math.round(r * 1000)} µm`; }

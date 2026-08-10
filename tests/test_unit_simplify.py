@@ -133,3 +133,107 @@ def test_converted_trace_outline_matches_strokes():
     for x, y in outline:
         d = math.hypot(x - 20, y - 10)
         assert 5 - 0.45 < d < 5 + 0.45
+
+
+def _rect_shape(i, x, y, w, h, layer='top'):
+    return {'id': i, 'type': 'rect', 'layer': layer, 'x': x, 'y': y,
+            'w': w, 'h': h, 'priority': 10}
+
+
+def _poly_shape(i, pts, layer='top', prio=10):
+    return {'id': i, 'type': 'poly', 'layer': layer, 'priority': prio,
+            'pts': [list(p) for p in pts]}
+
+
+def test_contained_shapes_are_dropped():
+    shapes = [_rect_shape(1, 0, 0, 10, 10), _rect_shape(2, 2, 2, 3, 3),
+              _rect_shape(3, 20, 0, 4, 4)]
+    out, st = simplify_shapes(shapes, {'traces': False, 'polys': False,
+                                       'dedupe': True, 'union': False})
+    assert st['contained'] == 1
+    assert [s['id'] for s in out] == [1, 3]
+
+
+def test_containment_is_per_layer():
+    shapes = [_rect_shape(1, 0, 0, 10, 10, 'top'),
+              _rect_shape(2, 2, 2, 3, 3, 'bot')]
+    out, st = simplify_shapes(shapes, {'traces': False, 'polys': False,
+                                       'dedupe': True, 'union': False})
+    assert st['contained'] == 0 and len(out) == 2
+
+
+def test_overlapping_shapes_are_merged():
+    shapes = [_rect_shape(1, 0, 0, 10, 10), _rect_shape(2, 5, 5, 10, 10)]
+    out, st = simplify_shapes(shapes, {'traces': False, 'polys': False,
+                                       'tol': 0, 'dedupe': True, 'union': True})
+    assert st['merged'] == 2 and st['mergedInto'] == 1
+    assert len(out) == 1 and out[0]['type'] == 'poly'
+    from polybool import ring_area
+    assert abs(abs(ring_area([tuple(p) for p in out[0]['pts']])) - 175.0) < 1e-3
+
+
+def test_merge_never_fills_an_enclosed_gap():
+    """Four bars around a courtyard: the full union would need a hole,
+    which one closed outline cannot express. Whatever the tool merges,
+    the courtyard must stay clear of copper - filling it would short
+    across whatever the gap was there to separate."""
+    from polybool import point_in_ring
+    from geometry import shape_outline
+    bars = [_rect_shape(1, 0, 0, 10, 2), _rect_shape(2, 0, 8, 10, 2),
+            _rect_shape(3, 0, 0, 2, 10), _rect_shape(4, 8, 0, 2, 10)]
+    out, st = simplify_shapes(bars, {'traces': False, 'polys': False,
+                                     'tol': 0, 'dedupe': True, 'union': True})
+    after = [shape_outline(s) for s in out]
+    assert not any(point_in_ring(5.0, 5.0, r) for r in after), 'courtyard filled in'
+    before = [shape_outline(s) for s in bars]
+    g1, g2 = 0.7548776662466927, 0.5698402909980532
+    for k in range(3000):
+        px, py = 12 * ((0.5 + g1 * k) % 1.0) - 1, 12 * ((0.5 + g2 * k) % 1.0) - 1
+        assert (any(point_in_ring(px, py, r) for r in before)
+                == any(point_in_ring(px, py, r) for r in after))
+
+
+def test_merge_keeps_traces_out_by_default():
+    shapes = [_rect_shape(1, 0, 0, 10, 10),
+              {'id': 2, 'type': 'trace', 'layer': 'top', 'priority': 10,
+               'pts': [[5, 5], [20, 5]], 'width': 1.0, 'radius': 0}]
+    out, st = simplify_shapes(shapes, {'traces': False, 'polys': False,
+                                       'tol': 0, 'dedupe': True, 'union': True})
+    assert st['merged'] == 0
+    assert any(s['type'] == 'trace' for s in out)
+    out2, st2 = simplify_shapes(shapes, {'traces': False, 'polys': False, 'tol': 0,
+                                         'dedupe': True, 'union': True,
+                                         'unionTraces': True})
+    assert st2['merged'] == 2 and not any(s['type'] == 'trace' for s in out2)
+
+
+def test_merge_preserves_copper_exactly():
+    """Sampled membership before and after must agree everywhere."""
+    from polybool import point_in_ring
+    from geometry import shape_outline
+    shapes = [_rect_shape(1, 0, 0, 10, 6), _rect_shape(2, 8, 2, 10, 6),
+              _rect_shape(3, 4, 4, 3, 8), _poly_shape(4, [(1, 1), (5, 1), (3, 9)])]
+    out, st = simplify_shapes(shapes, {'traces': False, 'polys': False,
+                                       'tol': 0, 'dedupe': True, 'union': True})
+    assert st['merged'] >= 2
+    before = [shape_outline(s) for s in shapes]
+    after = [shape_outline(s) for s in out]
+    g1, g2 = 0.7548776662466927, 0.5698402909980532
+    for k in range(4000):
+        px = -2 + 24 * ((0.5 + g1 * k) % 1.0)
+        py = -2 + 18 * ((0.5 + g2 * k) % 1.0)
+        a = any(point_in_ring(px, py, r) for r in before)
+        b = any(point_in_ring(px, py, r) for r in after)
+        assert a == b, f'copper changed at ({px:.3f}, {py:.3f})'
+
+
+def test_merge_takes_the_finest_local_resolution():
+    a = _rect_shape(1, 0, 0, 10, 10)
+    b = _rect_shape(2, 5, 5, 10, 10)
+    a['mesh'] = {'res': 0.5}
+    b['mesh'] = {'res': 0.2}
+    b['priority'] = 20
+    out, _ = simplify_shapes([a, b], {'traces': False, 'polys': False, 'tol': 0,
+                                      'dedupe': True, 'union': True})
+    assert out[0]['mesh']['res'] == 0.2
+    assert out[0]['priority'] == 20

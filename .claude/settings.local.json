@@ -17,7 +17,10 @@
       "Bash(node --check static/js/app.js)",
       "Bash(curl -sI http://127.0.0.1:8036/js/meshtab.js)",
       "Bash(curl -sI http://127.0.0.1:8036/)",
-      "Bash(systemctl --user show openems-webgui -p WorkingDirectory,ExecStart,FragmentPath)"
+      "Bash(systemctl --user show openems-webgui -p WorkingDirectory,ExecStart,FragmentPath)",
+      "Bash(python3 -m pytest tests/test_unit_polybool.py -q)",
+      "Bash(python3 -m pytest tests/test_unit_simplify.py tests/test_unit_polybool.py -q)",
+      "Bash(systemctl --user show openems-webgui -p ActiveState,MainPID)"
     ]
   }
 }
