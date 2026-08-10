@@ -1227,6 +1227,7 @@ function showView(name) {
   app.currentView = name;
   document.querySelectorAll('.viewtab').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   document.querySelectorAll('#center .view').forEach(v => v.classList.toggle('active', v.id === name + 'View'));
+  setLeftPaneForView(name);
   if (name !== 'tests') {   // remember where the user was across restarts
     uiSettings.lastView = name;
     saveUiSettings();
@@ -3477,7 +3478,25 @@ function showLeftTab(name) {
     b.classList.toggle('active', b.dataset.ltab === name));
   document.querySelectorAll('.ltabpage').forEach(p =>
     p.classList.toggle('active', p.id === 'ltab-' + name));
+  if (name !== 'mesh') app._lastLeftTab = name;
   if (name === 'projects') refreshLoadedPane();
+}
+
+/* The Meshing view takes over the left panel: mesh tools replace the
+   drawing tools (nothing that edits geometry is reachable from it) and
+   the object list moves along, since picking an object there is how you
+   reach its per-object mesh overrides. */
+function setLeftPaneForView(name) {
+  const meshMode = name === 'mesh';
+  $('leftTabs').hidden = meshMode;
+  const objPanel = $('objPanel');
+  if (meshMode) {
+    $('meshObjSlot').before(objPanel);
+    showLeftTab('mesh');
+  } else {
+    $('designHint').before(objPanel);
+    showLeftTab(app._lastLeftTab || 'design');
+  }
 }
 /* ---------- projects loaded for review (left "Loaded" pane) ----------
    These are held for comparison only: their results can be shown and

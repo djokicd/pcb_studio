@@ -178,8 +178,14 @@ main { flex: 1; display: flex; min-height: 0; }
   color: var(--mr-col); text-transform: uppercase; font-size: 10px;
   letter-spacing: 0.05em; min-width: 42px;
 }
-#meshTools { grid-template-columns: repeat(3, 1fr); }
-#meshTools .tool { padding: 6px 2px; font-size: 10.5px; gap: 3px; }
+.tabs[hidden] { display: none; }
+/* the left panel is user-resizable: fit as many tool columns as it takes */
+#meshTools { grid-template-columns: repeat(auto-fit, minmax(52px, 1fr)); }
+#meshTools .tool {
+  flex-direction: column; padding: 7px 2px; font-size: 10.5px; gap: 4px;
+  text-align: center; line-height: 1.2;
+}
+#meshObjSlot { display: none; }
 .mbulk-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; }
 .mbulk-row .lr-btn { padding: 2px 8px; }
 #meshToolHint { min-height: 28px; }

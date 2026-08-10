@@ -179,11 +179,11 @@
           <input id="snapCorners" type="checkbox"> snap to corners</label>
       </div>
     </div>
-    <div class="panel grow">
+    <div class="panel grow" id="objPanel">
       <h3>Objects</h3>
       <ul id="objList" class="obj-list"></ul>
     </div>
-    <div class="panel hint">
+    <div class="panel hint" id="designHint">
       V/R/C/P/T/X/N tools &middot; Esc back to select &middot; drag on empty = box select &middot;
       M meshing tab &middot; F fit &middot; Del deletes &middot; arrows nudge &middot;
       wheel zooms &middot; middle/right-drag pans &middot; polygon/line: click points, Enter closes
@@ -203,6 +203,54 @@
         results, &#9636; to browse its runs, &#10005; to drop it from the
         list. Browse and open stored projects from
         <b>File &rarr; Open</b>.
+      </div>
+    </div>
+    <div id="ltab-mesh" class="ltabpage">
+      <div class="panel">
+        <h3>Mesh tools</h3>
+        <div class="tools" id="meshTools">
+          <button class="tool" data-mtool="select" title="Select objects — shift-click adds, drag a box to select many (V)">
+            <svg viewBox="0 0 16 16"><path d="M3 2 L3 13 L6.2 10.2 L8.2 14 L10 13 L8 9.4 L12 9.2 Z"/></svg>
+            <span>Select</span>
+          </button>
+          <button class="tool" data-mtool="point" title="Pin one x and one y mesh line at a point — snaps to geometry corners (P)">
+            <svg viewBox="0 0 16 16"><path d="M8 1 v14 M1 8 h14" stroke-dasharray="3 2"/><circle cx="8" cy="8" r="2.2"/></svg>
+            <span>Point</span>
+          </button>
+          <button class="tool" data-mtool="xline" title="Pin a single x mesh line — snaps to copper edges (X)">
+            <svg viewBox="0 0 16 16"><path d="M8 1 v14 M2 14 h12"/></svg>
+            <span>x line</span>
+          </button>
+          <button class="tool" data-mtool="yline" title="Pin a single y mesh line — snaps to copper edges (Y)">
+            <svg viewBox="0 0 16 16"><path d="M1 8 h14 M2 2 v12"/></svg>
+            <span>y line</span>
+          </button>
+          <button class="tool" data-mtool="xrange" title="Drag across x — on the view or in the bottom strip — to add a density range">
+            <svg viewBox="0 0 16 16"><path d="M5 1 v14 M11 1 v14"/><path d="M5 8 h6" stroke-dasharray="2 2"/></svg>
+            <span>x range</span>
+          </button>
+          <button class="tool" data-mtool="yrange" title="Drag across y — on the view or in the left strip — to add a density range">
+            <svg viewBox="0 0 16 16"><path d="M1 5 h14 M1 11 h14"/><path d="M8 5 v6" stroke-dasharray="2 2"/></svg>
+            <span>y range</span>
+          </button>
+        </div>
+        <p class="muted mini-note" id="meshToolHint"></p>
+        <div class="mbulk-row">
+          <span class="muted">Select:</span>
+          <button id="meshSelVias" class="lr-btn" title="Select every via for bulk editing">all vias</button>
+          <button id="meshSelShapes" class="lr-btn" title="Select every shape for bulk editing">all shapes</button>
+          <button id="meshSelNone" class="lr-btn" title="Clear the selection">none</button>
+        </div>
+        <div class="mbulk-row" style="margin-top:6px">
+          <button id="meshFit" class="lr-btn" title="Fit the whole board in the view (F)">fit view</button>
+        </div>
+      </div>
+      <div id="meshObjSlot"></div>
+      <div class="panel hint">
+        Clicking the view selects <b>objects</b> &mdash; their mesh overrides
+        appear in the right-hand panel. <b>Ranges and pinned lines</b> live in
+        the bottom (x) and left (y) strips: click to select, drag the band to
+        move it, drag its edge to resize. Esc returns to Select.
       </div>
     </div>
   </aside>
@@ -226,42 +274,6 @@
         <div id="meshStatusbar"><span id="meshCursor">&nbsp;</span><span id="meshInfo"></span></div>
       </div>
       <aside id="meshSide">
-        <div class="panel">
-          <h3>Mesh tools</h3>
-          <div class="tools" id="meshTools">
-            <button class="tool" data-mtool="select" title="Select objects, ranges and lines — shift-click adds, drag a box to select many">
-              <svg viewBox="0 0 16 16"><path d="M3 2 L3 13 L6.2 10.2 L8.2 14 L10 13 L8 9.4 L12 9.2 Z"/></svg>
-              <span>Select</span>
-            </button>
-            <button class="tool" data-mtool="point" title="Pin one x and one y mesh line at a point — snaps to geometry corners">
-              <svg viewBox="0 0 16 16"><path d="M8 1 v14 M1 8 h14" stroke-dasharray="3 2"/><circle cx="8" cy="8" r="2.2"/></svg>
-              <span>Point</span>
-            </button>
-            <button class="tool" data-mtool="xline" title="Pin a single x mesh line — snaps to copper edges">
-              <svg viewBox="0 0 16 16"><path d="M8 1 v14 M2 14 h12"/></svg>
-              <span>x line</span>
-            </button>
-            <button class="tool" data-mtool="yline" title="Pin a single y mesh line — snaps to copper edges">
-              <svg viewBox="0 0 16 16"><path d="M1 8 h14 M2 2 v12"/></svg>
-              <span>y line</span>
-            </button>
-            <button class="tool" data-mtool="xrange" title="Drag across x to add a density range">
-              <svg viewBox="0 0 16 16"><path d="M5 1 v14 M11 1 v14"/><path d="M5 8 h6" stroke-dasharray="2 2"/></svg>
-              <span>x range</span>
-            </button>
-            <button class="tool" data-mtool="yrange" title="Drag across y to add a density range">
-              <svg viewBox="0 0 16 16"><path d="M1 5 h14 M1 11 h14"/><path d="M8 5 v6" stroke-dasharray="2 2"/></svg>
-              <span>y range</span>
-            </button>
-          </div>
-          <p class="muted mini-note" id="meshToolHint"></p>
-          <div class="mbulk-row">
-            <span class="muted">Select:</span>
-            <button id="meshSelVias" class="lr-btn" title="Select every via for bulk editing">all vias</button>
-            <button id="meshSelShapes" class="lr-btn" title="Select every shape for bulk editing">all shapes</button>
-            <button id="meshSelNone" class="lr-btn" title="Clear the selection">none</button>
-          </div>
-        </div>
         <div class="panel">
           <h3>Mesh</h3>
           <div id="meshErr" hidden>
@@ -312,12 +324,11 @@
           <div id="meshObjForm"></div>
         </div>
         <div class="panel hint">
-          Wheel zooms &middot; middle/right-drag pans &middot; F fits &middot;
-          Esc returns to Select. Blue lines are the exact simulated mesh.
-          Clicking the view selects <b>objects</b>; <b>ranges and pinned
-          lines</b> are selected, moved and resized in the bottom (x) and
-          left (y) strips, which summarise the whole domain. The strip on
-          the right is the z mesh through the stackup.
+          Wheel zooms &middot; middle/right-drag pans &middot; F fits.
+          Blue lines are the exact simulated mesh; the strips along the
+          bottom and left summarise the whole domain with every configured
+          range and pinned line, and the strip on the right is the z mesh
+          through the stackup.
         </div>
       </aside>
     </div>

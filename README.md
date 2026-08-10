@@ -107,7 +107,11 @@ FDTD simulations of planar PCB structures via GNU Octave.
   no drawing tools, nothing that can change the geometry. A zoomable
   top view shows the exact simulated x/y mesh lines over the dimmed
   board; the status bar reads out the cell size under the cursor.
-  - **Tools**: *Point* pins one x and one y line at a spot, *x line* /
+  - **Tools**: entering the tab swaps the left panel's drawing tools for
+    the mesh tools, so nothing that edits geometry is reachable while
+    meshing (the object list comes along, since picking an object there
+    is how you reach its overrides). *Point* pins one x and one y line at
+    a spot, *x line* /
     *y line* pin a single line, and *x range* / *y range* drag out a
     density interval. Placement **snaps to the existing geometry** —
     copper corners for points, copper edges for single lines — with a

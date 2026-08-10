@@ -1283,6 +1283,7 @@ function initMeshTools() {
     else app.selectMulti(items);
     app.meshTab.render();
   };
+  $('meshFit').addEventListener('click', () => app.meshTab.zoomFit());
   $('meshRetry').addEventListener('click', () => {
     app._meshRetried = false;
     app.refreshMesh();
