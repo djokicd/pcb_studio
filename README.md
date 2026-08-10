@@ -102,11 +102,42 @@ FDTD simulations of planar PCB structures via GNU Octave.
   the resulting S-parameter columns into one result set, so e.g. S11,
   S21, S12 and S22 come from a single Run click without a full
   S-matrix sweep. The exported .m script excites the primary port only.
-- **Mesh preview**: toggleable overlay of the exact simulation mesh with
-  live cell count, plus a stackup cross-section strip showing the z mesh
-  lines, dielectric slabs and conductor sheets. The mesh is computed in
-  Python and emitted into the script as explicit line vectors, so
-  preview == simulation. The background mm grid can be toggled off (G).
+- **Meshing tab** (M): everything about the FDTD mesh in one dedicated
+  view next to Editor and Results, with its own mesh-only tool set —
+  no drawing tools, nothing that can change the geometry. A zoomable
+  top view shows the exact simulated x/y mesh lines over the dimmed
+  board; the status bar reads out the cell size under the cursor.
+  - **Tools**: *Point* pins one x and one y line at a spot, *x line* /
+    *y line* pin a single line, and *x range* / *y range* drag out a
+    density interval. Placement **snaps to the existing geometry** —
+    copper corners for points, copper edges for single lines — with a
+    live preview showing when a snap is active. Pinned lines are exact:
+    the coincidence merge pulls a nearby geometry line onto the pin
+    rather than averaging the pair away.
+  - **Density ranges**: intervals of the x or y axis where no cell may
+    exceed a chosen resolution. A freshly dragged range starts at half
+    the mesh actually present in that interval, so it refines
+    immediately; bands are then moved and resized directly on the view.
+  - **Outside the ranges**: a separate resolution cap and grading ratio
+    for the board area no range covers — pin the density where it
+    matters and let the rest relax smoothly.
+  - **Axis strips**: bottom (x) and left (y) strips summarise the whole
+    meshed domain the way the right-hand strip summarises z — mesh-line
+    density, every configured range and pinned line, and a bracket
+    showing the part of the domain currently on screen. The strips
+    **own** the ranges and pinned lines: they are selected there, moved
+    by dragging the band, and resized by dragging its edge. The board
+    view is only ever about objects, so a click on copper can never
+    grab a band lying over it.
+  - **Selection and bulk edits**: click objects, shift-click to add, or
+    drag a marquee; "all vias" / "all shapes" select in one go. With
+    several objects selected, the panel applies **local resolution,
+    edge refinement and per-via mesh lines to all of them at once** —
+    dropping a 57-via fence from full detail to centre-line-only is one
+    dropdown change (721k → 596k cells on the bundled GCPW board).
+  The mesh is computed in Python and emitted into the script as
+  explicit line vectors, so preview == simulation; ranges, pinned lines
+  and the outside settings all apply to the real run the same way.
 - **Run from the GUI**: Octave/openEMS subprocess with a graphical run
   monitor — progress bar with ETA, stat tiles (timestep, speed, energy,
   cells), a live energy-decay chart with the end-criteria target line
@@ -294,7 +325,7 @@ FDTD simulations of planar PCB structures via GNU Octave.
   reflections). The z axis is graded the same way and **asymmetric**:
   fine first cells at conductor faces that carry geometry (the strip
   side), coarser toward plane-only faces (the bulk ground) and through
-  the air. The mesh preview status line reports the smallest cell
+  the air. The Meshing tab's statistics report the smallest cell
   (sets the timestep) and the **worst adjacent-cell step** — on a
   typical imported CPW board the rework took that step from ≈27× to
   ≈1.8×, and the microstrip benchmark's return-loss floor improved
@@ -311,7 +342,8 @@ FDTD simulations of planar PCB structures via GNU Octave.
   scale (~3 cells across the pad), so 100+ stitching vias don't crush
   the cell budget; a per-via local resolution remains available for
   critical signal vias.
-- **Per-object meshing**: every shape/port/via/component takes an
+- **Per-object meshing** (Meshing tab → click an object): every
+  shape/port/via/component takes an
   optional local mesh resolution; shapes support the metal-edge
   1/3–2/3 refinement rule (offset capped by the feature size) as a
   tri-state: **auto** (the default) enables it for transmission-line
@@ -354,9 +386,9 @@ FDTD simulations of planar PCB structures via GNU Octave.
   full detail can dominate the cell budget (on the bundled CPW test
   board, drill-only import at 1 line/via meshes with ~21 % fewer
   cells *and* a larger timestep). The choice is remembered, applied to
-  the imported vias, and editable per via afterwards (Properties →
-  Meshing → Mesh lines), so critical signal vias can be set back to
-  full detail individually.
+  the imported vias, and editable per via afterwards (Meshing tab →
+  click the via → Mesh lines), so critical signal vias can be set back
+  to full detail individually.
 - **Geometry simplification** (Tools → Simplify geometry…): rebuilds
   chains of previously imported stroke polygons into centerline
   traces (each stroke is validated by regenerating its outline before

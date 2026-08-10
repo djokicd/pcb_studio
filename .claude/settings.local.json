@@ -2,7 +2,22 @@
   "permissions": {
     "allow": [
       "Bash(octave --version)",
-      "Bash(python3 -)"
+      "Bash(python3 -)",
+      "Bash(grep -n \"script src\\\\|const \\\\$\" /home/djokicd/OpenEMS_WebGUI/static/index.html /home/djokicd/OpenEMS_WebGUI/static/js/app.js)",
+      "Bash(grep -n \"#statusbar\\\\|#editorView\\\\|#editor \\\\|#editor,\\\\|#editor{\\\\|canvas\\\\|\\\\.panel\\\\b\\\\|\\\\.phead\\\\|\\\\.lr-btn\\\\|\\\\.hint\\\\b\\\\|\\\\.form\\\\b\\\\|\\\\.runinfo\" /home/djokicd/OpenEMS_WebGUI/static/style.css)",
+      "Bash(python3 -m pytest tests/test_unit_geometry.py -q)",
+      "Bash(python3 -m pytest tests/ -q -x --ignore=tests/test_simulations.py)",
+      "Bash(systemctl --user restart openems-webgui)",
+      "Bash(systemctl --user show openems-webgui -p MainPID,ActiveState)",
+      "Bash(python3 -m pytest tests/ -q --ignore=tests/test_simulations.py)",
+      "Bash(echo \"--- exit $?\")",
+      "Bash(systemctl --user show openems-webgui -p MainPID,ActiveState,NRestarts)",
+      "Bash(journalctl --user -u openems-webgui -n 40 --no-pager)",
+      "Bash(node --check static/js/meshtab.js)",
+      "Bash(node --check static/js/app.js)",
+      "Bash(curl -sI http://127.0.0.1:8036/js/meshtab.js)",
+      "Bash(curl -sI http://127.0.0.1:8036/)",
+      "Bash(systemctl --user show openems-webgui -p WorkingDirectory,ExecStart,FragmentPath)"
     ]
   }
 }

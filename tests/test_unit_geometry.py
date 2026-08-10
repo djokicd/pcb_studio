@@ -317,3 +317,119 @@ def test_component_terminal_lines_survive_mesh_merge():
     for want in (y0, y1):
         assert any(abs(v - want) < 1e-6 for v in mesh['y']), \
             f'element line {want} missing from y mesh'
+
+
+def test_user_density_region_x():
+    """A Meshing-tab density region forces its resolution inside the
+    interval, adds its boundaries as mesh lines, and leaves the rest of
+    the board coarse."""
+    plain = build_mesh(_model([rect('t', 10, 8, 10, 3)]))
+    m = _model([rect('t', 10, 8, 10, 3)])
+    m['mesh'] = {'regions': [{'id': 1, 'axis': 'x', 'from': 24.0,
+                              'to': 32.0, 'res': 0.3}]}
+    mesh = build_mesh(m)
+    for want in (24.0, 32.0):
+        assert any(abs(v - want) < 1e-6 for v in mesh['x']), \
+            f'region boundary {want} missing from x mesh'
+    # the graded fill may leave a gap marginally over the promise
+    # (the cap_hard * 1.3 split rule) - never more
+    for a, b in zip(mesh['x'], mesh['x'][1:]):
+        if 24.0 < (a + b) / 2 < 32.0:
+            assert b - a <= 0.3 * 1.3 + 1e-6, f'cell {b - a:.3f} inside region'
+    assert len(mesh['x']) > len(plain['x'])
+    # y axis untouched
+    assert mesh['y'] == plain['y']
+
+
+def test_user_density_region_y_and_disabled():
+    base = _model([rect('t', 10, 8, 10, 3)])
+    base['mesh'] = {'regions': [{'id': 1, 'axis': 'y', 'from': 4.0,
+                                 'to': 9.0, 'res': 0.25}]}
+    mesh = build_mesh(base)
+    for a, b in zip(mesh['y'], mesh['y'][1:]):
+        if 4.0 < (a + b) / 2 < 9.0:
+            assert b - a <= 0.25 * 1.3 + 1e-6
+    # switched off -> identical to no region at all
+    base['mesh']['regions'][0]['off'] = True
+    off = build_mesh(base)
+    plain = build_mesh(_model([rect('t', 10, 8, 10, 3)]))
+    assert off['y'] == plain['y'] and off['x'] == plain['x']
+
+
+def test_user_density_region_invalid_entries_ignored():
+    plain = build_mesh(_model([rect('t', 10, 8, 10, 3)]))
+    m = _model([rect('t', 10, 8, 10, 3)])
+    m['mesh'] = {'regions': [
+        {'id': 1, 'axis': 'x', 'from': 5, 'to': 5, 'res': 0.3},      # empty
+        {'id': 2, 'axis': 'x', 'from': 1, 'to': 4, 'res': 0},        # res<=0
+        {'id': 3, 'axis': 'x', 'from': 'a', 'to': 4, 'res': 0.3},    # NaNs
+        {'id': 4, 'axis': 'x', 'res': 0.3},                          # missing
+        'not-a-dict',
+    ]}
+    mesh = build_mesh(m)
+    assert mesh['x'] == plain['x'] and mesh['y'] == plain['y']
+
+
+def test_user_pinned_lines_and_points():
+    """Lines and points placed in the Meshing tab land in the mesh
+    exactly - they are pinned, so the coincidence merge pulls a nearby
+    geometry line onto them instead of averaging the pair away."""
+    m = _model([rect('t', 10, 8, 10, 3)], meshMerge=0.1)
+    m['mesh'] = {
+        'lines': [{'id': 1, 'axis': 'x', 'at': 27.5},
+                  {'id': 2, 'axis': 'y', 'at': 3.25},
+                  {'id': 3, 'axis': 'x', 'at': 10.04}],   # 40 um off a copper edge
+        'points': [{'id': 4, 'x': 33.125, 'y': 16.5}],
+    }
+    mesh = build_mesh(m)
+    for want in (27.5, 10.04, 33.125):
+        assert any(abs(v - want) < 1e-6 for v in mesh['x']), f'x line {want} missing'
+    for want in (3.25, 16.5):
+        assert any(abs(v - want) < 1e-6 for v in mesh['y']), f'y line {want} missing'
+    # the merge moved the copper edge onto the pin rather than keeping both
+    assert not any(abs(v - 10.0) < 1e-9 for v in mesh['x'])
+    assert min(b - a for a, b in zip(mesh['x'], mesh['x'][1:])) > 0.05
+
+
+def test_user_lines_off_board_and_disabled_ignored():
+    plain = build_mesh(_model([rect('t', 10, 8, 10, 3)]))
+    m = _model([rect('t', 10, 8, 10, 3)])
+    m['mesh'] = {
+        'lines': [{'id': 1, 'axis': 'x', 'at': 55.0},       # past the 40 mm board
+                  {'id': 2, 'axis': 'x', 'at': -3.0},
+                  {'id': 3, 'axis': 'y', 'at': 12.0, 'off': True},
+                  {'id': 4, 'axis': 'x', 'at': None}],
+        'points': [{'id': 5, 'x': 12.0, 'y': 6.0, 'off': True}],
+    }
+    mesh = build_mesh(m)
+    assert mesh['x'] == plain['x'] and mesh['y'] == plain['y']
+
+
+def test_outside_regions_smoothing():
+    """The outside settings cap and grade the board area not covered by a
+    density range, leaving the range itself at its own resolution."""
+    base = _model([rect('t', 10, 8, 10, 3)])
+    base['mesh'] = {'regions': [{'id': 1, 'axis': 'x', 'from': 12.0,
+                                 'to': 18.0, 'res': 0.3}],
+                    'outside': {'res': 0.9, 'ratio': 1.2}}
+    mesh = build_mesh(base)
+    for a, b in zip(mesh['x'], mesh['x'][1:]):
+        mid = (a + b) / 2
+        if not 0 <= mid <= 40:
+            continue                      # air margin keeps lambda/N
+        cap = 0.3 if 12.0 < mid < 18.0 else 0.9
+        assert b - a <= cap * 1.3 + 1e-6, f'cell {b - a:.3f} at {mid:.2f}'
+    # a coarse outside setting must not be finer than doing nothing
+    plain = build_mesh(_model([rect('t', 10, 8, 10, 3)]))
+    assert len(mesh['x']) > len(plain['x'])
+
+
+def test_outside_settings_validated():
+    plain = build_mesh(_model([rect('t', 10, 8, 10, 3)]))
+    m = _model([rect('t', 10, 8, 10, 3)])
+    m['mesh'] = {'outside': {'res': 'x', 'ratio': None}}
+    assert build_mesh(m)['x'] == plain['x']
+    # the ratio is clamped into the mesher's supported band
+    from meshlines import user_outside
+    assert user_outside({'mesh': {'outside': {'ratio': 9}}})['ratio'] == 2.0
+    assert user_outside({'mesh': {'outside': {'ratio': 1.0}}})['ratio'] == 1.2

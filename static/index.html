@@ -48,7 +48,7 @@
       <button class="menu-btn">View</button>
       <div class="menu-drop">
         <button data-action="grid" data-check="grid">Grid <kbd>G</kbd></button>
-        <button data-action="mesh" data-check="mesh">Mesh preview <kbd>M</kbd></button>
+        <button data-action="mesh">Meshing tab <kbd>M</kbd></button>
         <button data-action="fit">Fit view <kbd>F</kbd></button>
         <div class="menu-sep"></div>
         <button data-action="theme" data-check="light">Light theme</button>
@@ -154,10 +154,6 @@
           <svg viewBox="0 0 16 16"><path d="M3 3 h.01 M8 3 h.01 M13 3 h.01 M3 8 h.01 M8 8 h.01 M13 8 h.01 M3 13 h.01 M8 13 h.01 M13 13 h.01" stroke-linecap="round" stroke-width="2"/></svg>
           <span>Grid</span>
         </button>
-        <button id="btnMesh" class="tool wide" title="Toggle mesh preview (M)">
-          <svg viewBox="0 0 16 16"><path d="M2 5.5 h12 M2 10.5 h12 M5.5 2 v12 M10.5 2 v12"/></svg>
-          <span>Mesh</span>
-        </button>
         <button id="btnFit" class="tool wide" title="Fit view (F)">
           <svg viewBox="0 0 16 16"><path d="M2 5 V2 h3 M11 2 h3 v3 M14 11 v3 h-3 M5 14 H2 v-3"/></svg>
           <span>Fit</span>
@@ -189,7 +185,7 @@
     </div>
     <div class="panel hint">
       V/R/C/P/T/X/N tools &middot; Esc back to select &middot; drag on empty = box select &middot;
-      M mesh &middot; F fit &middot; Del deletes &middot; arrows nudge &middot;
+      M meshing tab &middot; F fit &middot; Del deletes &middot; arrows nudge &middot;
       wheel zooms &middot; middle/right-drag pans &middot; polygon/line: click points, Enter closes
     </div>
     </div>
@@ -215,13 +211,115 @@
   <section id="center">
     <nav class="viewtabs">
       <button class="viewtab active" data-view="editor">Editor</button>
+      <button class="viewtab" data-view="mesh" title="Preview the FDTD mesh and configure everything about meshing (M)">Meshing</button>
       <button class="viewtab" data-view="results">Results</button>
       <button class="viewtab" data-view="tests" id="testsTab" hidden>Tests</button>
     </nav>
     <div id="editorView" class="view active">
       <div id="warnBar" hidden></div>
       <canvas id="editor"></canvas>
-      <div id="statusbar"><span id="cursorPos">&nbsp;</span><span id="meshInfo"></span><span id="zoomInfo"></span></div>
+      <div id="statusbar"><span id="cursorPos">&nbsp;</span><span id="zoomInfo"></span></div>
+    </div>
+    <div id="meshView" class="view">
+      <div id="meshMain">
+        <canvas id="meshCanvas"></canvas>
+        <div id="meshStatusbar"><span id="meshCursor">&nbsp;</span><span id="meshInfo"></span></div>
+      </div>
+      <aside id="meshSide">
+        <div class="panel">
+          <h3>Mesh tools</h3>
+          <div class="tools" id="meshTools">
+            <button class="tool" data-mtool="select" title="Select objects, ranges and lines — shift-click adds, drag a box to select many">
+              <svg viewBox="0 0 16 16"><path d="M3 2 L3 13 L6.2 10.2 L8.2 14 L10 13 L8 9.4 L12 9.2 Z"/></svg>
+              <span>Select</span>
+            </button>
+            <button class="tool" data-mtool="point" title="Pin one x and one y mesh line at a point — snaps to geometry corners">
+              <svg viewBox="0 0 16 16"><path d="M8 1 v14 M1 8 h14" stroke-dasharray="3 2"/><circle cx="8" cy="8" r="2.2"/></svg>
+              <span>Point</span>
+            </button>
+            <button class="tool" data-mtool="xline" title="Pin a single x mesh line — snaps to copper edges">
+              <svg viewBox="0 0 16 16"><path d="M8 1 v14 M2 14 h12"/></svg>
+              <span>x line</span>
+            </button>
+            <button class="tool" data-mtool="yline" title="Pin a single y mesh line — snaps to copper edges">
+              <svg viewBox="0 0 16 16"><path d="M1 8 h14 M2 2 v12"/></svg>
+              <span>y line</span>
+            </button>
+            <button class="tool" data-mtool="xrange" title="Drag across x to add a density range">
+              <svg viewBox="0 0 16 16"><path d="M5 1 v14 M11 1 v14"/><path d="M5 8 h6" stroke-dasharray="2 2"/></svg>
+              <span>x range</span>
+            </button>
+            <button class="tool" data-mtool="yrange" title="Drag across y to add a density range">
+              <svg viewBox="0 0 16 16"><path d="M1 5 h14 M1 11 h14"/><path d="M8 5 v6" stroke-dasharray="2 2"/></svg>
+              <span>y range</span>
+            </button>
+          </div>
+          <p class="muted mini-note" id="meshToolHint"></p>
+          <div class="mbulk-row">
+            <span class="muted">Select:</span>
+            <button id="meshSelVias" class="lr-btn" title="Select every via for bulk editing">all vias</button>
+            <button id="meshSelShapes" class="lr-btn" title="Select every shape for bulk editing">all shapes</button>
+            <button id="meshSelNone" class="lr-btn" title="Clear the selection">none</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>Mesh</h3>
+          <div id="meshErr" hidden>
+            <span id="meshErrMsg"></span>
+            <button id="meshRetry" class="lr-btn">retry</button>
+          </div>
+          <table id="meshStats" class="runinfo"><tbody>
+            <tr><td>x lines</td><td id="mstX">–</td></tr>
+            <tr><td>y lines</td><td id="mstY">–</td></tr>
+            <tr><td>z lines</td><td id="mstZ">–</td></tr>
+            <tr><td>Total cells</td><td id="mstCells">–</td></tr>
+            <tr><td title="Smallest cell in the mesh — sets the FDTD timestep">Min cell</td><td id="mstMin">–</td></tr>
+            <tr><td title="Largest size jump between adjacent cells; smooth meshes stay near the grading ratio">Worst step</td><td id="mstWorst">–</td></tr>
+            <tr><td title="Fill resolution on the board (edge resolution) and in the surrounding air (&lambda;/N)">Resolution</td><td id="mstRes">–</td></tr>
+          </tbody></table>
+        </div>
+        <div class="panel">
+          <h3>Global settings</h3>
+          <div class="form">
+            <label title="Coarsest cell allowed anywhere: the shortest wavelength (f stop, densest dielectric) divided by N">
+              Mesh: &lambda;/N <input id="s_meshDiv" type="number" step="1" min="4"></label>
+            <label title="Fill resolution on the board — the cell size the graded fill relaxes to between geometry details. Empty = &lambda;/N">
+              Edge resolution (mm) <input id="s_edgeRes" type="number" step="0.05" min="0" placeholder="auto"></label>
+            <label title="Mesh lines closer than this are merged (prevents tiny cells that crush the timestep)">
+              Merge lines &lt; (mm) <input id="s_meshMerge" type="number" step="0.01" min="0" placeholder="0.1"></label>
+            <label title="Maximum growth factor between adjacent cells: fine mesh at geometry details relaxes geometrically at this rate towards the bulk (1.2 = gentle/more cells, 2.0 = aggressive/fewer cells)">
+              Mesh grading ratio <input id="s_meshRatio" type="number" step="0.1" min="1.2" max="2" placeholder="1.5"></label>
+            <label title="Air kept around the board on every side — meshed coarsely at &lambda;/N">
+              Air margin (mm) <input id="s_airMargin" type="number" step="1" min="0"></label>
+          </div>
+          <h3 style="margin-top:14px">Outside the ranges</h3>
+          <p class="muted mini-note">Smooth meshing for the board area not
+            covered by any density range — pin the density where it matters
+            and let the rest relax.</p>
+          <div class="form">
+            <label title="Coarsest cell allowed outside every density range (empty = the global edge resolution)">
+              Resolution (mm) <input id="mo_res" type="number" step="0.05" min="0" placeholder="edge res"></label>
+            <label title="Grading ratio used outside every density range — lower is smoother and denser, higher relaxes faster (empty = the global ratio)">
+              Grading ratio <input id="mo_ratio" type="number" step="0.1" min="1.2" max="2" placeholder="global"></label>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>Ranges &amp; pinned lines</h3>
+          <div id="meshItemList"></div>
+        </div>
+        <div class="panel" id="meshObjPanel" hidden>
+          <h3>Selection</h3>
+          <div id="meshObjForm"></div>
+        </div>
+        <div class="panel hint">
+          Wheel zooms &middot; middle/right-drag pans &middot; F fits &middot;
+          Esc returns to Select. Blue lines are the exact simulated mesh.
+          Clicking the view selects <b>objects</b>; <b>ranges and pinned
+          lines</b> are selected, moved and resized in the bottom (x) and
+          left (y) strips, which summarise the whole domain. The strip on
+          the right is the z mesh through the stackup.
+        </div>
+      </aside>
     </div>
     <div id="resultsView" class="view">
       <div id="noResults" class="muted center-note">No results yet — run a simulation from the Run tab.</div>
@@ -474,14 +572,9 @@
         </label>
         <label>End criteria (dB) <input id="s_endCriteria" type="number" step="1" max="-10"></label>
         <label>Max. timesteps <input id="s_maxTimesteps" type="number" step="1000" min="100"></label>
-        <label>Mesh: &lambda;/N <input id="s_meshDiv" type="number" step="1" min="4"></label>
-        <label>Edge resolution (mm) <input id="s_edgeRes" type="number" step="0.05" min="0" placeholder="auto"></label>
-        <label title="Mesh lines closer than this are merged (prevents tiny cells that crush the timestep)">
-          Merge lines &lt; (mm) <input id="s_meshMerge" type="number" step="0.01" min="0" placeholder="0.1"></label>
-        <label title="Maximum growth factor between adjacent cells: fine mesh at geometry details relaxes geometrically at this rate towards the bulk (1.2 = gentle/more cells, 2.0 = aggressive/fewer cells)">
-          Mesh grading ratio <input id="s_meshRatio" type="number" step="0.1" min="1.2" max="2" placeholder="1.5"></label>
-        <label>Air margin (mm) <input id="s_airMargin" type="number" step="1" min="0"></label>
       </div>
+      <p class="muted mini-note">Mesh density, grading and refinement
+        regions are configured in the <b>Meshing</b> tab.</p>
       <h3 style="margin-top:16px">S-parameter devices</h3>
       <p class="muted" style="margin:4px 0 8px">
         Black-box devices (e.g. a transistor .s3p) connected at lumped-port
@@ -608,7 +701,7 @@
       Importing PTH vias from <b id="drillFile"></b>.
     </p>
     <div class="form" style="margin-top:12px">
-      <label title="How many mesh lines each imported via may pin per axis. Fewer lines mean fewer cells; for stitching-via fences the barrel position matters far more than its roundness. Editable per via afterwards (Properties &rarr; Meshing)">
+      <label title="How many mesh lines each imported via may pin per axis. Fewer lines mean fewer cells; for stitching-via fences the barrel position matters far more than its roundness. Editable per via afterwards (Meshing tab &rarr; click the via)">
         Mesh lines per via <select id="drillLines"></select></label>
     </div>
     <p class="muted" style="margin:10px 0 0">
@@ -713,7 +806,7 @@
       <tr><td><kbd>T</kbd></td><td>transmission line — click centerline points, Enter closes; hover a line to read its length</td></tr>
       <tr><td><kbd>X</kbd></td><td>measure tool — drag between two points</td></tr>
       <tr><td><kbd>N</kbd></td><td>note — click to place; click its triangle (or double-click) to collapse/expand</td></tr>
-      <tr><td><kbd>G</kbd> / <kbd>M</kbd> / <kbd>F</kbd></td><td>toggle grid / mesh preview / fit view</td></tr>
+      <tr><td><kbd>G</kbd> / <kbd>M</kbd> / <kbd>F</kbd></td><td>toggle grid / Meshing tab / fit view</td></tr>
       <tr><td><kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd></td><td>undo / redo (Ctrl+Shift+Z also redoes)</td></tr>
       <tr><td><kbd>Ctrl+C/X/V</kbd></td><td>copy / cut / paste the selection</td></tr>
       <tr><td><kbd>Ctrl+D</kbd></td><td>duplicate</td></tr>
@@ -740,6 +833,7 @@
 <script src="js/charts.js"></script>
 <script src="js/jview.js"></script>
 <script src="js/editor.js"></script>
+<script src="js/meshtab.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

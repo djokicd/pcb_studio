@@ -746,7 +746,6 @@ class Editor {
     for (const c of p.components) this.drawComp(c);
     for (const pt of p.ports) this.drawPort(pt);
 
-    this.drawMesh();
     this.drawDragPreview();
     this.drawPendingPoly();
     this.drawNotes();
@@ -755,7 +754,6 @@ class Editor {
     this.drawMeasure();
     this.drawTraceHover();
     this.drawAxes();
-    this.drawZStrip(w, h);
   }
 
   /* text annotations: a pin at the anchor point plus a fixed-size box
@@ -916,48 +914,6 @@ class Editor {
     ctx.fillText(txt, mx, my);
   }
 
-  /* stackup cross-section with the z mesh lines, shown while mesh preview is on */
-  drawZStrip(w, h) {
-    const m = this.app.meshData;
-    if (!this.app.meshVisible || !m || !m.z || m.z.length < 2) return;
-    const ctx = this.ctx;
-    const sw = 72, sx = w - sw - 12, sy = 34, sh = h - sy - 44;
-    const z0 = m.z[0], z1 = m.z[m.z.length - 1];
-    const zy = z => sy + (z1 - z) / (z1 - z0) * sh;   // z up
-
-    ctx.fillStyle = ED.overlay;
-    ctx.strokeStyle = ED.overlayEdge;
-    ctx.beginPath();
-    ctx.roundRect(sx - 8, sy - 22, sw + 16, sh + 56, 6);
-    ctx.fill(); ctx.stroke();
-
-    // dielectric slabs + conductor sheets from the stackup
-    const zinfo = this.app.stackupZ();
-    for (const d of zinfo.diel) {
-      ctx.fillStyle = ED.substrate;
-      ctx.fillRect(sx, zy(d.z1), sw, Math.max(1, zy(d.z0) - zy(d.z1)));
-    }
-    // z mesh lines
-    ctx.strokeStyle = ED.mesh;
-    ctx.lineWidth = 1;
-    for (const z of m.z) {
-      ctx.beginPath(); ctx.moveTo(sx, zy(z)); ctx.lineTo(sx + sw, zy(z)); ctx.stroke();
-    }
-    for (const c of zinfo.cond) {
-      ctx.strokeStyle = this.app.layerColor(c.id);
-      ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(sx, zy(c.z)); ctx.lineTo(sx + sw, zy(c.z)); ctx.stroke();
-    }
-    ctx.fillStyle = ED.text;
-    ctx.font = '10px system-ui';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'bottom';
-    ctx.fillText(`z mesh (${m.z.length})`, sx + sw / 2, sy - 10);
-    ctx.fillText(`z ${z1.toFixed(1)} mm`, sx + sw / 2, sy - 1);
-    ctx.textBaseline = 'top';
-    ctx.fillText(`z ${z0.toFixed(1)} mm`, sx + sw / 2, sy + sh + 6);
-  }
-
   drawGrid(w, h) {
     const ctx = this.ctx;
     // the visual grid IS the snap grid: base spacing = snap step, coarsened
@@ -980,24 +936,6 @@ class Editor {
       const [, sy] = this.toScreen(0, y);
       ctx.strokeStyle = Math.abs(y % (step * 5)) < 1e-9 ? ED.gridMajor : ED.grid;
       ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(w, sy); ctx.stroke();
-    }
-  }
-
-  drawMesh() {
-    const m = this.app.meshData;
-    if (!m || !this.app.meshVisible) return;
-    const ctx = this.ctx;
-    const [x0s, y1s] = this.toScreen(m.x[0], m.y[0]);
-    const [x1s, y0s] = this.toScreen(m.x[m.x.length - 1], m.y[m.y.length - 1]);
-    ctx.strokeStyle = ED.mesh;
-    ctx.lineWidth = 1;
-    for (const x of m.x) {
-      const [sx] = this.toScreen(x, 0);
-      ctx.beginPath(); ctx.moveTo(sx, y0s); ctx.lineTo(sx, y1s); ctx.stroke();
-    }
-    for (const y of m.y) {
-      const [, sy] = this.toScreen(0, y);
-      ctx.beginPath(); ctx.moveTo(x0s, sy); ctx.lineTo(x1s, sy); ctx.stroke();
     }
   }
 

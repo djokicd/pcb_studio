@@ -39,6 +39,8 @@ function defaultProject() {
       dumpJ: false, dumpFreqs: '', dumpJt: false, jtStart: 0, jtStop: 3, jtSub: 2,
       fullS: false,
     },
+    // Meshing tab: density ranges, pinned lines/points, outside smoothing
+    mesh: { regions: [], lines: [], points: [], outside: { res: null, ratio: null } },
     nextId: 3,
   };
 }
@@ -70,6 +72,10 @@ function migrate(p) {
     if (!p.sim.jtSub) p.sim.jtSub = 2;
     if (p.sim.meshMerge == null) p.sim.meshMerge = 0.1;
     if (p.sim.meshRatio == null) p.sim.meshRatio = 1.5;
+    if (!p.mesh) p.mesh = {};
+    for (const k of ['regions', 'lines', 'points'])
+      if (!Array.isArray(p.mesh[k])) p.mesh[k] = [];
+    if (!p.mesh.outside) p.mesh.outside = { res: null, ratio: null };
     return p;
   }
   const b = p.board || {};
@@ -105,7 +111,8 @@ const app = {
   traceRadius: 0,
   compare: {},          // projectName -> parsed sparams overlaid in Results
   editor: null,
-  meshVisible: false,
+  meshTab: null,        // MeshTab instance (Meshing view)
+  currentView: 'editor',
   meshData: null,
   gridVisible: true,
   polling: null,
@@ -170,6 +177,8 @@ const app = {
     renderObjList();
     renderProps();
     this.editor.render();
+    if (typeof renderMeshObjPanel === 'function') renderMeshObjPanel();
+    if (this.meshTab && this.currentView === 'mesh') this.meshTab.render();
   },
   selectMulti(items) {
     this.selection = null;
@@ -177,6 +186,8 @@ const app = {
     renderObjList();
     renderProps();
     this.editor.render();
+    if (typeof renderMeshObjPanel === 'function') renderMeshObjPanel();
+    if (this.meshTab && this.currentView === 'mesh') this.meshTab.render();
   },
   isMulti(kind, id) {
     return this.multi.some(m => m.kind === kind && m.id === id);
@@ -375,39 +386,50 @@ const app = {
   },
 
   dirty() {
+    // geometry version: invalidates the Meshing tab's snap-candidate cache
+    this._geomVer = (this._geomVer || 0) + 1;
     pushHistory();
     clearTimeout(this._saveT);
     this._saveT = setTimeout(() => {
       try { localStorage.setItem('openems_pcb_project', JSON.stringify(this.project)); } catch (e) { /* ignore */ }
     }, 400);
-    if (this.meshVisible) {
+    if (this.currentView === 'mesh') {
       clearTimeout(this._meshT);
       this._meshT = setTimeout(() => this.refreshMesh(), 600);
     }
     updateWarnings();
   },
 
+  /* fetch the exact simulated mesh (same code path as the run) and
+     refresh the Meshing tab's stats + canvas */
   async refreshMesh() {
+    // collapse overlapping calls: only the latest response lands
+    const seq = (this._meshSeq = (this._meshSeq || 0) + 1);
     try {
       const res = await fetch('/api/mesh', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(this.project),
       });
       const m = await res.json();
+      if (seq !== this._meshSeq) return;
       if (!res.ok) throw new Error(m.error || 'mesh failed');
       this.meshData = m;
-      $('meshInfo').textContent =
-        `mesh ${m.x.length}×${m.y.length}×${m.z.length} = ${(m.cells / 1000).toFixed(0)}k cells`
-        + (m.minCell != null ? ` · min ${(m.minCell * 1000).toFixed(0)} µm` : '')
-        + (m.worstRatio != null ? ` · worst step ${m.worstRatio}×` : '');
-      $('meshInfo').title = 'lines per axis · total cells · smallest cell '
-        + '(sets the timestep) · largest adjacent-cell size jump '
-        + '(smooth meshes stay near the grading ratio)';
+      this._meshRetried = false;
+      updateMeshStats(m);
     } catch (e) {
+      if (seq !== this._meshSeq) return;
       this.meshData = null;
-      $('meshInfo').textContent = 'mesh: ' + e.message;
+      updateMeshStats(null, e.message);
+      // a transient blip (server restart, laptop resume, dropped socket)
+      // must not leave the tab blank forever: retry once by itself, and
+      // leave a retry button for anything longer-lived
+      if (!this._meshRetried) {
+        this._meshRetried = true;
+        clearTimeout(this._meshRetryT);
+        this._meshRetryT = setTimeout(() => this.refreshMesh(), 1500);
+      }
     }
-    this.editor.render();
+    if (this.meshTab) this.meshTab.render();
   },
 };
 
@@ -1003,47 +1025,16 @@ function renderProps() {
     return;
   }
 
-  // advanced per-object meshing
-  const mh = document.createElement('h3');
-  mh.style.marginTop = '14px';
-  mh.textContent = 'Meshing';
-  const mform = document.createElement('div');
-  mform.className = 'form';
-  obj.mesh = obj.mesh || {};
-  const resI = numIn(obj.mesh.res ?? '', 0.05, v => {
-    obj.mesh.res = isFinite(v) && v > 0 ? v : null;
-    upd();
-  });
-  resI.placeholder = 'default';
-  mform.append(fld('Local resolution (mm)', resI));
-  if (kind === 'shape') {
-    const cur = obj.mesh.thirds === true ? 'on'
-      : obj.mesh.thirds === false ? 'off' : 'auto';
-    const thS = selIn([
-      ['auto', 'auto (on for narrow shapes)'],
-      ['on', 'on'],
-      ['off', 'off'],
-    ], cur, v => {
-      obj.mesh.thirds = v === 'auto' ? null : v === 'on';
-      upd();
-    });
-    thS.title = 'Metal-edge 1/3–2/3 refinement: replaces each edge line with a '
-      + 'pair 1/3 inside / 2/3 outside (captures the edge singularity). '
-      + '"auto" enables it for transmission-line features — traces and shapes '
-      + 'narrower than 3 mm — and leaves pads/planes coarse.';
-    mform.append(fld('Edge refinement', thS));
-  }
-  if (kind === 'via') {
-    const linesSel = selIn(VIA_LINES_OPTIONS, String(obj.mesh.lines || ''), v => {
-      obj.mesh.lines = v ? parseInt(v, 10) : null;
-      upd();
-    });
-    linesSel.title = 'How many mesh lines this via may pin per axis. Fewer '
-      + 'lines mean fewer cells — for stitching-via fences the barrel '
-      + 'position matters far more than its roundness.';
-    mform.append(fld('Mesh lines', linesSel));
-  }
-  body.append(mh, mform);
+  // per-object meshing lives in the Meshing tab (encapsulated there)
+  const mnote = document.createElement('p');
+  mnote.className = 'muted mini-note';
+  mnote.append('Mesh overrides for this object: ');
+  const mlink = document.createElement('a');
+  mlink.href = '#';
+  mlink.textContent = 'Meshing tab';
+  mlink.onclick = e => { e.preventDefault(); showView('mesh'); };
+  mnote.append(mlink);
+  body.append(mnote);
 
   const del = document.createElement('button');
   del.className = 'danger';
@@ -1233,6 +1224,7 @@ async function apiJson(url, opts) {
 
 /* ---------- main-area view switching ---------- */
 function showView(name) {
+  app.currentView = name;
   document.querySelectorAll('.viewtab').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   document.querySelectorAll('#center .view').forEach(v => v.classList.toggle('active', v.id === name + 'View'));
   if (name !== 'tests') {   // remember where the user was across restarts
@@ -1241,6 +1233,13 @@ function showView(name) {
   }
   if (name === 'editor') {
     app.editor.resize();
+  } else if (name === 'mesh') {
+    app.meshTab.resize();
+    if (!app.meshTab.fitted) app.meshTab.zoomFit();
+    meshFormsFromModel();
+    renderMeshItems();
+    renderMeshObjPanel();
+    app.refreshMesh();
   } else if (name === 'tests') {
     initTestsView();
   } else {
@@ -1248,6 +1247,35 @@ function showView(name) {
     renderCharts();
     if (app.jview) app.jview.render();
   }
+}
+
+/* Meshing tab stats table + status note */
+function updateMeshStats(m, err) {
+  const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+  const box = $('meshErr');
+  if (box) {
+    box.hidden = !err;
+    if (err) {
+      $('meshErrMsg').textContent = /fetch/i.test(err)
+        ? 'Could not reach the server — it may have restarted.'
+        : err;
+    }
+  }
+  if (!m) {
+    for (const id of ['mstX', 'mstY', 'mstZ', 'mstCells', 'mstMin', 'mstWorst', 'mstRes'])
+      set(id, '–');
+    set('meshInfo', err ? 'mesh: ' + err : '');
+    return;
+  }
+  set('mstX', m.x.length);
+  set('mstY', m.y.length);
+  set('mstZ', m.z.length);
+  set('mstCells', fmtCount(m.cells));
+  set('mstMin', m.minCell != null ? `${(m.minCell * 1000).toFixed(0)} µm` : '–');
+  set('mstWorst', m.worstRatio != null ? `${m.worstRatio}×` : '–');
+  set('mstRes', m.edgeRes != null
+    ? `${m.edgeRes.toFixed(2)} / ${m.maxRes.toFixed(2)} mm` : '–');
+  set('meshInfo', '');
 }
 
 /* ---------- run control ---------- */
@@ -4037,7 +4065,6 @@ function updateMenuChecks() {
     if (el) el.classList.toggle('checked', !!on);
   };
   set('grid', app.gridVisible);
-  set('mesh', app.meshVisible);
   set('light', uiSettings.theme === 'light');
 }
 
@@ -4078,8 +4105,8 @@ const MENU_ACTIONS = {
   delete: () => app.deleteSelection(),
   selectAll: () => app.selectAllObjects(),
   grid: () => $('btnGrid').click(),
-  mesh: () => $('btnMesh').click(),
-  fit: () => app.editor.zoomFit(),
+  mesh: () => showView('mesh'),
+  fit: () => (app.currentView === 'mesh' ? app.meshTab : app.editor).zoomFit(),
   theme: toggleTheme,
   colors: openColorsModal,
   toolSelect: () => app.setTool('select'),
@@ -4152,7 +4179,17 @@ function loadProject(p) {
   renderProps();
   app.editor.zoomFit();
   app.dirty();
-  if (app.meshVisible) app.refreshMesh();
+  if (app.meshTab) {
+    app.meshTab.sel = null;
+    app.meshTab.fitted = false;
+    app.meshTab._snapCache = null;
+    meshFormsFromModel();
+    if (app.currentView === 'mesh') {
+      app.meshTab.zoomFit();
+      renderMeshItems();
+      app.refreshMesh();
+    }
+  }
   refreshPastRuns();   // the list is scoped to the loaded project
   refreshLoadedPane(); // the editor's project heads the review list
   resetHistory();      // a freshly loaded project is the new baseline
@@ -4164,6 +4201,7 @@ window.addEventListener('DOMContentLoaded', () => {
   try { saved = JSON.parse(localStorage.getItem('openems_pcb_project')); } catch (e) { /* ignore */ }
 
   app.editor = new Editor($('editor'), app);
+  app.meshTab = new MeshTab($('meshCanvas'), app);
   app.jview = new JView($('jCanvas'), $('jInfo'), $('jMax'));
   Modal.init();
   initTabs();
@@ -4313,12 +4351,7 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   loadDevLib();
   $('jScaleBar').style.background = `linear-gradient(to right, ${J_RAMP.join(', ')})`;
-  $('btnMesh').addEventListener('click', () => {
-    app.meshVisible = !app.meshVisible;
-    $('btnMesh').classList.toggle('active', app.meshVisible);
-    if (app.meshVisible) app.refreshMesh();
-    else { $('meshInfo').textContent = ''; app.editor.render(); }
-  });
+  initMeshTools();
 
   // top bar + modals
   $('projClose').addEventListener('click', () => { $('projModal').hidden = true; });
@@ -4636,6 +4669,31 @@ window.addEventListener('DOMContentLoaded', () => {
       else if (k === 'a') { app.selectAllObjects(); e.preventDefault(); }
       return;   // never treat ctrl-combos as tool shortcuts
     }
+    // the Meshing view has its own (mesh-only) shortcut set: the drawing
+    // tools and object deletion must not fire from behind it
+    if (app.currentView === 'mesh') {
+      const mt = app.meshTab;
+      switch (e.key) {
+        case 'v': case 'V': case 'Escape': mt.setTool('select'); break;
+        case 'p': case 'P': mt.setTool('point'); break;
+        case 'x': case 'X': mt.setTool('xline'); break;
+        case 'y': case 'Y': mt.setTool('yline'); break;
+        case 'f': case 'F': mt.zoomFit(); break;
+        case 'm': case 'M': showView('editor'); break;
+        case 'Delete': case 'Backspace':
+          if (mt.sel) {
+            const key = { region: 'regions', line: 'lines', point: 'points' }[mt.sel.kind];
+            mt.mesh()[key] = mt.mesh()[key].filter(o => o.id !== mt.sel.id);
+            mt.sel = null;
+            renderMeshItems();
+            app.dirty();
+            app.refreshMesh();
+          }
+          e.preventDefault();
+          break;
+      }
+      return;
+    }
     const nudge = app.snapStep || 0.1;
     const sels = app.multi.length ? app.multiObjs()
       : (app.editor.selectedObj() ? [app.editor.selectedObj()] : []);
@@ -4654,9 +4712,9 @@ window.addEventListener('DOMContentLoaded', () => {
       case 't': case 'T': setTool('trace'); break;
       case 'n': case 'N': setTool('note'); break;
       case 'x': case 'X': setTool('measure'); break;
-      case 'm': case 'M': $('btnMesh').click(); break;
+      case 'm': case 'M': showView('mesh'); break;
       case 'g': case 'G': $('btnGrid').click(); break;
-      case 'f': case 'F': app.editor.zoomFit(); break;
+      case 'f': case 'F': (app.currentView === 'mesh' ? app.meshTab : app.editor).zoomFit(); break;
       case 'Enter':
         if (app.tool === 'poly' || app.tool === 'trace') { app.editor.finishPoly(); e.preventDefault(); }
         break;
@@ -4708,5 +4766,6 @@ window.addEventListener('DOMContentLoaded', () => {
       }
     }
     if (restored && uiSettings.lastView === 'results') showView('results');
+    else if (uiSettings.lastView === 'mesh') showView('mesh');
   })();
 });

@@ -177,7 +177,7 @@ def _thin_soft(soft, hard):
 
 
 def _smooth_axis(fixed, lo, hi, edge_res, max_res, margin, regions=(), merge=0.0,
-                 ratio=1.5, soft=(), pinned=()):
+                 ratio=1.5, soft=(), pinned=(), outside=None, uspans=()):
     # region boundaries must be mesh lines themselves, otherwise a fine
     # region inside a large gap never splits it (the gap midpoint decides
     # the fill resolution and may lie outside the region)
@@ -205,13 +205,28 @@ def _smooth_axis(fixed, lo, hi, edge_res, max_res, margin, regions=(), merge=0.0
     if soft:
         lines = _dedupe(lines + _thin_soft(soft, lines))
 
+    # "outside" settings apply to the board area NOT covered by a
+    # user-defined density region: the user pins the density that matters
+    # and lets everything else relax at its own (usually coarser, gentler)
+    # cap and grading ratio
+    out_res = (outside or {}).get('res')
+    out_ratio = (outside or {}).get('ratio')
+
+    def in_user_span(mid):
+        return any(a - 1e-9 <= mid <= b + 1e-9 for a, b in uspans)
+
     def fill_pass(lines):
         # per-gap fill cap: edge resolution on the board, lambda/N
         # outside, refinement regions finer still
-        caps = []
+        caps, ratios = [], []
         for a, b in zip(lines, lines[1:]):
             mid = 0.5 * (a + b)
-            res = edge_res if lo - 1e-9 <= mid <= hi + 1e-9 else max_res
+            on_board = lo - 1e-9 <= mid <= hi + 1e-9
+            res = edge_res if on_board else max_res
+            free = on_board and not in_user_span(mid)
+            if free and out_res:
+                res = out_res
+            ratios.append(out_ratio if (free and out_ratio) else ratio)
             for rlo, rhi, rres in regions:
                 if rlo - 1e-9 <= mid <= rhi + 1e-9:
                     res = min(res, rres)
@@ -231,7 +246,7 @@ def _smooth_axis(fixed, lo, hi, edge_res, max_res, margin, regions=(), merge=0.0
             detail.append(min(cand))
         out = [lines[0]]
         for j, (a, b) in enumerate(zip(lines, lines[1:])):
-            out += _fill_graded(a, b, detail[j], detail[j + 1], caps[j], ratio)
+            out += _fill_graded(a, b, detail[j], detail[j + 1], caps[j], ratios[j])
             out.append(b)
         return _dedupe(out)
 
@@ -268,6 +283,81 @@ def resolutions(model):
     return edge_res, max_res
 
 
+def user_regions(model):
+    """User-defined refinement intervals from the Meshing tab:
+    [(lo, hi, res, axis), ...] with invalid or disabled entries dropped.
+    Each becomes a (lo, hi, res) cap interval on its axis, and its
+    boundaries become mesh lines (both handled by _smooth_axis)."""
+    out = []
+    for r in (model.get('mesh') or {}).get('regions') or []:
+        if not isinstance(r, dict) or r.get('off'):
+            continue
+        try:
+            lo, hi = float(r['from']), float(r['to'])
+            res = float(r['res'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not all(math.isfinite(v) for v in (lo, hi, res)):
+            continue
+        if not (res > 0) or not (min(lo, hi) < max(lo, hi)):
+            continue
+        axis = 'y' if r.get('axis') == 'y' else 'x'
+        out.append((min(lo, hi), max(lo, hi), res, axis))
+    return out
+
+
+def user_lines(model, width, height):
+    """Exact mesh lines the user placed in the Meshing tab: single x/y
+    lines plus both coordinates of each snapped point. Returns (xs, ys);
+    positions off the board are dropped (they would stretch the domain).
+    These become hard AND pinned lines, so a deliberate line survives the
+    coincidence merge exactly - a nearby geometry line is pulled onto it
+    rather than averaged with it."""
+    mesh = model.get('mesh') or {}
+    xs, ys = [], []
+
+    def add(axis, v, limit):
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(v) or v < -1e-9 or v > limit + 1e-9:
+            return
+        (ys if axis == 'y' else xs).append(min(max(v, 0.0), limit))
+
+    for ln in mesh.get('lines') or []:
+        if not isinstance(ln, dict) or ln.get('off'):
+            continue
+        axis = 'y' if ln.get('axis') == 'y' else 'x'
+        add(axis, ln.get('at'), height if axis == 'y' else width)
+    for pt in mesh.get('points') or []:
+        if not isinstance(pt, dict) or pt.get('off'):
+            continue
+        add('x', pt.get('x'), width)
+        add('y', pt.get('y'), height)
+    return xs, ys
+
+
+def user_outside(model):
+    """Meshing-tab settings for the board area outside every density
+    region: {'res': mm, 'ratio': grading} with unset/invalid keys absent."""
+    src = (model.get('mesh') or {}).get('outside') or {}
+    out = {}
+    try:
+        res = float(src.get('res'))
+        if math.isfinite(res) and res > 0:
+            out['res'] = res
+    except (TypeError, ValueError):
+        pass
+    try:
+        ratio = float(src.get('ratio'))
+        if math.isfinite(ratio):
+            out['ratio'] = min(2.0, max(1.2, ratio))
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
 def build_mesh(model):
     """Returns {'x': [...], 'y': [...], 'z': [...], 'cells': int} in mm."""
     board = model['board']
@@ -284,10 +374,23 @@ def build_mesh(model):
     _, _diel, _total = stackup_z(model.get('stackup') or [])
     xs, ys, xsoft, ysoft, xreg, yreg, xpin, ypin = mesh_lines_xy(
         model, edge_res, fringe=_total or None)
+    xreg, yreg = list(xreg), list(yreg)
+    xspan, yspan = [], []
+    for lo_u, hi_u, res_u, axis_u in user_regions(model):
+        if axis_u == 'y':
+            yreg.append((lo_u, hi_u, res_u))
+            yspan.append((lo_u, hi_u))
+        else:
+            xreg.append((lo_u, hi_u, res_u))
+            xspan.append((lo_u, hi_u))
+    ux, uy = user_lines(model, W, H)
+    xs, ys = list(xs) + ux, list(ys) + uy
+    xpin, ypin = list(xpin) + ux, list(ypin) + uy
+    outside = user_outside(model)
     x = _smooth_axis(xs, 0.0, W, edge_res, max_res, margin, xreg, merge, ratio,
-                     xsoft, xpin)
+                     xsoft, xpin, outside, xspan)
     y = _smooth_axis(ys, 0.0, H, edge_res, max_res, margin, yreg, merge, ratio,
-                     ysoft, ypin)
+                     ysoft, ypin, outside, yspan)
 
     # z: conductor sheets + dielectric interfaces. Field detail lives at
     # the conductor faces that carry geometry (strips, ports, pads); plane

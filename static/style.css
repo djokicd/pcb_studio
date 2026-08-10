@@ -139,6 +139,58 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 #resultsView { overflow-y: auto; padding: 16px; }
 #resultsView.active { display: block; }
+
+/* ---- Meshing tab ---- */
+#meshView.active { display: flex; }
+#meshMain { flex: 1; min-width: 0; position: relative; }
+#meshCanvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#meshStatusbar {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; justify-content: space-between;
+  padding: 3px 10px; font-size: 12px; color: var(--muted);
+  background: var(--overlay); pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+#meshSide {
+  width: 288px; flex: none; overflow-y: auto;
+  background: var(--panel); border-left: 1px solid var(--border);
+  display: flex; flex-direction: column;
+}
+#meshSide .form input { width: 90px; }
+.mini-note { font-size: 11px; margin: 4px 0 8px; line-height: 1.45; }
+.mregion {
+  display: flex; align-items: center; gap: 5px;
+  padding: 4px 6px; margin-bottom: 4px; border-radius: 4px;
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--mr-col, var(--border));
+  font-size: 11px; color: var(--muted); cursor: pointer;
+}
+.mregion.sel { border-color: var(--mr-col); background: var(--card); }
+.mregion.off { opacity: 0.5; }
+.mregion input[type=number] { width: 52px; font-size: 11px; padding: 2px 4px; }
+.mregion select { font-size: 11px; padding: 2px; }
+.mregion .mr-del {
+  margin-left: auto; padding: 0 6px; background: none;
+  border: none; color: var(--muted); font-size: 14px;
+}
+.mregion .mr-del:hover { color: #e66767; }
+.mregion .mr-tag {
+  color: var(--mr-col); text-transform: uppercase; font-size: 10px;
+  letter-spacing: 0.05em; min-width: 42px;
+}
+#meshTools { grid-template-columns: repeat(3, 1fr); }
+#meshTools .tool { padding: 6px 2px; font-size: 10.5px; gap: 3px; }
+.mbulk-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; }
+.mbulk-row .lr-btn { padding: 2px 8px; }
+#meshToolHint { min-height: 28px; }
+#meshErr {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  padding: 6px 8px; border-radius: 4px; font-size: 11px; line-height: 1.4;
+  color: #e66767; border: 1px solid rgba(230,103,103,0.45);
+  background: rgba(230,103,103,0.08);
+}
+#meshErr[hidden] { display: none; }
+#meshErr .lr-btn { margin-left: auto; flex: none; color: inherit; }
 .center-note { padding: 40px; text-align: center; }
 .rgrid { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; --cardw: calc(50% - 6px); }
 #jCard .jrow input[type=range] { flex: 2; min-width: 80px; }
