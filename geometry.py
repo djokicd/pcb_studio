@@ -13,6 +13,7 @@ Vias:     {x, y, drill, pad, from, to}  drill/pad are diameters, from/to layer i
 Components: {ctype: R|L|C, value, package: 0402|0603|0805|custom, len, wid,
              x, y (center), rot: 0|90, layer}
 """
+import bisect
 import math
 
 # package -> (body length, body width) mm, current flows along the length
@@ -325,6 +326,49 @@ def comp_element_box(c, shapes):
     return x0, d0, x1, d1, ny, connected
 
 
+def _mesh_lines(obj):
+    """Per-object mesh-line economy: how many lines the object may pin per
+    axis (None = auto/full detail). Used by vias and by round pads."""
+    n = (obj.get('mesh') or {}).get('lines')
+    try:
+        return int(n) if n else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _pad_economy(model):
+    """Lookup 'is this circle a via's pad, and what economy does that via
+    ask for?'. Imported boards carry the pads as ordinary copper circles
+    (Gerber) beside the drilled vias (Excellon), and it is the pad - not
+    the barrel - that generates the dense round staircase. Concentric
+    pads therefore inherit the via's mesh-line setting, so the via
+    economy actually reduces the cell count on imported fences.
+
+    Returns f(cx, cy) -> nlines or None."""
+    pads = []
+    for v in model.get('vias') or []:
+        n = _mesh_lines(v)
+        if n:
+            try:
+                pads.append((float(v['x']), float(v['y']), n))
+            except (KeyError, TypeError, ValueError):
+                pass
+    if not pads:
+        return lambda cx, cy: None
+    pads.sort()
+    xsv = [p[0] for p in pads]
+    tol = 0.01          # 10 um: pad and drill come from the same CAD point
+
+    def lookup(cx, cy):
+        i = bisect.bisect_left(xsv, cx - tol)
+        while i < len(pads) and pads[i][0] <= cx + tol:
+            if abs(pads[i][1] - cy) <= tol:
+                return pads[i][2]
+            i += 1
+        return None
+    return lookup
+
+
 def _obj_mesh(obj):
     """(local res, thirds) - thirds is tri-state: True/False/None(auto)."""
     m = obj.get('mesh') or {}
@@ -445,6 +489,7 @@ def mesh_lines_xy(model, edge_res, fringe=None):
             xreg.append((x0, x1, res))
             yreg.append((y0, y1, res))
 
+    pad_economy = _pad_economy(model)
     for s in sim_shapes(model):
         pts = shape_outline(s)
         pxs = [p[0] for p in pts]
@@ -453,6 +498,12 @@ def mesh_lines_xy(model, edge_res, fringe=None):
         w, h = bx1 - bx0, by1 - by0
         res, thirds = _obj_mesh(s)
         t = s.get('type', 'rect')
+        # round pads take the same economy ladder as vias, either set on
+        # the shape itself or inherited from the via underneath:
+        # 1 = centre line only, 3 = centre + edges, 5 = + ~3 cells across.
+        pad_n = None
+        if t == 'circle':
+            pad_n = _mesh_lines(s) or pad_economy(float(s['cx']), float(s['cy']))
         if thirds is None:
             # auto: transmission-line features (narrow rects, straight
             # two-point traces) get the edge refinement by default. The
@@ -479,13 +530,23 @@ def mesh_lines_xy(model, edge_res, fringe=None):
             dim = min(w, h)
         rs = res or min(edge_res, max(dim / 3.0, MIN_SOFT_RES))
         hx, hy, sx, sy = [], [], [], []
-        # corner pinning only for hand-drawn geometry: imported stroke
-        # soup would pin a line at every cap/miter joint
-        outline_edge_lines(pts, rs, hx, hy, sx, sy,
-                           corners=not s.get('meshBbox'))
-        if t == 'circle':
-            hx += [bx0, bx1, float(s['cx'])]
-            hy += [by0, by1, float(s['cy'])]
+        if pad_n:
+            # economy pad: a couple of exact lines instead of a sampled
+            # round staircase. The copper still rasterizes from its true
+            # outline - only the grid it lands on gets coarser.
+            hx.append(float(s['cx']))
+            hy.append(float(s['cy']))
+            if pad_n >= 3:
+                hx += [bx0, bx1]
+                hy += [by0, by1]
+        else:
+            # corner pinning only for hand-drawn geometry: imported stroke
+            # soup would pin a line at every cap/miter joint
+            outline_edge_lines(pts, rs, hx, hy, sx, sy,
+                               corners=not s.get('meshBbox'))
+            if t == 'circle':
+                hx += [bx0, bx1, float(s['cx'])]
+                hy += [by0, by1, float(s['cy'])]
         if thirds:
             # replace the bbox-extreme edges with the 1/3-2/3 metal-edge
             # pair (line inside the metal at edge+res/3, outside at
@@ -539,12 +600,14 @@ def mesh_lines_xy(model, edge_res, fringe=None):
                     nreg_x.append((sx0, sx1, rs))
                 if sy1 - sy0 <= AUTO_THIRDS_MAX_DIM:
                     nreg_y.append((sy0, sy1, rs))
-        elif dim <= AUTO_THIRDS_MAX_DIM:
+        elif dim <= AUTO_THIRDS_MAX_DIM and (pad_n is None or pad_n >= 5):
             # narrow feature without edge refinement (imported strokes,
             # small pads, drawn circles): edge lines alone would leave a
             # single cell across the conductor, so add a cross-width fine
             # zone (~3 cells). Per-axis: a straight run refines across its
-            # width only; bends and round features refine both.
+            # width only; bends and round features refine both. An economy
+            # pad below 5 lines deliberately skips this - the zone is what
+            # makes a stitching fence dominate the cell budget.
             if w <= AUTO_THIRDS_MAX_DIM:
                 nreg_x.append((bx0, bx1, rs))
             if h <= AUTO_THIRDS_MAX_DIM:
@@ -565,11 +628,7 @@ def mesh_lines_xy(model, edge_res, fringe=None):
         # meshed in full detail dominates the cell budget of a board, and
         # for stitching the barrel position matters far more than its
         # roundness.
-        nlines = (v.get('mesh') or {}).get('lines')
-        try:
-            nlines = int(nlines) if nlines else None
-        except (TypeError, ValueError):
-            nlines = None
+        nlines = _mesh_lines(v)
         # a via is a cylinder: pin the centre (hard) and put the tangent
         # extremes plus samples of the drill/pad circles in the soft set,
         # so the staircase is round (~3 cells across the drill) instead of

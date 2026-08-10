@@ -433,3 +433,78 @@ def test_outside_settings_validated():
     from meshlines import user_outside
     assert user_outside({'mesh': {'outside': {'ratio': 9}}})['ratio'] == 2.0
     assert user_outside({'mesh': {'outside': {'ratio': 1.0}}})['ratio'] == 1.2
+
+
+def _fence(nlines=None, pad_lines=None):
+    """A stitching fence: drilled vias plus the separate round copper pads
+    an imported board carries for them."""
+    m = _model([rect('gnd', 2, 2, 36, 16)])
+    m['vias'], pads = [], []
+    for i in range(8):
+        x = 5.0 + i * 2.0
+        v = {'id': 100 + i, 'x': x, 'y': 6.0, 'drill': 0.3, 'pad': 0.6,
+             'from': 'bot', 'to': 'top'}
+        if nlines:
+            v['mesh'] = {'lines': nlines}
+        m['vias'].append(v)
+        p = {'id': 200 + i, 'type': 'circle', 'layer': 'top',
+             'cx': x, 'cy': 6.0, 'r': 0.3}
+        if pad_lines:
+            p['mesh'] = {'lines': pad_lines}
+        pads.append(p)
+    m['shapes'] += pads
+    return m
+
+
+def test_via_economy_reaches_the_imported_pads():
+    """The per-via mesh-line economy must also tame the round copper pad
+    an import carries on top of each via - the pad, not the barrel, is
+    what generates the dense staircase, so without this the setting has
+    almost no effect on imported boards."""
+    auto = build_mesh(_fence())
+    one = build_mesh(_fence(nlines=1))
+    assert one['cells'] < auto['cells'] * 0.75, \
+        f'economy barely helped: {auto["cells"]} -> {one["cells"]}'
+    # 1 line/via: the pad contributes its centre and nothing else
+    for i in range(8):
+        x = 5.0 + i * 2.0
+        assert any(abs(v - x) < 1e-6 for v in one['x']), f'via centre {x} missing'
+        for edge in (x - 0.3, x + 0.3):
+            assert not any(abs(v - edge) < 1e-9 for v in one['x']), \
+                f'pad edge {edge} still pinned at 1 line/via'
+    # the ladder is monotonic
+    three = build_mesh(_fence(nlines=3))
+    assert one['cells'] <= three['cells'] <= auto['cells']
+
+
+def test_pad_economy_can_be_set_on_the_shape():
+    """Round copper without a drilled via under it (Gerber imported with
+    no Excellon) takes the setting directly."""
+    plain, economised = _fence(), _fence(pad_lines=1)
+    plain['vias'] = economised['vias'] = []
+    assert build_mesh(economised)['cells'] < build_mesh(plain)['cells'] * 0.85
+
+
+def test_pad_setting_overrides_via_inheritance():
+    """An explicit setting on the pad wins over the via's - and with the
+    via left on auto its own sampling keeps the density either way, so
+    the economy has to be set on the via to tame an imported fence."""
+    # pad asked for more detail than the via it sits on -> it gets it
+    assert build_mesh(_fence(nlines=1, pad_lines=5))['cells'] \
+        > build_mesh(_fence(nlines=1))['cells']
+    # and with the via left on auto its own sampling keeps the density,
+    # so economising only the pad changes nothing on a drilled fence
+    assert build_mesh(_fence(pad_lines=1))['cells'] \
+        == build_mesh(_fence())['cells']
+
+
+def test_pad_economy_only_applies_to_concentric_pads():
+    """A circle that merely sits near a via keeps full detail - the
+    inheritance is for the pad the via was drilled through."""
+    m = _fence(nlines=1)
+    for s in m['shapes']:
+        if s.get('type') == 'circle':
+            s['cx'] += 0.5          # 500 um off the barrel: its own feature
+    off = build_mesh(m)
+    on = build_mesh(_fence(nlines=1))
+    assert off['cells'] > on['cells'], 'offset circles must keep full sampling'

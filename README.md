@@ -345,7 +345,16 @@ FDTD simulations of planar PCB structures via GNU Octave.
   resolved with the same fine cells. Via fences are resolved at pad
   scale (~3 cells across the pad), so 100+ stitching vias don't crush
   the cell budget; a per-via local resolution remains available for
-  critical signal vias.
+  critical signal vias. The per-via **mesh-line economy** (auto / 5 / 3 /
+  1 lines per axis) also drives the **round copper pad** on each via: an
+  imported board carries the pads as ordinary circles (from Gerber)
+  beside the drilled barrels (from Excellon), and it is the pad — its
+  sampled outline plus its cross-width refinement zone — that actually
+  generates the dense staircase. Concentric pads therefore inherit the
+  via's setting, and a pad can also be set on its own (for round copper
+  with no via under it). On the bundled 126-via CPW board, setting the
+  fence to one line per via takes the mesh from 2.88M to 1.86M cells
+  (−35 %); before the pads followed along, the same setting gave −2 %.
 - **Per-object meshing** (Meshing tab → click an object): every
   shape/port/via/component takes an
   optional local mesh resolution; shapes support the metal-edge

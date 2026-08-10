@@ -1243,7 +1243,11 @@ function renderMeshObjPanel() {
     form.append(fld(bulk ? `Edge refinement (${shapes.length})` : 'Edge refinement', thS));
   }
 
-  if (vias.length) {
+  // round pads take the same economy ladder as vias (and inherit it from
+  // the via they sit on), so both are driven by one control
+  const pads = shapes.filter(i => i.obj.type === 'circle');
+  if (vias.length || pads.length) {
+    const targets = [...vias, ...pads];
     const linesSel = document.createElement('select');
     const opts = bulk ? [['keep', '— keep —'], ...VIA_LINES_OPTIONS] : VIA_LINES_OPTIONS;
     for (const [v, t] of opts) {
@@ -1251,19 +1255,23 @@ function renderMeshObjPanel() {
       o.value = v; o.textContent = t;
       linesSel.append(o);
     }
-    linesSel.value = bulk ? 'keep' : String((vias[0].obj.mesh || {}).lines || '');
-    linesSel.title = 'How many mesh lines each via may pin per axis. Fewer '
-      + 'lines mean fewer cells — for stitching-via fences the barrel '
-      + 'position matters far more than its roundness.';
+    linesSel.value = bulk ? 'keep' : String((targets[0].obj.mesh || {}).lines || '');
+    linesSel.title = 'How many mesh lines this via or round pad may pin per '
+      + 'axis. Fewer lines mean fewer cells — for stitching-via fences the '
+      + 'barrel position matters far more than its roundness. A pad sitting '
+      + 'on a via follows that via unless set here.';
     linesSel.onchange = () => {
       if (bulk && linesSel.value === 'keep') return;
-      for (const it of vias) {
+      for (const it of targets) {
         it.obj.mesh = it.obj.mesh || {};
         it.obj.mesh.lines = linesSel.value ? parseInt(linesSel.value, 10) : null;
       }
       commit();
     };
-    form.append(fld(bulk ? `Mesh lines (${vias.length} vias)` : 'Mesh lines', linesSel));
+    const what = [vias.length && `${vias.length} via${vias.length > 1 ? 's' : ''}`,
+                  pads.length && `${pads.length} pad${pads.length > 1 ? 's' : ''}`]
+      .filter(Boolean).join(' + ');
+    form.append(fld(bulk ? `Mesh lines (${what})` : 'Mesh lines', linesSel));
   }
   body.append(form);
 }
