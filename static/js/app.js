@@ -37,7 +37,7 @@ function defaultProject() {
       maxTimesteps: 30000, meshDiv: 20, edgeRes: null, meshMerge: 0.1,
       meshRatio: 1.5, airMargin: 25,
       dumpJ: false, dumpFreqs: '', dumpJt: false, jtStart: 0, jtStop: 3, jtSub: 2,
-      fullS: false,
+      fullS: false, parallel: 1, threadsPerExc: null,
     },
     // Meshing tab: density ranges, pinned lines/points, outside smoothing
     mesh: { regions: [], lines: [], points: [], outside: { res: null, ratio: null } },
@@ -67,6 +67,8 @@ function migrate(p) {
     p.devices = p.devices || [];
     p.sim.dumpJt = p.sim.dumpJt || false;
     p.sim.fullS = p.sim.fullS || false;
+    if (p.sim.parallel == null) p.sim.parallel = 1;
+    if (p.sim.threadsPerExc === undefined) p.sim.threadsPerExc = null;
     if (p.sim.jtStart == null) p.sim.jtStart = 0;
     if (p.sim.jtStop == null) p.sim.jtStop = 3;
     if (!p.sim.jtSub) p.sim.jtSub = 2;
@@ -607,6 +609,9 @@ function updateWarnings() {
   bar.hidden = w.length === 0;
   bar.innerHTML = w.slice(0, 5).map(t => `<div>${t}</div>`).join('') +
     (w.length > 5 ? `<div>… and ${w.length - 5} more</div>` : '');
+  // the excitation count follows the ports and devices, so the parallel
+  // advice has to follow every edit
+  if (typeof updateParallelNote === 'function') updateParallelNote();
   return w;
 }
 
@@ -1170,6 +1175,9 @@ function formsFromModel() {
   for (const f of SIM_FIELDS) $('s_' + f).value = app.project.sim[f] ?? '';
   $('s_boundary').value = app.project.sim.boundary;
   $('s_fullS').checked = !!app.project.sim.fullS;
+  $('s_parallel').value = String(app.project.sim.parallel ?? 1);
+  $('s_threadsPerExc').value = app.project.sim.threadsPerExc ?? '';
+  updateParallelNote();
   $('s_dumpJ').checked = !!app.project.sim.dumpJ;
   $('s_dumpFreqs').value = app.project.sim.dumpFreqs || '';
   $('s_dumpJt').checked = !!app.project.sim.dumpJt;
@@ -1189,7 +1197,22 @@ function bindForms() {
       app.dirty();
     });
   $('s_boundary').addEventListener('change', e => { app.project.sim.boundary = e.target.value; app.dirty(); });
-  $('s_fullS').addEventListener('change', e => { app.project.sim.fullS = e.target.checked; app.dirty(); });
+  $('s_fullS').addEventListener('change', e => {
+    app.project.sim.fullS = e.target.checked;
+    updateParallelNote();
+    app.dirty();
+  });
+  $('s_parallel').addEventListener('change', e => {
+    app.project.sim.parallel = parseInt(e.target.value, 10);
+    updateParallelNote();
+    app.dirty();
+  });
+  $('s_threadsPerExc').addEventListener('change', e => {
+    const v = parseInt(e.target.value, 10);
+    app.project.sim.threadsPerExc = isFinite(v) && v > 0 ? v : null;
+    updateParallelNote();
+    app.dirty();
+  });
   $('s_dumpJ').addEventListener('change', e => { app.project.sim.dumpJ = e.target.checked; app.dirty(); });
   $('s_dumpFreqs').addEventListener('change', e => { app.project.sim.dumpFreqs = e.target.value; app.dirty(); });
   $('s_dumpJt').addEventListener('change', e => { app.project.sim.dumpJt = e.target.checked; app.dirty(); });
@@ -1250,6 +1273,47 @@ function showView(name) {
   }
 }
 
+/* How many excitation runs this project needs, and therefore whether the
+   parallel setting can do anything for it. Mirrors Runner.start(). */
+function excitationCount() {
+  const p = app.project;
+  const ports = p.ports || [];
+  const excited = ports.filter(q => q.excite).length;
+  const devices = (p.devices || []).some(d => d.file && (d.pins || []).length);
+  if ((devices || (p.sim || {}).fullS) && ports.length > 1) return ports.length;
+  return Math.max(1, excited);
+}
+
+function updateParallelNote() {
+  const el = $('runParallelNote');
+  if (!el) return;
+  const n = excitationCount();
+  const cores = navigator.hardwareConcurrency || 0;
+  let par = parseInt(($('s_parallel') || {}).value, 10);
+  if (!isFinite(par)) par = 1;
+  if (par === 0) par = Math.max(1, Math.floor((cores || 2) / 2));
+  par = Math.max(1, Math.min(par, n));
+  if (n < 2) {
+    el.textContent = 'This design needs a single excitation, so the runs are '
+      + 'sequential either way. Several excited ports, the full S-matrix '
+      + 'option or an S-parameter device create more.';
+    return;
+  }
+  const cap = parseInt(($('s_threadsPerExc') || {}).value, 10);
+  if (par < 2) {
+    el.textContent = `${n} excitations, solved one after another.`;
+    return;
+  }
+  const waves = Math.ceil(n / par);
+  el.textContent = `${n} excitations, ${par} at a time — `
+    + `${waves} round${waves > 1 ? 's' : ''} of solving instead of ${n}, `
+    + `at ${par}× the peak memory. `
+    + (isFinite(cap) && cap > 0
+      ? `Each instance is capped at ${cap} thread${cap > 1 ? 's' : ''}.`
+      : `openEMS picks each instance's thread count`
+        + (cores ? ` (${cores} cores available).` : '.'));
+}
+
 /* Meshing tab stats table + status note */
 function updateMeshStats(m, err) {
   const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
@@ -1289,6 +1353,40 @@ function setRunUI(state, percent, elapsed, stageInfo) {
   const running = ['starting', 'running', 'post'].includes(state);
   $('btnRun').disabled = running;
   $('btnStop').disabled = !running;
+  $('btnRun').title = running
+    ? `A simulation is already running${app.runProject ? ` (${app.runProject})` : ''}`
+      + ' — the server solves one at a time.'
+    : 'Run the simulation with Octave/openEMS';
+}
+
+/* The run belongs to the server, not to the browser tab: it keeps going
+   while you open another project, browse old results or edit something
+   else. The chip in the top bar is the way back to it from anywhere, and
+   says whose run it is so a foreign run is never mistaken for your own. */
+function updateRunChip(st) {
+  const chip = $('runChip');
+  if (!chip) return;
+  const running = st && ['starting', 'running', 'post'].includes(st.state);
+  chip.hidden = !running;
+  if (!running) { $('runForeign').hidden = true; return; }
+  const owner = st.project || '';
+  const foreign = (owner || '') !== (app.project.name || '');
+  chip.textContent = `● ${owner || 'untitled'} — ${Math.round(st.percent || 0)}%`
+    + (st.parallel > 1 ? ` (${st.parallel}×)` : '');
+  chip.classList.toggle('foreign', foreign);
+  chip.title = (foreign
+    ? `A simulation of "${owner || 'untitled'}" is running while you work on `
+      + `"${app.project.name || 'this project'}".`
+    : 'This project is solving.')
+    + (st.stageInfo ? `\n${st.stageInfo}` : '')
+    + '\nClick to open its progress.';
+  const bar = $('runForeign');
+  bar.hidden = !foreign;
+  if (foreign) {
+    bar.textContent = `This run belongs to “${owner || 'untitled'}” — you have `
+      + `“${app.project.name || 'an unsaved project'}” open. Its results will not `
+      + `replace what you are looking at; you will get a link when it finishes.`;
+  }
 }
 
 function fmtCount(n) {
@@ -1320,12 +1418,23 @@ function buildRunTabs(st) {
   bar.innerHTML = '';
   stages.forEach((s, i) => {
     const b = document.createElement('button');
-    b.textContent = s.label || `Run ${i + 1}`;
+    // with parallel stages "which one is live" is a property of the stage,
+    // not of the run: several can be solving at once, others still queued
+    const live = s.state ? s.state === 'running' || s.state === 'post'
+      : (running && i === active);
+    b.textContent = (s.label || `Run ${i + 1}`)
+      + (s.state === 'queued' ? ' ·' : '');
     b.className = (i === app.runStageView ? 'active' : '')
-      + (running && i === active ? ' running' : '')
+      + (live ? ' running' : '')
+      + (s.state === 'queued' ? ' queued' : '')
       + ((s.warn && s.warn.length) || s.notConverged ? ' warn' : '');
+    const STATE_TXT = { queued: 'waiting for a free slot', running: 'solving',
+                        post: 'post-processing', done: 'finished',
+                        error: 'failed', cancelled: 'cancelled', stopped: 'stopped' };
     b.title = `Excitation ${i + 1} of ${stages.length}`
       + (s.exc != null ? ` — port ${s.exc} driven` : '')
+      + (s.state ? ` — ${STATE_TXT[s.state] || s.state}` : '')
+      + (live && s.percent ? ` (${s.percent.toFixed(0)}%)` : '')
       + (s.notConverged ? ' — did not reach the end criteria' : '')
       + (s.warn && s.warn.length ? ` — ${s.warn.length} solver warning(s)` : '');
     b.onclick = () => {
@@ -1520,11 +1629,25 @@ function poll() {
     try {
       const st = await apiJson(`/api/status?offset=${app.logOffset}`);
       app.logOffset = st.nextOffset;
+      app.runProject = st.project || '';
       appendLog(st.lines);
       setRunUI(st.state, st.percent, st.elapsed, st.stageInfo);
       updateRunStats(st);
+      updateRunChip(st);
       if (['starting', 'running', 'post'].includes(st.state)) poll();
       else if (st.state === 'done') {
+        // a finished run must not yank you out of whatever you moved on
+        // to: offer it instead of forcing it
+        const owner = st.project || '';
+        if (owner !== (app.project.name || '')) {
+          uiNotice(`Simulation of “${owner || 'untitled'}” finished while you were `
+            + `working on “${app.project.name || 'another project'}”. `
+            + 'Open it from File → Browse runs…, or from the project\'s ▤ results '
+            + 'browser — your current work is untouched.', 'info', 14000);
+          updateRunChip(st);
+          refreshPastRuns();
+          return;
+        }
         if (st.notConverged) {
           $('runState').textContent = 'done — NOT converged';
           uiNotice('The run hit the timestep limit before reaching the end criteria — '
@@ -4215,6 +4338,9 @@ function loadProject(p) {
       app.refreshMesh();
     }
   }
+  // a background run keeps going across the switch: re-evaluate whose it
+  // is right away instead of waiting for the next poll tick
+  if (app._lastRunStat) updateRunChip(app._lastRunStat);
   refreshPastRuns();   // the list is scoped to the loaded project
   refreshLoadedPane(); // the editor's project heads the review list
   resetHistory();      // a freshly loaded project is the new baseline
@@ -4404,6 +4530,7 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   $('btnRun').addEventListener('click', startRun);
   $('btnStop').addEventListener('click', stopRun);
+  $('runChip').addEventListener('click', () => { showTab('run'); showView('editor'); });
 
   // stackup manager / colors / help modals
   $('stackClose').addEventListener('click', () => { $('stackModal').hidden = true; });

@@ -20,7 +20,11 @@
       "Bash(systemctl --user show openems-webgui -p WorkingDirectory,ExecStart,FragmentPath)",
       "Bash(python3 -m pytest tests/test_unit_polybool.py -q)",
       "Bash(python3 -m pytest tests/test_unit_simplify.py tests/test_unit_polybool.py -q)",
-      "Bash(systemctl --user show openems-webgui -p ActiveState,MainPID)"
+      "Bash(systemctl --user show openems-webgui -p ActiveState,MainPID)",
+      "Bash(python3 -m pytest tests/test_unit_cosim.py::test_run_status_keeps_stage_samples_separate -q)",
+      "Bash(break)",
+      "Bash(python3 -m pytest tests/test_unit_cosim.py::test_thread_cap_is_only_emitted_when_asked_for -q)",
+      "Bash(python3 -m pytest tests/test_unit_cosim.py -q)"
     ]
   }
 }

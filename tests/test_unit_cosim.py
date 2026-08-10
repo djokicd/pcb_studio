@@ -8,7 +8,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import server
-from helpers import parse_sparams
+from helpers import parse_sparams, stackup, sim_settings, rect, lumped_port
+import time
+from scriptgen import generate_script
 
 FREQS = [1e9, 2e9]
 
@@ -166,8 +168,7 @@ def test_run_status_keeps_stage_samples_separate():
     r.nrts, r.end_db = 30000, -40.0
     for exc in (2, 1):
         r.stages.append({'exc': exc})
-        r.stage_data.append({'exc': exc, 'label': f'Exc {exc}', 'samples': [],
-                             'info': {}, 'warn': [], 'notConverged': False})
+        r.stage_data.append(server.Runner._new_stage_record(exc, f'Exc {exc}'))
         r.state = 'running'
         r._parse(f'Timestep: 100 || Speed: 50.0 MC/s [@1s] Energy: ~0 (-{exc}.00dB)')
         r._parse(f'Timestep: 200 || Speed: 60.0 MC/s [@2s] Energy: ~0 (-{exc * 5}.00dB)')
@@ -413,3 +414,107 @@ def test_jsteady_superposes_stage_dumps(tmp_path, monkeypatch):
         assert c.get(f'/api/results/{run.name}/jsteady/top/0?drive=2').status_code == 400
         # a run without devices reports no steady view
         assert c.get('/api/results/no_such/jsteady/top/0').status_code == 400
+
+
+def _fake_solver(script_path, seconds=0.3):
+    """A stand-in for octave that emits the GUI markers and exits 0."""
+    return (
+        'import time\n'
+        'print("GUI_MARKER: mesh = 1000 cells", flush=True)\n'
+        'print("GUI_MARKER: starting FDTD", flush=True)\n'
+        'print("[@ 1s] Timestep 100 || Speed 10.0 MC/s || Energy: -10.0 dB", flush=True)\n'
+        f'time.sleep({seconds})\n'
+        'print("GUI_MARKER: post-processing", flush=True)\n'
+        'print("GUI_MARKER: done", flush=True)\n'
+    )
+
+
+def _parallel_runner(tmp_path, monkeypatch, parallel, seconds=0.3):
+    import subprocess as sp
+    fake = tmp_path / 'fake_solver.py'
+    fake.write_text(_fake_solver(fake, seconds))
+    real_popen = sp.Popen
+    monkeypatch.setattr(server.subprocess, 'Popen',
+                        lambda cmd, **kw: real_popen(['python3', str(fake)], **kw))
+    monkeypatch.setattr(server, 'generate_script', lambda m: '% fake')
+    monkeypatch.setattr(server, 'merge_excitations', lambda *a, **k: None)
+    monkeypatch.setattr(server, 'combine_devices', lambda *a, **k: None)
+    model = json.loads(json.dumps(_amp_model()))
+    model['sim']['parallel'] = parallel
+    return server.Runner(), model
+
+
+def _amp_model():
+    return {
+        'name': 'partest',
+        'board': {'width': 20, 'height': 10},
+        'stackup': stackup(),
+        'shapes': [rect('l', 1, 4.6, 18, 0.8)],
+        'vias': [], 'components': [], 'devices': [], 'notes': [],
+        'ports': [lumped_port(n, 1 + 4 * (n - 1), 4.6, 0.4, 0.8, excite=(n == 1))
+                  for n in (1, 2, 3, 4)],
+        'sim': dict(sim_settings(), fullS=True),
+    }
+
+
+def _drain(runner, timeout=30):
+    t0 = time.time()
+    peak = 0
+    while time.time() - t0 < timeout:
+        st = runner.status()
+        peak = max(peak, len(st['running']))
+        if st['state'] in ('done', 'error', 'stopped'):
+            return st, peak
+        time.sleep(0.02)
+    raise AssertionError('run did not finish')
+
+
+def test_excitations_run_sequentially_by_default(tmp_path, monkeypatch):
+    r, model = _parallel_runner(tmp_path, monkeypatch, parallel=1)
+    r.start(model)
+    st, peak = _drain(r)
+    assert st['state'] == 'done'
+    assert peak == 1, f'expected one solver at a time, saw {peak}'
+    assert len(st['stages']) == 4 and all(s['state'] == 'done' for s in st['stages'])
+
+
+def test_parallel_setting_runs_excitations_side_by_side(tmp_path, monkeypatch):
+    r, model = _parallel_runner(tmp_path, monkeypatch, parallel=4)
+    r.start(model)
+    st, peak = _drain(r)
+    assert st['state'] == 'done'
+    assert peak == 4, f'expected four solvers at once, saw {peak}'
+    assert st['parallel'] == 4
+    assert st['percent'] == 100.0
+
+
+def test_parallel_is_capped_by_the_number_of_excitations(tmp_path, monkeypatch):
+    r, model = _parallel_runner(tmp_path, monkeypatch, parallel=16)
+    r.start(model)
+    st, peak = _drain(r)
+    assert st['parallel'] == 4 and peak <= 4
+
+
+def test_queue_refills_as_slots_free_up(tmp_path, monkeypatch):
+    r, model = _parallel_runner(tmp_path, monkeypatch, parallel=2)
+    r.start(model)
+    st, peak = _drain(r)
+    assert st['state'] == 'done'
+    assert peak == 2
+    assert all(s['state'] == 'done' for s in st['stages'])
+
+
+def test_status_names_the_project_that_is_running(tmp_path, monkeypatch):
+    r, model = _parallel_runner(tmp_path, monkeypatch, parallel=2)
+    r.start(model)
+    assert r.status()['project'] == 'partest'
+    _drain(r)
+
+
+def test_thread_cap_is_only_emitted_when_asked_for():
+    """openEMS benchmarks the mesh and picks its own thread count; the
+    script only forces one when the user set a cap."""
+    m = _amp_model()
+    assert '--numThreads' not in generate_script(m)
+    m['sim']['numThreads'] = 3
+    assert "RunOpenEMS(Sim_Path, Sim_File, '--numThreads=3');" in generate_script(m)

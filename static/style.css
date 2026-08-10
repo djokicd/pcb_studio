@@ -178,6 +178,24 @@ main { flex: 1; display: flex; min-height: 0; }
   color: var(--mr-col); text-transform: uppercase; font-size: 10px;
   letter-spacing: 0.05em; min-width: 42px;
 }
+/* top-bar chip for a simulation running in the background */
+.runchip {
+  display: flex; align-items: center; gap: 6px; margin-right: 8px;
+  padding: 3px 10px; font-size: 11.5px; border-radius: 11px;
+  background: none; border: 1px solid var(--accent); color: var(--accent);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.runchip[hidden] { display: none; }
+.runchip:hover { background: var(--accent-bg); color: #fff; }
+.runchip.foreign { border-color: #c98500; color: #c98500; }
+.runchip.foreign:hover { background: #c98500; color: #fff; }
+.runforeign {
+  margin: 0 0 8px; padding: 6px 8px; border-radius: 4px; font-size: 11px;
+  line-height: 1.45; color: #c98500;
+  border: 1px solid rgba(201,133,0,0.45); background: rgba(201,133,0,0.08);
+}
+.runforeign[hidden] { display: none; }
+.runtabs button.queued { opacity: 0.55; }
 .tabs[hidden] { display: none; }
 /* the left panel is user-resizable: fit as many tool columns as it takes */
 #meshTools { grid-template-columns: repeat(auto-fit, minmax(52px, 1fr)); }

@@ -562,7 +562,45 @@ timestep 0, so their samples, engine facts and warnings are kept in
 separate records instead of being concatenated into overlapping curves.
 The tab of a stage is selected automatically as that stage starts, a
 manual selection is then left alone, and tabs mark stages that produced
-warnings or failed to converge.
+warnings or failed to converge — plus whether each one is queued,
+solving, finished or cancelled.
+
+### Solving excitations in parallel
+
+An S-parameter device, the full-S-matrix option or several excited ports
+turn one Run into several solver runs. **Parallel excitations** in the
+Run tab solves that many side by side instead of one after another; the
+tab shows how many the design needs and what the setting will do, and
+the run monitor reports `2/4 excitations · 3 running in parallel`. The
+stages are wholly independent — separate directories, no shared state —
+so this is purely a scheduling change, and on a short run of the bundled
+4-port amplifier the combined S-matrix came out **bit-identical** to the
+sequential one (max difference 0.000e+00 across all 51 frequencies).
+
+Identical output is not guaranteed in general, though, and the reason is
+worth knowing: openEMS checks its energy end-criterion on wall-clock
+paced blocks, so a busier machine evaluates it at different timesteps and
+stops at a different residual energy. On a longer run of the same board
+the sequential stages ran to −70…−73 dB while the parallel ones stopped
+at −56…−60 dB — both far past the −45 dB asked for — and the S-matrices
+then differed by 1.1e-3 (≈ −60 dB relative). That is residual energy,
+not a scheduling error; solve sequentially if you need a run reproducible
+to the last bit.
+
+**Threads are left to openEMS.** It benchmarks the actual mesh at
+startup and picks the thread count that is fastest for it, which beats
+splitting the cores by hand: on a small board it settles on one thread,
+so N instances simply occupy N cores. Measured on the bundled amplifier
+(4 excitations, 8 cores), openEMS chose 1 thread and the run took 34 s
+sequentially, **17.5 s at 2× and 17.0 s at 4×**. Forcing `cores / N`
+threads instead made the 2× case *slower than sequential* (42 s), which
+is why the split is not the default. A **Threads per excitation** cap is
+available for boards where memory bandwidth, not cores, is the limit.
+
+The cost is memory: each excitation is a full openEMS instance holding
+its own field arrays, so peak memory multiplies by the parallel count.
+A failing excitation stops its siblings rather than burning cores on a
+run whose combination can no longer be assembled.
 
 ## Nothing is lost when the browser goes away
 
@@ -575,6 +613,23 @@ For long unattended simulations, run the server as a systemd user service
 (`./scripts/install-service.sh`, see
 [Run as a service](#run-as-a-service-recommended)) so it outlives
 terminals and login sessions.
+
+### Keep working while it solves
+
+The run belongs to the server, not to the browser tab, so a simulation
+is not a modal state: **open another project, edit it, preview its mesh,
+or browse any past run's results while the solver works.** A chip in the
+top bar shows the running project and its progress from anywhere and
+takes you back to the monitor in one click; it turns amber when the run
+belongs to a project other than the one you have open, and the Run tab
+says whose run it is.
+
+A run that finishes while you have moved on **will not pull you out of
+what you are doing** — instead of switching the view to its results, it
+posts a notice telling you where to find them (File → Browse runs…, or
+the project's ▤ results browser). The Run button stays disabled with the
+name of the project currently solving, since the server runs one
+simulation at a time.
 
 ### Session restore
 

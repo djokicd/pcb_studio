@@ -94,6 +94,7 @@
   </nav>
   <span id="projName" class="proj-name" title="Project name — set by File &rarr; Save as / Open, never edited directly"></span>
   <span class="spacer"></span>
+  <button id="runChip" class="runchip" hidden></button>
   <button id="btnRun" class="primary" title="Run the simulation with Octave/openEMS">&#9654; Run</button>
   <button id="btnStop" disabled title="Stop the running simulation">&#9632; Stop</button>
   <input id="fileInput" type="file" accept=".json,application/json" hidden>
@@ -630,10 +631,29 @@
 
     <div id="tab-run" class="tabpage">
       <h3>Run</h3>
+      <div id="runForeign" class="runforeign" hidden></div>
       <div class="runbar">
         <div class="progress"><div id="progFill"></div></div>
         <div class="runmeta"><span id="runState">idle</span><span id="runEta"></span><span id="runElapsed"></span></div>
       </div>
+
+      <div class="form" style="margin-top:10px">
+        <label title="Runs that need several excitations (S-parameter devices, the full S-matrix option, or several excited ports) can solve them side by side instead of one after another. Each one is a full openEMS instance: the cores are split between them, but the memory multiplies.">
+          Parallel excitations
+          <select id="s_parallel">
+            <option value="1">1 — one after another</option>
+            <option value="0">auto (half the cores)</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="6">6</option>
+            <option value="8">8</option>
+          </select>
+        </label>
+        <label title="Threads each openEMS instance may use. Empty lets openEMS benchmark the mesh and choose — usually the fastest option, and on small boards it settles on one thread so the instances simply fill the cores. Set a number only if parallel runs are starved by memory bandwidth.">
+          Threads per excitation <input id="s_threadsPerExc" type="number" step="1" min="0" placeholder="auto"></label>
+      </div>
+      <p class="muted mini-note" id="runParallelNote"></p>
 
       <nav id="runTabs" class="runtabs" hidden title="One tab per excitation — each solver run restarts at timestep 0, so they are charted separately"></nav>
       <p id="runDiagNote" class="muted" hidden style="margin:4px 0 0"></p>

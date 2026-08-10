@@ -506,7 +506,18 @@ def generate_script(model):
     a("Sim_Path = '.'; Sim_File = 'pcb_sim.xml';")
     a('WriteOpenEMS([Sim_Path filesep Sim_File], FDTD, CSX);')
     a("disp('GUI_MARKER: starting FDTD');")
-    a('RunOpenEMS(Sim_Path, Sim_File);')
+    # When several excitations are solved side by side the cores have to be
+    # shared: without a cap every instance would grab the whole machine and
+    # they would all thrash. The runner sets numThreads = cores / parallel.
+    nthreads = (model.get('sim') or {}).get('numThreads')
+    try:
+        nthreads = int(nthreads) if nthreads else 0
+    except (TypeError, ValueError):
+        nthreads = 0
+    if nthreads > 0:
+        a(f"RunOpenEMS(Sim_Path, Sim_File, '--numThreads={nthreads}');")
+    else:
+        a('RunOpenEMS(Sim_Path, Sim_File);')
     a('')
     a('%% --- post-processing --------------------------------------------')
     a("disp('GUI_MARKER: post-processing');")

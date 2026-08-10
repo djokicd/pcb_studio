@@ -217,6 +217,10 @@ def merge_excitations(run_dir, model, stages):
     (run_dir / 'sparams.csv').write_text('\n'.join(lines) + '\n')
 
 MAX_LOG_LINES = 5000
+# hard ceiling on excitations solved side by side. Each one is a full
+# openEMS instance holding its own field arrays, so memory - not cores -
+# is what bites first on a large board.
+MAX_PARALLEL = 16
 
 app = Flask(__name__, static_folder='static', static_url_path='')
 
@@ -248,31 +252,53 @@ class Runner:
         self.info = {}           # parsed engine facts (version, dt, ...)
         self.warn_msgs = []      # solver warnings, deduped
         self.stages = []
-        # one record per launched excitation: each Octave run restarts its
-        # timestep counter, so samples must not be concatenated
+        # one record per excitation: each Octave run restarts its timestep
+        # counter, so samples must not be concatenated. Records exist from
+        # the start (state 'queued') so the run view can show the whole
+        # plan, not just what has been launched.
         self.stage_data = []
         self.stage_idx = 0
         self.merge_only = False
         self.stage_info = ''
-        self._stage_done = False
         self.devices = []
         self.base_model = None
+        self.project = ''        # which design this run belongs to
+        self.parallel = 1        # excitations solved side by side
+        self.threads = 0         # openEMS threads per excitation (0 = auto)
+        self.procs = {}          # stage index -> live subprocess
 
-    def _scaled(self, pct):
-        n = max(1, len(self.stages))
-        return (self.stage_idx * 100.0 + pct) / n
+    def _sync_progress_locked(self):
+        """Overall progress: the mean over all stages, so every excitation
+        contributes its own share whether it runs alone or beside others."""
+        n = max(1, len(self.stage_data))
+        self.percent = sum(s.get('percent', 0.0) for s in self.stage_data) / n
 
     def _stage(self):
-        """Record of the excitation currently being solved."""
+        """Record of the excitation currently being solved (single-stage
+        parsing helper; parallel readers address their record directly)."""
         if not self.stage_data:
-            self.stage_data.append({'exc': None, 'label': 'Run', 'samples': [],
-                                    'info': {}, 'warn': [], 'notConverged': False})
+            self.stage_data.append(self._new_stage_record(None, 'Run'))
         return self.stage_data[-1]
+
+    @staticmethod
+    def _new_stage_record(exc, label):
+        return {'exc': exc, 'label': label, 'samples': [], 'info': {},
+                'warn': [], 'notConverged': False, 'state': 'queued',
+                'percent': 0.0, 'done': False}
 
     def status(self, offset=0):
         with self.lock:
             offset = max(0, min(int(offset), len(self.log)))
-            cur = self.stage_data[-1] if self.stage_data else None
+            # the "current" stage for the single-stage top-level fields:
+            # whichever is running (the earliest, when several are), else
+            # the last one that produced anything
+            cur = None
+            for s in self.stage_data:
+                if s.get('state') == 'running':
+                    cur = s
+                    break
+            if cur is None and self.stage_data:
+                cur = self.stage_data[-1]
             return {
                 'runId': self.run_id,
                 'state': self.state,
@@ -291,17 +317,23 @@ class Runner:
                 'info': cur['info'] if cur else {},
                 'warnMsgs': cur['warn'] if cur else [],
                 'stageInfo': self.stage_info,
-                'stageIdx': len(self.stage_data) - 1,
+                'stageIdx': self.stage_data.index(cur) if cur in self.stage_data else 0,
                 'stageCount': max(len(self.stages), len(self.stage_data)),
+                'project': self.project,
+                'parallel': self.parallel,
+                'threads': self.threads,
+                'running': sorted(self.procs),
                 'stages': [{'exc': s['exc'], 'label': s['label'],
                             'samples': s['samples'], 'info': s['info'],
-                            'warn': s['warn'], 'notConverged': s['notConverged']}
+                            'warn': s['warn'], 'notConverged': s['notConverged'],
+                            'state': s.get('state', 'queued'),
+                            'percent': round(s.get('percent', 0.0), 1)}
                            for s in self.stage_data],
             }
 
     def start(self, model):
         with self.lock:
-            if self.proc is not None and self.proc.poll() is None:
+            if any(p.poll() is None for p in self.procs.values()):
                 raise RuntimeError('A simulation is already running')
             devices = validate_devices(model)   # raises ValidationError
             run_id = time.strftime('run_%Y%m%d_%H%M%S')
@@ -347,8 +379,38 @@ class Runner:
             stages.append({'dir': sim_dir, 'model': stage_model(exc),
                            'exc': exc if len(sweep) > 1 else None})
             merge_only = not (devices or full_s) and len(sweep) > 1
+
+            # how many excitations to solve side by side. They are wholly
+            # independent runs writing to separate directories, so the only
+            # shared resources are cores and memory: the thread budget is
+            # split between them, and the user is told the memory multiplies.
+            sim_cfg = model.get('sim') or {}
+            par = sim_cfg.get('parallel')
+            try:
+                par = int(par) if par else 1
+            except (TypeError, ValueError):
+                par = 1
+            if par <= 0:                       # 'auto'
+                par = max(1, (os.cpu_count() or 1) // 2)
+            par = max(1, min(par, len(stages), MAX_PARALLEL))
+            # Threads are left to openEMS by default. It benchmarks the
+            # actual mesh at startup and picks the count that is fastest
+            # for it, which beats any split computed here: on a small
+            # board it settles on 1 thread, so N instances simply use N
+            # cores. Forcing cores/N instead made a 4-excitation run of
+            # the bundled amplifier take 42 s at 2x against 17.5 s left
+            # alone (34 s sequential). An explicit cap stays available
+            # for boards where memory or bandwidth contention bites.
+            threads = sim_cfg.get('threadsPerExc')
+            try:
+                threads = max(0, int(threads)) if threads else 0
+            except (TypeError, ValueError):
+                threads = 0
+
             # validate every stage before anything runs
             for st in stages:
+                if threads:
+                    st['model'].setdefault('sim', {})['numThreads'] = threads
                 st['script'] = generate_script(st['model'])
 
             self._reset()
@@ -360,6 +422,15 @@ class Runner:
             self.stages = stages
             self.stage_idx = 0
             self.merge_only = merge_only
+            self.project = str(model.get('name') or '')
+            self.parallel = par
+            self.threads = threads
+            multi = len(stages) > 1
+            for i, st in enumerate(stages):
+                self.stage_data.append(self._new_stage_record(
+                    st.get('exc'),
+                    (f'Exc {st["exc"]}' if multi and st.get('exc') is not None
+                     else f'Run {i + 1}' if multi else 'Run')))
             # persist the exact model that produced this run: the run stays
             # self-describing and recoverable with no browser involved
             sim_dir.mkdir(parents=True, exist_ok=True)
@@ -367,59 +438,91 @@ class Runner:
             sim = model.get('sim') or {}
             self.nrts = max(1, int(sim.get('maxTimesteps') or 30000))
             self.end_db = float(sim.get('endCriteria') or -40.0)
-            self._launch_stage_locked()
+            self._pump_locked()
         return run_id
 
-    def _launch_stage_locked(self):
-        st = self.stages[self.stage_idx]
+    def _pump_locked(self):
+        """Keep `parallel` excitations in flight, launching queued ones as
+        slots free up."""
+        for idx, rec in enumerate(self.stage_data):
+            if len(self.procs) >= self.parallel:
+                break
+            if rec['state'] != 'queued':
+                continue
+            try:
+                self._launch_stage_locked(idx)
+            except Exception as e:
+                rec['state'] = 'error'
+                self.state = 'error'
+                self.error = f'failed to start excitation {idx + 1}: {e}'
+                return
+        self._update_stage_info_locked()
+
+    def _update_stage_info_locked(self):
+        n = len(self.stage_data)
+        if n <= 1:
+            self.stage_info = ''
+            return
+        done = sum(1 for s in self.stage_data if s['state'] in ('done', 'error'))
+        live = len(self.procs)
+        self.stage_info = f'{done}/{n} excitations'
+        if live > 1:
+            self.stage_info += f' · {live} running in parallel'
+
+    def _launch_stage_locked(self, idx):
+        st = self.stages[idx]
+        rec = self.stage_data[idx]
         st['dir'].mkdir(parents=True, exist_ok=True)
         (st['dir'] / 'pcb_sim.m').write_text(st['script'])
-        multi = len(self.stages) > 1
-        if multi:
-            self.stage_info = f'excitation {self.stage_idx + 1}/{len(self.stages)}'
-        # fresh sample/info record: this Octave run restarts at timestep 0
-        self.stage_data.append({
-            'exc': st.get('exc'),
-            'label': (f'Exc {st["exc"]}' if multi and st.get('exc') is not None
-                      else f'Run {self.stage_idx + 1}' if multi else 'Run'),
-            'samples': [], 'info': {}, 'warn': [], 'notConverged': False,
-        })
-        self.proc = subprocess.Popen(
+        rec['state'] = 'running'
+        proc = subprocess.Popen(
             ['stdbuf', '-oL', '-eL', 'octave', '--no-gui', '--no-window-system', 'pcb_sim.m'],
             cwd=st['dir'],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-        threading.Thread(target=self._reader, args=(self.proc,), daemon=True).start()
+        self.procs[idx] = proc
+        self.proc = proc          # kept for "is anything running" checks
+        threading.Thread(target=self._reader, args=(proc, idx), daemon=True).start()
 
     def stop(self):
         with self.lock:
-            proc = self.proc
-            if proc is None or proc.poll() is not None:
+            procs = [p for p in self.procs.values() if p.poll() is None]
+            if not procs:
                 return False
             self.state = 'stopped'
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            for _ in range(20):
-                if proc.poll() is not None:
-                    break
-                time.sleep(0.25)
-            if proc.poll() is None:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        for proc in procs:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+        for proc in procs:
+            try:
+                for _ in range(20):
+                    if proc.poll() is not None:
+                        break
+                    time.sleep(0.25)
+                if proc.poll() is None:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
         return True
 
     # ---- internal ------------------------------------------------------
-    def _append_line(self, line):
+    def _append_line(self, line, rec=None):
         line = line.rstrip()
         if not line:
             return
-        self.log.append(line)
+        # with several solvers talking at once the shared log needs to say
+        # who is speaking, or the interleaving is unreadable
+        tag = ''
+        if rec is not None and len(self.procs) > 1:
+            tag = f'[{rec["label"]}] '
+        self.log.append(tag + line)
         if len(self.log) > MAX_LOG_LINES:
             del self.log[:len(self.log) - MAX_LOG_LINES]
-        self._parse(line)
+        self._parse(line, rec)
 
     INFO_PATTERNS = [
         ('version', re.compile(r'openEMS \d+bit -- version (\S+)')),
@@ -435,8 +538,12 @@ class Runner:
         ('runTime', re.compile(r'Time for \d+ iterations with [\d.]+ cells\s*:\s*([\d.]+)\s*sec')),
     ]
 
-    def _parse(self, line):
-        stage = self._stage()
+    def _parse(self, line, stage=None):
+        if stage is None:
+            stage = self._stage()
+        stage.setdefault('state', 'running')
+        stage.setdefault('percent', 0.0)
+        stage.setdefault('done', False)
         self.info = stage['info']
         self.warn_msgs = stage['warn']
         for key, rx in self.INFO_PATTERNS:
@@ -453,7 +560,9 @@ class Runner:
             if len(self.warn_msgs[-1]) < 400:
                 self.warn_msgs[-1] += ' ' + line.strip()
         if 'GUI_MARKER: starting FDTD' in line:
-            self.state = 'running'
+            stage['state'] = 'running'
+            if self.state == 'starting':
+                self.state = 'running'
         elif 'GUI_MARKER: mesh' in line:
             m = re.search(r'=\s*(\d+)\s*cells', line)
             if m:
@@ -462,12 +571,14 @@ class Runner:
             self.not_converged = True
             stage['notConverged'] = True
         elif 'GUI_MARKER: post-processing' in line:
-            self.state = 'post'
-            self.percent = max(self.percent, self._scaled(97.0))
+            stage['state'] = 'post'
+            stage['percent'] = max(stage['percent'], 97.0)
+            self._sync_progress_locked()
         elif 'GUI_MARKER: done' in line:
-            self._stage_done = True
-            self.percent = max(self.percent, self._scaled(100.0) - 0.1)
-        elif self.state in ('starting', 'running'):
+            stage['done'] = True
+            stage['percent'] = max(stage['percent'], 99.9)
+            self._sync_progress_locked()
+        elif stage['state'] in ('queued', 'running'):
             pct = None
             sample = {}
             m = TIMESTEP_RE.search(line)
@@ -492,11 +603,13 @@ class Runner:
                 if len(stage['samples']) > 2000:
                     del stage['samples'][:1000]
             if pct is not None:
-                self.percent = max(self.percent, self._scaled(min(96.0, pct)))
+                stage['percent'] = max(stage['percent'], min(96.0, pct))
+                self._sync_progress_locked()
 
-    def _reader(self, proc):
+    def _reader(self, proc, idx=0):
         buf = b''
         stream = proc.stdout
+        rec = self.stage_data[idx] if idx < len(self.stage_data) else None
         while True:
             chunk = stream.read(256)
             if not chunk:
@@ -507,32 +620,48 @@ class Runner:
             buf = parts.pop()
             with self.lock:
                 for p in parts:
-                    self._append_line(p.decode('utf-8', 'replace'))
+                    self._append_line(p.decode('utf-8', 'replace'), rec)
         rc = proc.wait()
         with self.lock:
             if buf:
-                self._append_line(buf.decode('utf-8', 'replace'))
+                self._append_line(buf.decode('utf-8', 'replace'), rec)
+            self.procs.pop(idx, None)
             if self.state == 'stopped':
+                if rec is not None:
+                    rec['state'] = 'stopped'
                 return
-            stage_ok = rc == 0 and self._stage_done
+            stage_ok = rc == 0 and rec is not None and rec['done']
             if not stage_ok:
-                self.state = 'error'
-                self.error = f'Octave exited with code {rc}'
-                tail = [l for l in self.log[-15:] if 'error' in l.lower()]
-                if tail:
-                    self.error += ': ' + tail[-1]
-                self._write_diagnostics_locked()
-                return
-            if self.stage_idx + 1 < len(self.stages):
-                self.stage_idx += 1
-                self._stage_done = False
-                try:
-                    self._launch_stage_locked()
-                except Exception as e:
+                # the first failure owns the error; the siblings it takes
+                # down with it were cancelled, not broken
+                if rec is not None:
+                    rec['state'] = 'error' if self.state != 'error' else 'cancelled'
+                if self.state != 'error':
                     self.state = 'error'
-                    self.error = f'failed to start next excitation: {e}'
+                    label = rec['label'] if rec else 'the run'
+                    self.error = f'{label}: Octave exited with code {rc}'
+                    tail = [l for l in self.log[-15:] if 'error' in l.lower()]
+                    if tail:
+                        self.error += ': ' + tail[-1]
+                    self._write_diagnostics_locked()
+                # a failed excitation makes the combination meaningless -
+                # stop the others rather than burn cores on a dead run
+                siblings = [p for p in self.procs.values() if p.poll() is None]
+                threading.Thread(target=self._kill_all, args=(siblings,),
+                                 daemon=True).start()
                 return
-            # all stages finished
+            rec['state'] = 'done'
+            rec['percent'] = 100.0
+            self._sync_progress_locked()
+            if any(s['state'] == 'queued' for s in self.stage_data):
+                self._pump_locked()
+                return
+            if self.procs:
+                self._update_stage_info_locked()
+                return              # siblings still solving
+            # every stage finished
+            self.state = 'post'
+            self.stage_info = 'combining excitations'
             if len(self.stages) > 1:
                 try:
                     if self.merge_only:
@@ -551,8 +680,17 @@ class Runner:
                     return
             self.percent = 100.0
             self.state = 'done'
+            self.stage_info = ''
             self._write_diagnostics_locked()
             self._autosave_locked()
+
+    @staticmethod
+    def _kill_all(procs):
+        for proc in procs:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
 
     def _write_diagnostics_locked(self):
         """Persist the Run-tab diagnostics next to the results: the
