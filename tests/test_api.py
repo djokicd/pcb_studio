@@ -124,3 +124,34 @@ def test_simplify_endpoint_bad_opts():
     r = client().post('/api/simplify',
                       json={'model': model(), 'opts': {'tol': 'garbage'}})
     assert r.status_code == 400
+
+
+def test_tools_endpoint_lists_tools():
+    c = client()
+    r = c.get('/api/tools')
+    assert r.status_code == 200
+    ids = [t['id'] for t in r.get_json()['tools']]
+    assert 'rf_chain' in ids
+
+
+def test_tool_schema_and_action():
+    c = client()
+    r = c.post('/api/tools/rf_chain/schema', json={})
+    assert r.status_code == 200 and r.get_json()['fields']
+    r = c.post('/api/tools/rf_chain/analyse',
+                    json={'device': 'BFG25AWJ.S2P', 'f0': 1e9,
+                          'gs_mag': 0.3, 'gs_ang': 90,
+                          'gl_mag': 0.3, 'gl_ang': 40})
+    assert r.status_code == 200
+    assert 'series' in r.get_json() and 'schematic' in r.get_json()
+
+
+def test_unknown_tool_is_404():
+    assert client().post('/api/tools/nope/schema', json={}).status_code == 404
+
+
+def test_bad_tool_input_is_400_not_500():
+    r = client().post('/api/tools/rf_chain/analyse',
+                      json={'device': 'does_not_exist.s2p'})
+    assert r.status_code == 400
+    assert 'error' in r.get_json()

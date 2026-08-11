@@ -4504,6 +4504,11 @@ window.addEventListener('DOMContentLoaded', () => {
   loadDevLib();
   $('jScaleBar').style.background = `linear-gradient(to right, ${J_RAMP.join(', ')})`;
   initMeshTools();
+  loadAdvTools();          // Tools -> Advanced tools, populated from the server
+  $('advClose').addEventListener('click', () => { $('advModal').hidden = true; });
+  $('advModal').addEventListener('click', e => {
+    if (e.target === $('advModal')) $('advModal').hidden = true;
+  });
 
   // top bar + modals
   $('projClose').addEventListener('click', () => { $('projModal').hidden = true; });

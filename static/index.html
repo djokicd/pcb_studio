@@ -80,6 +80,8 @@
         <button data-action="toolNote">Note <kbd>N</kbd></button>
         <div class="menu-label">Configuration</div>
         <button data-action="stackman">Stackup manager&hellip;</button>
+        <div class="menu-label">Advanced tools</div>
+        <div id="advToolsMenu"></div>
         <div class="menu-label">Verification</div>
         <button data-action="tests">Verification tests&hellip;</button>
       </div>
@@ -759,6 +761,23 @@
   </div>
 </div>
 
+<div id="advModal" hidden>
+  <div class="uic-box adv-box">
+    <div class="modal-head">
+      <span id="advTitle">Advanced tool</span>
+      <button id="advClose">&#10005;</button>
+    </div>
+    <p class="muted mini-note" id="advIntro"></p>
+    <div class="adv-layout">
+      <div id="advForm" class="adv-form"></div>
+      <div class="adv-right">
+        <div id="advWarn" class="runforeign" hidden></div>
+        <div id="advPanels" class="adv-panels"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="simpModal" hidden>
   <div class="uic-box">
     <div class="modal-head"><span>Simplify geometry</span><button id="simpClose">&#10005;</button></div>
@@ -884,6 +903,7 @@
 <script src="js/jview.js"></script>
 <script src="js/editor.js"></script>
 <script src="js/meshtab.js"></script>
+<script src="js/advtools.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

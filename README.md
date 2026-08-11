@@ -34,6 +34,9 @@ S-parameters and Smith charts down to animated surface-current density.
   [current density](#current-density) ·
   [slice impedance](#slice-impedance-probe)
 - [Projects, files and export](#projects-files-and-export)
+- [Advanced tools](#advanced-tools) —
+  [RF amplifier chain](#rf-amplifier-chain) ·
+  [adding another tool](#adding-another-tool)
 - [Verification](#verification)
 - [Reference](#reference) — [repository layout](#repository-layout) ·
   [conventions](#conventions)
@@ -883,6 +886,80 @@ migrated automatically).
 
 ---
 
+# Advanced tools
+
+Design utilities that stand beside the PCB editor rather than inside it:
+they open from **Tools → Advanced tools**, work on their own inputs, and
+do not need a board loaded. They read the project's Touchstone library
+(`devices/`), so anything already imported for an S-parameter
+co-simulation is immediately available to them.
+
+## RF amplifier chain
+
+    [Z0 source] — input match — device (.s2p) — output match — [Z0 load]
+
+Pick a two-port from the library, set the reflection coefficients Γ_S and
+Γ_L you want presented to the device, and choose how each matching
+network is realized — lumped L-section, shunt open/short stub + line,
+quarter-wave transformer, or an ideal lossless reference. The networks
+are synthesized to hit those Γ at the design frequency and then evaluated
+over the device's whole measured band, so the off-frequency behaviour of
+each topology is visible rather than assumed.
+
+- **Schematic**: the matched chain drawn end to end — source, the
+  synthesized elements with their values (series/shunt L and C, stub and
+  line lengths in mm and λ), the device with its stabilization parts, and
+  the load, annotated with the Γ actually achieved.
+- **Plots**: gain and match (|S21|, MAG/MSG, |S11|, |S22|), SWR with K
+  and µ, and the reflections on a Smith chart.
+- **Best match @ f0** applies the simultaneous conjugate match, or — for
+  a conditionally stable device, where no such match exists — a
+  stable-region gain search.
+- **Stabilization**: series/shunt resistors at either port, an emitter
+  inductor and DC-blocking capacitors, applied before matching. The panel
+  reports K and µ and warns when the worst case over the measured range
+  is below 1.
+- **Optimize for band** searches Γ_S/Γ_L (and optionally the
+  stabilization network itself, 9 parameters) so the *realized* chain
+  meets minimum-gain and maximum-SWR targets at every point in a band,
+  while requiring unconditional stability over the device's entire
+  measured range — an amplifier must not oscillate out of band either.
+  It runs in the background with live progress and reports honestly when
+  a target is infeasible. On the bundled BFG25A over 0.8–1.2 GHz it finds
+  ≈6 Ω/298 Ω input, 3 Ω/356 Ω output loading and 0.43 nH of emitter
+  inductance: 9.6 dB at f0 against a 9.8 dB MAG, SWR 1.45/1.30, and
+  K ≥ 1.25 across the whole file.
+
+The maths came from a standalone scikit-rf application. Rather than pull
+scikit-rf and its dependency tree into a project that runs on Flask
+alone, the slice it used — a two-port container, the S/Z/ABCD
+conversions, a cascade and an ideal-line medium — is implemented on numpy
+in `advtools/rfnet.py`. The upstream package's own 28-test suite passes
+against it unchanged, which is how the port was checked. One difference
+worth recording: renormalizing through Z breaks on a half-wave line
+(`I − S` is singular there, turning a passive line into a 1.2× amplifier),
+so the shim uses the power-wave form instead.
+
+## Adding another tool
+
+A tool is one module in `advtools/tools/` exposing
+
+```python
+TOOL   = {'id': ..., 'name': ..., 'description': ..., 'group': ...}
+def schema():                     # fields, actions, panels
+def handle(action, payload):      # the actions
+```
+
+The registry discovers it, the menu lists it and the server routes to it
+through the same two endpoints (`/api/tools`, `/api/tools/<id>/<action>`)
+— no server, menu or UI edits. Controls and results are declarative: the
+browser owns the widgets (`number`, `select`, `check`, `freq`, `gamma`)
+and the panels (`table`, `text`, `chart`, `smith`, `schematic`), so a new
+tool describes what it wants rather than shipping its own interface. An
+action marked `job` runs in the background with polled progress.
+
+---
+
 # Verification
 
 ## Built-in tests
@@ -914,6 +991,9 @@ are flagged in the editor and before each run.
 - `geometry.py` – stackup z-positions, shape outlines, footprints
 - `meshlines.py` – mesh line generation (shared by preview and script)
 - `simplify.py` – stroke chaining, outline thinning, overlap cleanup
+- `advtools/` – advanced tools: registry, `rfnet.py` (numpy microwave
+  layer), `rfamp/` (matching, stability, optimization), `tools/` (one
+  module per tool)
 - `polybool.py` – polygon boolean union used by the overlap cleanup
 - `static/` – vanilla JS UI: `js/editor.js` (canvas editor),
   `js/meshtab.js` (Meshing view), `js/charts.js` (dB/Smith/polar +

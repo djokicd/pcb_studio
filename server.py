@@ -1733,6 +1733,33 @@ def api_project_run_delete(name, run_id):
     return jsonify({'deleted': run_id})
 
 
+@app.get('/api/tools')
+def api_tools():
+    """Registered advanced tools, for the Tools menu. Adding a tool is a
+    module drop-in - nothing here changes."""
+    try:
+        import advtools
+        return jsonify({'tools': advtools.list_tools()})
+    except Exception as e:
+        return jsonify({'tools': [], 'error': str(e)})
+
+
+@app.post('/api/tools/<tool_id>/<action>')
+def api_tool_action(tool_id, action):
+    """Run one action of one advanced tool."""
+    import advtools
+    payload = request.get_json(silent=True) or {}
+    try:
+        return jsonify(advtools.dispatch(tool_id, action, payload))
+    except KeyError as e:
+        return jsonify({'error': str(e)}), 404
+    except (ValueError, TypeError) as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        app.logger.exception('tool %s/%s failed', tool_id, action)
+        return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
+
+
 @app.post('/api/simplify')
 def api_simplify():
     """Simplify a model's shapes: merge imported stroke chains into

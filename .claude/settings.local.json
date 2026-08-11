@@ -24,7 +24,30 @@
       "Bash(python3 -m pytest tests/test_unit_cosim.py::test_run_status_keeps_stage_samples_separate -q)",
       "Bash(break)",
       "Bash(python3 -m pytest tests/test_unit_cosim.py::test_thread_cap_is_only_emitted_when_asked_for -q)",
-      "Bash(python3 -m pytest tests/test_unit_cosim.py -q)"
+      "Bash(python3 -m pytest tests/test_unit_cosim.py -q)",
+      "Bash(sed -i 's/^import skrf$/from .. import rfnet as skrf/' *.py)",
+      "Bash(sed -i 's/^from skrf\\\\.media import DefinedGammaZ0$/from ..rfnet import DefinedGammaZ0/' *.py)",
+      "Bash(sed -i 's/^        from skrf\\\\.media import DefinedGammaZ0$/        from ..rfnet import DefinedGammaZ0/' *.py)",
+      "Bash(touch advtools/__init__.py)",
+      "Bash(python3 -c ' *)",
+      "Bash(mkdir -p /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/scratchpad/porttest)",
+      "Bash(cp /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/scratchpad/rfd/tests/test_rfamp.py /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/scratchpad/porttest/)",
+      "Bash(sed -i 's/^import skrf$/from advtools import rfnet as skrf/' test_rfamp.py)",
+      "Bash(sed -i 's/^from rfamp import/from advtools.rfamp import/; s/^import rfamp$/from advtools import rfamp/; s/^from rfamp\\\\./from advtools.rfamp./' test_rfamp.py)",
+      "Bash(mkdir -p examples)",
+      "Bash(cp /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/scratchpad/rfd/examples/make_sample_s2p.py examples/)",
+      "Bash(cp /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/scratchpad/rfd/examples/BFG25AWJ.S2P examples/)",
+      "Bash(touch examples/__init__.py)",
+      "Bash(sed -i 's/^import skrf$/from advtools import rfnet as skrf/' examples/make_sample_s2p.py)",
+      "Bash(PYTHONPATH=/home/djokicd/OpenEMS_WebGUI:/tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/scratchpad/porttest python3 -m pytest /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/scratchpad/porttest/test_rfamp.py::test_stabilize_noop -q)",
+      "Bash(mkdir -p tests)",
+      "Bash(mv test_rfamp.py tests/)",
+      "Bash(cp /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/scratchpad/rfd/examples/sample_fet.s2p examples/)",
+      "Bash(PYTHONPATH=/home/djokicd/OpenEMS_WebGUI:/tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/scratchpad/porttest timeout 900 python3 -m pytest /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/scratchpad/porttest/tests/test_rfamp.py -q)",
+      "Bash(curl -s http://127.0.0.1:8036/api/tools)",
+      "Bash(curl -s -X POST http://127.0.0.1:8036/api/tools/rf_chain/schema -H 'Content-Type: application/json' -d '{}')",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('fields',len\\(d['fields']\\),'panels',[p['id'] for p in d['panels']]\\)\")",
+      "Bash(python3 -m pytest tests/test_api.py -q)"
     ]
   }
 }

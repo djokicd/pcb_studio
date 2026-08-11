@@ -196,6 +196,38 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 .runforeign[hidden] { display: none; }
 .runtabs button.queued { opacity: 0.55; }
+
+/* ---- advanced tools ---- */
+/* .uic-box caps at 440px and pre-wraps: neither suits a tool workspace.
+   Both selectors are one class, so this needs the extra specificity to
+   win regardless of where the rules sit in the file. */
+.uic-box.adv-box {
+  width: min(1180px, 96vw); max-width: none; height: min(860px, 92vh);
+  display: flex; flex-direction: column; white-space: normal;
+}
+.adv-layout { display: flex; gap: 14px; min-height: 0; flex: 1; overflow: hidden; }
+.adv-form {
+  width: 272px; flex: none; overflow-y: auto; padding-right: 6px;
+  border-right: 1px solid var(--border-soft);
+}
+.adv-form .form input, .adv-form .form select { width: 116px; }
+.adv-form h3:first-child { margin-top: 0; }
+.adv-gamma { display: flex; gap: 4px; }
+.adv-gamma input { width: 56px !important; }
+.adv-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.adv-right { flex: 1; min-width: 0; overflow-y: auto; }
+.adv-panels { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+.adv-card {
+  flex: 1 1 340px; min-width: 300px; background: var(--card);
+  border: 1px solid var(--border-soft); border-radius: 5px; padding: 8px 10px;
+}
+.adv-card:has(.adv-schematic) { flex-basis: 100%; }
+.adv-card h3 { margin: 0 0 6px; }
+.adv-body .plotwrap { height: 190px; }
+.adv-body .plotwrap canvas { width: 100%; }
+.adv-sch { width: 100%; overflow-x: auto; }
+#advIntro { margin: 4px 0 10px; }
+#advWarn { margin-bottom: 8px; }
 .tabs[hidden] { display: none; }
 /* the left panel is user-resizable: fit as many tool columns as it takes */
 #meshTools { grid-template-columns: repeat(auto-fit, minmax(52px, 1fr)); }
@@ -479,12 +511,14 @@ select.mini { font-size: 12px; padding: 2px 5px; }
 }
 .uic-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 #uicInput { width: 100%; margin-top: 12px; }
-#projModal, #stackModal, #colorsModal, #helpModal, #runsModal, #saveModal {
+/* every dialog backdrop, matched by id so a new one cannot be forgotten
+   (naming each was how simpModal, drillModal and advModal ended up
+   rendering inline at the top of the page instead of centred) */
+[id$="Modal"] {
   position: fixed; inset: 0; z-index: 65; background: rgba(0,0,0,0.55);
   display: flex; align-items: center; justify-content: center;
 }
-#projModal[hidden], #stackModal[hidden], #colorsModal[hidden],
-#helpModal[hidden], #runsModal[hidden], #saveModal[hidden] { display: none; }
+[id$="Modal"][hidden] { display: none; }
 .proj-box { width: 460px; max-height: 70vh; display: flex; flex-direction: column; }
 .proj-list {
   list-style: none; margin: 10px 0 0; padding: 0; overflow-y: auto; flex: 1;
@@ -634,3 +668,5 @@ select.mini { font-size: 12px; padding: 2px 5px; }
   white-space: nowrap; overflow: hidden;
   font-variant-numeric: tabular-nums;
 }
+
+.adv-bad { color: #e66767; }
