@@ -518,3 +518,77 @@ def test_thread_cap_is_only_emitted_when_asked_for():
     assert '--numThreads' not in generate_script(m)
     m['sim']['numThreads'] = 3
     assert "RunOpenEMS(Sim_Path, Sim_File, '--numThreads=3');" in generate_script(m)
+
+
+def test_split_threads_balances_the_cores():
+    """Side-by-side big-mesh runs each get an even share; small meshes
+    get one core each (openEMS gains nothing from more there); a stage
+    launching with few companions takes a larger share."""
+    big, small = 1_500_000, 100_000
+    # 4-way start on 8 cores: 2 threads each, never 9/1/1/1
+    assert server.split_threads(8, big, 4, 0, 4) == 2
+    assert server.split_threads(8, big, 4, 3, 1) == 2
+    # small meshes: one core per instance regardless of width
+    assert server.split_threads(8, small, 4, 0, 4) == 1
+    # a stage launching beside a single live run shares halfway
+    assert server.split_threads(8, big, 4, 1, 1) == 4
+    # last stage alone on the machine
+    assert server.split_threads(8, big, 4, 0, 1) == 8
+    # never below one thread
+    assert server.split_threads(2, big, 4, 0, 4) == 1
+
+
+def test_split_threads_scales_to_many_core_servers():
+    """On a 32-core box the even share alone would oversubscribe medium
+    meshes; the per-mesh cap keeps threads at what the cells can feed."""
+    # 2-way on 32 cores, 500k cells: fair share is 16, useful is 3
+    assert server.split_threads(32, 500_000, 2, 0, 2) == 3
+    # a genuinely large mesh takes the full even share
+    assert server.split_threads(32, 5_000_000, 4, 0, 4) == 8
+    # small meshes still run one thread each, cores notwithstanding
+    assert server.split_threads(32, 100_000, 4, 0, 4) == 1
+    # 1.5M cells, 2-way: capped by the mesh (10) inside the share (16)
+    assert server.split_threads(32, 1_500_000, 2, 0, 2) == 10
+
+
+def test_parallel_big_mesh_gets_even_thread_split(tmp_path, monkeypatch):
+    """The launch pins --numThreads = cores/parallel into each stage's
+    script; the openEMS startup benchmark must not be left to race."""
+    r, model = _parallel_runner(tmp_path, monkeypatch, parallel=4)
+    monkeypatch.setattr(server, 'generate_script',
+                        lambda m: 'RunOpenEMS(Sim_Path, Sim_File);')
+    monkeypatch.setattr(server, 'build_mesh',
+                        lambda m: {'cells': 2_000_000})
+    monkeypatch.setattr(server.os, 'cpu_count', lambda: 8)
+    r.start(model)
+    st, peak = _drain(r)
+    assert st['state'] == 'done' and peak == 4
+    assert [s['threads'] for s in st['stages']] == [2, 2, 2, 2]
+    for st_ in r.stages:
+        assert "--numThreads=2" in (st_['dir'] / 'pcb_sim.m').read_text()
+
+
+def test_parallel_small_mesh_runs_one_thread_each(tmp_path, monkeypatch):
+    r, model = _parallel_runner(tmp_path, monkeypatch, parallel=4)
+    monkeypatch.setattr(server, 'generate_script',
+                        lambda m: 'RunOpenEMS(Sim_Path, Sim_File);')
+    monkeypatch.setattr(server, 'build_mesh', lambda m: {'cells': 90_000})
+    monkeypatch.setattr(server.os, 'cpu_count', lambda: 8)
+    r.start(model)
+    st, _ = _drain(r)
+    assert [s['threads'] for s in st['stages']] == [1, 1, 1, 1]
+
+
+def test_explicit_thread_cap_disables_the_auto_split(tmp_path, monkeypatch):
+    """threadsPerExc is an override: the runner must not second-guess it."""
+    r, model = _parallel_runner(tmp_path, monkeypatch, parallel=4)
+    seen = []
+    monkeypatch.setattr(server, 'generate_script',
+                        lambda m: seen.append((m.get('sim') or {}).get('numThreads'))
+                        or 'RunOpenEMS(Sim_Path, Sim_File);')
+    monkeypatch.setattr(server, 'build_mesh', lambda m: {'cells': 2_000_000})
+    model['sim']['threadsPerExc'] = 3
+    r.start(model)
+    st, _ = _drain(r)
+    assert all(t == 3 for t in seen), seen
+    assert all(s['threads'] is None for s in st['stages'])

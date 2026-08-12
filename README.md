@@ -632,15 +632,40 @@ then differed by 1.1e-3 (≈ −60 dB relative). That is residual energy,
 not a scheduling error; solve sequentially if you need a run reproducible
 to the last bit.
 
-**Threads are left to openEMS.** It benchmarks the actual mesh at
-startup and picks the thread count that is fastest for it, which beats
-splitting the cores by hand: on a small board it settles on one thread,
-so N instances simply occupy N cores. Measured on the bundled amplifier
-(4 excitations, 8 cores), openEMS chose 1 thread and the run took 34 s
-sequentially, **17.5 s at 2× and 17.0 s at 4×**. Forcing `cores / N`
-threads instead made the 2× case *slower than sequential* (42 s), which
-is why the split is not the default. A **Threads per excitation** cap is
-available for boards where memory bandwidth, not cores, is the limit.
+**Threads.** A *single* run is left to openEMS, which benchmarks the
+actual mesh at startup and picks its own thread count. *Side-by-side*
+runs must not be: those startup benchmarks race — the first instance
+calibrates on an idle machine and grabs every core, the rest calibrate
+against that load and settle on one thread each (observed as a 9/1/1/1
+split on a 4-way run). The runner therefore assigns threads itself at
+each launch:
+
+- **small meshes** (< 400 k cells): one thread per instance — openEMS
+  gains nothing from more there. Measured on the bundled amplifier
+  (4 excitations, 8 cores): 34 s sequential, **17.5 s at 2× and 17.0 s
+  at 4×** with one thread each, while forcing 2 threads each made the
+  2× case *slower than sequential* (42 s);
+- **large meshes**: an even `cores / width` share, where *width* is how
+  many stages are actually in flight at that moment — so a stage
+  launched beside fewer live runs takes a larger share. On a 1.5 M-cell
+  board an 8-core machine saturates its memory bandwidth at 2–4 threads
+  (204 → 290 → 303 MC/s at 1/2/4; 284 at 8), so even shares also stop
+  oversubscription from *slowing* every stage down;
+- in both regimes the share is capped at **one thread per ~150 k
+  cells** — the point of the cap is many-core servers, where the even
+  share alone would hand a medium board 16 threads whose per-timestep
+  sync it cannot feed.
+
+The run monitor shows the outcome (`4 running in parallel · 2 threads
+each`). A **Threads per excitation** value overrides all of this, and
+
+```bash
+python3 scripts/bench-threads.py <project> --threads 1,2,4,8,16
+```
+
+measures the real thread scaling of a given project on whatever machine
+it runs on (fixed timestep count, one run per thread count) — useful for
+choosing an override on a new server.
 
 The cost is memory: each excitation is a full openEMS instance holding
 its own field arrays, so peak memory multiplies by the parallel count.

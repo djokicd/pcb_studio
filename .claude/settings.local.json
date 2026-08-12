@@ -68,7 +68,12 @@
       "Bash(timeout 500 bash -c 'until [ -s /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/tasks/bjwapfhic.output ] && grep -q \"PASS\\\\|FAIL\" /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/tasks/bjwapfhic.output && grep -qE \"passed|failed\" /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/tasks/bjwapfhic.output; do sleep 5; done')",
       "Bash(curl -s -X POST localhost:8036/api/mesh -H 'Content-Type: application/json' -d @projects/GCPW_line_100R/project.json)",
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('served mesh cells', d.get\\('cells'\\), 'minCell', d.get\\('minCell'\\)\\)\")",
-      "Bash(timeout 500 bash -c 'until grep -q \"153716: done\" /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/tasks/bio73rwid.output 2>/dev/null; do sleep 5; done')"
+      "Bash(timeout 500 bash -c 'until grep -q \"153716: done\" /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/tasks/bio73rwid.output 2>/dev/null; do sleep 5; done')",
+      "Bash(python3 -c \"import server; print\\('import ok'\\)\")",
+      "Bash(timeout 300 bash -c 'until grep -q \"4-way even\" /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/tasks/b0tt6r09e.output 2>/dev/null; do sleep 5; done')",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('state', d['state']\\)\")",
+      "Bash(chmod +x scripts/bench-threads.py)",
+      "Bash(python3 scripts/bench-threads.py GCPW_line_100R --threads 2 --ts 800)"
     ]
   }
 }

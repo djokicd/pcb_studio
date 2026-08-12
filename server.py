@@ -222,6 +222,30 @@ MAX_LOG_LINES = 5000
 # is what bites first on a large board.
 MAX_PARALLEL = 16
 
+# How many cells one openEMS thread can usefully digest: below this the
+# per-timestep barrier sync outweighs the extra worker. Measured here: a
+# 70k-cell board ran fastest at 1 thread (2 threads were slower than
+# sequential), 185k gained only 16% from a second thread, 1.5M peaked at
+# 2-4 threads of 8. The rule matters most on many-core servers, where an
+# even cores/parallel share alone would hand a medium board 16 threads.
+CELLS_PER_THREAD = 150_000
+
+
+def split_threads(cores, cells, parallel, live, queued):
+    """openEMS threads for the next stage launch when several excitations
+    share the machine. Left to itself each instance benchmarks thread
+    counts at startup - a race: the first calibrates on an idle machine
+    and grabs everything, the rest calibrate against that load and settle
+    on 1 (a 4-way run was observed splitting 9/1/1/1). So when running
+    side by side the split is computed here instead: an even share of the
+    cores over the stages actually in flight (a stage launching beside
+    fewer live runs gets the correspondingly larger share), capped at
+    what the mesh size can put to work."""
+    width = max(1, min(parallel, live + queued))
+    fair = max(1, cores // width)
+    useful = max(1, (cells or 0) // CELLS_PER_THREAD)
+    return min(fair, useful)
+
 app = Flask(__name__, static_folder='static', static_url_path='')
 
 TIMESTEP_RE = re.compile(r'Timestep:\s*(\d+)')
@@ -265,6 +289,8 @@ class Runner:
         self.project = ''        # which design this run belongs to
         self.parallel = 1        # excitations solved side by side
         self.threads = 0         # openEMS threads per excitation (0 = auto)
+        self.auto_split = False  # runner balances threads at each launch
+        self.plan_cells = None   # mesh size known before launch
         self.procs = {}          # stage index -> live subprocess
 
     def _sync_progress_locked(self):
@@ -284,7 +310,7 @@ class Runner:
     def _new_stage_record(exc, label):
         return {'exc': exc, 'label': label, 'samples': [], 'info': {},
                 'warn': [], 'notConverged': False, 'state': 'queued',
-                'percent': 0.0, 'done': False}
+                'percent': 0.0, 'done': False, 'threads': None}
 
     def status(self, offset=0):
         with self.lock:
@@ -327,7 +353,8 @@ class Runner:
                             'samples': s['samples'], 'info': s['info'],
                             'warn': s['warn'], 'notConverged': s['notConverged'],
                             'state': s.get('state', 'queued'),
-                            'percent': round(s.get('percent', 0.0), 1)}
+                            'percent': round(s.get('percent', 0.0), 1),
+                            'threads': s.get('threads')}
                            for s in self.stage_data],
             }
 
@@ -393,14 +420,18 @@ class Runner:
             if par <= 0:                       # 'auto'
                 par = max(1, (os.cpu_count() or 1) // 2)
             par = max(1, min(par, len(stages), MAX_PARALLEL))
-            # Threads are left to openEMS by default. It benchmarks the
-            # actual mesh at startup and picks the count that is fastest
-            # for it, which beats any split computed here: on a small
-            # board it settles on 1 thread, so N instances simply use N
-            # cores. Forcing cores/N instead made a 4-excitation run of
-            # the bundled amplifier take 42 s at 2x against 17.5 s left
-            # alone (34 s sequential). An explicit cap stays available
-            # for boards where memory or bandwidth contention bites.
+            # Threads: a SINGLE run is left to openEMS, which benchmarks
+            # the actual mesh at startup and picks its own count - that
+            # beats anything computed here. Side-by-side runs must NOT be
+            # left to it: the startup benchmarks race (the first instance
+            # calibrates on an idle machine and grabs every core, the
+            # rest calibrate against that load and settle on 1 - observed
+            # as a 9/1/1/1 split on a 4-way run), so the runner assigns
+            # an even share per launch instead (split_threads). Small
+            # meshes get 1 thread each: openEMS gains nothing from more
+            # there, and forcing cores/N on the bundled amplifier made a
+            # 4-excitation run take 42 s against 17.5 s at 1 thread each.
+            # An explicit threadsPerExc overrides all of this.
             threads = sim_cfg.get('threadsPerExc')
             try:
                 threads = max(0, int(threads)) if threads else 0
@@ -412,6 +443,8 @@ class Runner:
                 if threads:
                     st['model'].setdefault('sim', {})['numThreads'] = threads
                 st['script'] = generate_script(st['model'])
+            # every excitation shares the board geometry, hence the mesh
+            plan_cells = build_mesh(model).get('cells')
 
             self._reset()
             self.run_id = run_id
@@ -425,6 +458,8 @@ class Runner:
             self.project = str(model.get('name') or '')
             self.parallel = par
             self.threads = threads
+            self.auto_split = threads == 0 and par > 1
+            self.plan_cells = plan_cells
             multi = len(stages) > 1
             for i, st in enumerate(stages):
                 self.stage_data.append(self._new_stage_record(
@@ -468,12 +503,31 @@ class Runner:
         self.stage_info = f'{done}/{n} excitations'
         if live > 1:
             self.stage_info += f' · {live} running in parallel'
+            tl = sorted({self.stage_data[i].get('threads') for i in self.procs}
+                        - {None})
+            if tl:
+                self.stage_info += (
+                    f' · {tl[0]} thread{"s" if tl[0] != 1 else ""} each'
+                    if len(tl) == 1
+                    else f' · {"/".join(map(str, tl))} threads')
 
     def _launch_stage_locked(self, idx):
         st = self.stages[idx]
         rec = self.stage_data[idx]
         st['dir'].mkdir(parents=True, exist_ok=True)
-        (st['dir'] / 'pcb_sim.m').write_text(st['script'])
+        script = st['script']
+        if self.auto_split:
+            queued = sum(1 for r in self.stage_data
+                         if r['state'] == 'queued')      # includes this one
+            t = split_threads(os.cpu_count() or 1, self.plan_cells,
+                              self.parallel, len(self.procs), queued)
+            # the validated script carries no thread flag; the launch pins
+            # this stage's fair share (a lone tail stage gets them all)
+            script = script.replace(
+                'RunOpenEMS(Sim_Path, Sim_File);',
+                f"RunOpenEMS(Sim_Path, Sim_File, '--numThreads={t}');")
+            rec['threads'] = t
+        (st['dir'] / 'pcb_sim.m').write_text(script)
         rec['state'] = 'running'
         proc = subprocess.Popen(
             ['stdbuf', '-oL', '-eL', 'octave', '--no-gui', '--no-window-system', 'pcb_sim.m'],

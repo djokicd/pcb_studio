@@ -654,7 +654,7 @@
             <option value="8">8</option>
           </select>
         </label>
-        <label title="Threads each openEMS instance may use. Empty lets openEMS benchmark the mesh and choose — usually the fastest option, and on small boards it settles on one thread so the instances simply fill the cores. Set a number only if parallel runs are starved by memory bandwidth.">
+        <label title="Threads each openEMS instance may use. Empty = automatic: a single run lets openEMS benchmark the mesh and choose; parallel runs get an even share of the cores per instance (small boards: one each, large boards: cores ÷ parallel, and a lone remaining excitation takes the whole machine). Set a number only to override that.">
           Threads per excitation <input id="s_threadsPerExc" type="number" step="1" min="0" placeholder="auto"></label>
       </div>
       <p class="muted mini-note" id="runParallelNote"></p>

@@ -1310,7 +1310,8 @@ function updateParallelNote() {
     + `at ${par}× the peak memory. `
     + (isFinite(cap) && cap > 0
       ? `Each instance is capped at ${cap} thread${cap > 1 ? 's' : ''}.`
-      : `openEMS picks each instance's thread count`
+      : 'Threads are balanced automatically: an even share of the cores '
+        + 'per instance on large meshes, one each on small ones'
         + (cores ? ` (${cores} cores available).` : '.'));
 }
 
