@@ -24,6 +24,13 @@ from .stabilize import stabilize, add_emitter_inductance
 from .optimize import optimize_match, optimize_amplifier
 from . import metrics
 
+# plotting is matplotlib-only; the web GUI draws its own charts from the
+# JSON series, so a headless install without matplotlib stays usable.
+try:
+    from .plotting import plot_chain_summary
+except ImportError:      # pragma: no cover - depends on the environment
+    plot_chain_summary = None
+
 
 __version__ = "0.1.0"
 
@@ -39,7 +46,7 @@ __all__ = [
     "optimize_match",
     "optimize_amplifier",
     "metrics",
-
+    "plot_chain_summary",
     "gamma_from_ma",
     "gamma_from_z",
     "z_from_gamma",

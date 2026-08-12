@@ -47,7 +47,28 @@
       "Bash(curl -s http://127.0.0.1:8036/api/tools)",
       "Bash(curl -s -X POST http://127.0.0.1:8036/api/tools/rf_chain/schema -H 'Content-Type: application/json' -d '{}')",
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('fields',len\\(d['fields']\\),'panels',[p['id'] for p in d['panels']]\\)\")",
-      "Bash(python3 -m pytest tests/test_api.py -q)"
+      "Bash(python3 -m pytest tests/test_api.py -q)",
+      "Bash(python3 -c \"import skrf; print\\(skrf.__version__, skrf.__file__\\)\")",
+      "Read(//home/djokicd/Documents/Radio/ME/CLAUDE/**)",
+      "Bash(unzip -l /home/djokicd/Documents/Radio/ME/CLAUDE/rf_designer.zip)",
+      "Bash(pip install *)",
+      "Bash(python3 -c \"import matplotlib; print\\('mpl', matplotlib.__version__\\)\")",
+      "Bash(python3 -c \"import skrf; print\\('skrf', skrf.__version__\\)\")",
+      "Bash(python3 -c \"import pandas; print\\('pandas ok', pandas.__version__\\)\")",
+      "Bash(timeout 300 python3 -c ' *)",
+      "Bash(python3 -m pytest tests/ -q -x)",
+      "Bash(python3 -m pytest tests/ -q)",
+      "Bash(git stash *)",
+      "Bash(python3 -m pytest tests/test_unit_geometry.py tests/test_api.py -q)",
+      "Bash(python3 -m pytest tests/test_unit_geometry.py::test_cpw_gap_is_deliberately_meshed -q)",
+      "Bash(python3 cpw_verify.py)",
+      "Bash(python3 -m pytest tests/test_sim_analytic.py -q -m sim -k gcpw)",
+      "Bash(python3 -m pytest tests/test_sim_analytic.py -m sim -k gcpw)",
+      "Bash(curl -s localhost:8036/api/status)",
+      "Bash(timeout 500 bash -c 'until [ -s /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/tasks/bjwapfhic.output ] && grep -q \"PASS\\\\|FAIL\" /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/tasks/bjwapfhic.output && grep -qE \"passed|failed\" /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/tasks/bjwapfhic.output; do sleep 5; done')",
+      "Bash(curl -s -X POST localhost:8036/api/mesh -H 'Content-Type: application/json' -d @projects/GCPW_line_100R/project.json)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('served mesh cells', d.get\\('cells'\\), 'minCell', d.get\\('minCell'\\)\\)\")",
+      "Bash(timeout 500 bash -c 'until grep -q \"153716: done\" /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/tasks/bio73rwid.output 2>/dev/null; do sleep 5; done')"
     ]
   }
 }

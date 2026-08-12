@@ -18,7 +18,7 @@ import threading
 
 import numpy as np
 
-from .. import rfnet as skrf
+import skrf
 from ..rfamp import (AmplifierChain, IdealMatch, LMatch, QuarterWaveMatch,
                      SingleStubMatch, metrics)
 from ..rfamp.optimize import optimize_amplifier, optimize_match
@@ -120,6 +120,8 @@ def _gamma(mag, ang_deg):
 
 def _fin(x, default=None):
     """JSON cannot carry NaN/Inf; clamp them to something transportable."""
+    if x is None:
+        return default
     v = float(np.real(x))
     if not np.isfinite(v):
         return default
@@ -227,7 +229,7 @@ def _schematic(chain, f0, gs, gl, stab_vals, dev_name):
 def _analyse(p):
     dev_raw = _load(p.get('device'))
     dev, stab_vals = _stabilized(dev_raw, p)
-    z0 = float(p.get('z0') or dev._z0 or 50.0)
+    z0 = float(p.get('z0') or np.real(dev.z0[0, 0]) or 50.0)
     f0 = float(p.get('f0') or dev.f[len(dev.f) // 2])
     f0 = min(max(f0, float(dev.f[0])), float(dev.f[-1]))
 
@@ -382,7 +384,10 @@ def _optimize_worker(job_id, p):
             'minGainDb': _fin(res.get('min_gain_db')),
             'maxSwrIn': _fin(res.get('max_swr_in')),
             'maxSwrOut': _fin(res.get('max_swr_out')),
-            'uncond': bool(res.get('unconditionally_stable', False)),
+            # only the stabilization search evaluates band stability; None
+            # means "not assessed here", which is not the same as unstable
+            'uncond': (None if res.get('unconditionally_stable') is None
+                       else bool(res['unconditionally_stable'])),
             'minMu': _fin(res.get('min_mu_full_range')),
         }
         if stab_els:
@@ -432,7 +437,7 @@ def schema():
              'help': 'Alternative topologies/signs of the same Γ.'},
             {'id': 'sol_out', 'label': 'Output solution', 'type': 'number',
              'value': 0, 'step': 1, 'min': 0, 'max': 3},
-            {'group': 'Stabilization (applied before matching)'},
+            {'group': 'Stabilization (applied before matching)', 'open': False},
             {'id': 'r_series_in', 'label': 'R series in (Ω)', 'type': 'number',
              'value': 0, 'step': 1},
             {'id': 'r_shunt_in', 'label': 'R shunt in (Ω)', 'type': 'number',
@@ -447,7 +452,7 @@ def schema():
              'value': 0, 'step': 1},
             {'id': 'c_series_out', 'label': 'C block out (pF)', 'type': 'number',
              'value': 0, 'step': 1},
-            {'group': 'Band targets (for the optimizer)'},
+            {'group': 'Band targets (for the optimizer)', 'open': False},
             {'id': 'band_lo', 'label': 'Band start (GHz)', 'type': 'number',
              'value': None, 'step': 0.05},
             {'id': 'band_hi', 'label': 'Band stop (GHz)', 'type': 'number',
@@ -470,8 +475,11 @@ def schema():
             {'id': 'optimize', 'label': 'Optimize for band', 'job': True},
         ],
         'panels': [
-            {'id': 'schematic', 'type': 'schematic', 'title': 'Schematic'},
-            {'id': 'summary', 'type': 'table', 'title': 'At f0'},
+            # pinned: the synthesized chain stays in view while the plots
+            # behind it are switched
+            {'id': 'schematic', 'type': 'schematic', 'title': 'Schematic',
+             'pin': True},
+            {'id': 'summary', 'type': 'table', 'title': 'At f0', 'pin': True},
             {'id': 'gain', 'type': 'chart', 'title': 'Gain & match',
              'x': 'f', 'xlabel': 'GHz', 'xscale': 1e-9, 'ylabel': 'dB',
              'series': [['s21', '|S21|'], ['mag', 'MAG/MSG'],

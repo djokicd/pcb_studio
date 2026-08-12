@@ -1,71 +1,60 @@
-"""Advanced-tools framework + the RF chain tool (no scikit-rf, no octave)."""
+"""Advanced-tools framework + the RF chain tool (needs scikit-rf, no octave)."""
 import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
+import skrf
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import advtools
-from advtools import rfnet
-from advtools.rfnet import Frequency, Network, a2s, s2a, s2z, z2s
+from advtools.rfamp import (IdealMatch, LMatch, QuarterWaveMatch,
+                            SingleStubMatch, matching)
+
+F0 = 2.0e9
+FREQ = skrf.Frequency(0.1, 10, 199, 'ghz')        # contains 2.0 GHz exactly
+IDX0 = int(np.argmin(np.abs(FREQ.f - F0)))
+DEVICE = Path(__file__).resolve().parent.parent / 'devices' / 'BFG25AWJ.S2P'
 
 
-# ---------------------------------------------------------------- the shim
-def _line(z_line=75.0, z_ref=50.0, length=0.02, n=41):
-    med = rfnet.DefinedGammaZ0(frequency=Frequency(0.1, 10, n, 'ghz'), z0=z_ref)
-    return med.line(length, unit='m', z0=z_line)
-
-
-def test_conversions_round_trip():
-    rng = np.random.default_rng(3)
-    s = (rng.normal(size=(7, 2, 2)) + 1j * rng.normal(size=(7, 2, 2))) * 0.3
-    for fwd, back in ((s2z, z2s), (s2a, a2s)):
-        assert np.allclose(back(fwd(s, 50.0), 50.0), s, atol=1e-10)
-
-
-def test_ideal_line_is_lossless_and_reciprocal():
-    n = _line()
-    sv = np.linalg.svd(n.s, compute_uv=False)
-    assert np.allclose(sv, 1.0, atol=1e-9)              # unitary => lossless
-    assert np.allclose(n.s[:, 0, 1], n.s[:, 1, 0])      # reciprocal
-
-
-def test_renormalize_survives_the_half_wave_singularity():
-    """A half-wave line has S = [[0,-1],[-1,0]]; I - S is singular, so the
-    S->Z->S route reports a passive line as a 1.2x amplifier. The power
-    -wave form must keep it exactly unitary."""
-    n = _line(z_line=52.5657, z_ref=52.5657, length=0.03747405725, n=199)
-    n.renormalize(50.0)
-    sv = np.linalg.svd(n.s, compute_uv=False)
-    assert sv.max() <= 1.0 + 1e-9, f'passivity violated: max sv {sv.max()}'
-
-
-def test_cascade_matches_abcd_product():
-    a, b = _line(60.0), _line(40.0, length=0.01)
-    prod = np.matmul(s2a(a.s, 50.0), s2a(b.s, 50.0))
-    assert np.allclose((a ** b).s, a2s(prod, 50.0), atol=1e-12)
-
-
-def test_flip_swaps_ports():
-    n = _line(75.0, length=0.013)
-    fl = n.flipped()
-    assert np.allclose(fl.s[:, 0, 0], n.s[:, 1, 1])
-    assert np.allclose(fl.s[:, 1, 0], n.s[:, 0, 1])
+# ------------------------------------------------------- the skrf backend
+def test_scikit_rf_is_the_backend():
+    """rfamp is the upstream package: it must run on scikit-rf itself, not
+    on a local stand-in."""
+    assert matching.skrf is skrf
+    assert not (Path(advtools.__file__).parent / 'rfnet.py').exists()
 
 
 def test_reads_the_projects_touchstone_library():
-    net = Network(str(Path(__file__).resolve().parent.parent
-                      / 'devices' / 'BFG25AWJ.S2P'))
+    net = skrf.Network(str(DEVICE))
     assert net.nports == 2 and len(net.f) > 5
     assert net.f[0] < net.f[-1]
 
 
-def test_interpolation_refuses_to_extrapolate():
-    n = _line(n=11)
-    with pytest.raises(ValueError):
-        n.interpolate(Frequency(0.01, 0.05, 5, 'ghz'))
+@pytest.mark.parametrize('gamma', [
+    0.6 * np.exp(1j * np.deg2rad(150)),
+    0.6 * np.exp(-1j * np.deg2rad(40)),
+    0.3 + 0.4j,
+    -0.5 - 0.2j,
+    0.05,
+])
+def test_every_realization_hits_its_target_gamma(gamma):
+    """The synthesis is the whole point: at f0 each topology must actually
+    present the requested reflection coefficient."""
+    for cls in (IdealMatch, LMatch, QuarterWaveMatch, SingleStubMatch):
+        mn = cls(gamma, F0)
+        got = mn.achieved_gamma(FREQ)[IDX0]
+        assert abs(got - gamma) < 2e-3, f'{cls.__name__} @ {gamma}: {got}'
+
+
+def test_synthesized_networks_are_passive():
+    """Lossless L/C and line sections; a singular value above 1 would mean
+    the S-parameter bookkeeping (or its renormalization) is wrong."""
+    for cls in (LMatch, QuarterWaveMatch, SingleStubMatch):
+        net = cls(0.6 * np.exp(1j * np.deg2rad(150)), F0).network(FREQ)
+        sv = np.linalg.svd(net.s, compute_uv=False)
+        assert sv.max() <= 1.0 + 1e-9, f'{cls.__name__}: max sv {sv.max()}'
 
 
 # ------------------------------------------------------------- the registry
@@ -168,6 +157,27 @@ def test_schematic_carries_the_synthesized_elements():
     assert sch['stab'] == []          # nothing set here
     with_stab = _analyse(r_series_in=20)['schematic']['stab']
     assert any('Rs,in' in row[0] for row in with_stab)
+
+
+@pytest.mark.parametrize('opt_stab', [False, True])
+def test_band_optimizer_reports_a_usable_result(opt_stab):
+    """Both search paths must package their result: the Γ-only search does
+    not evaluate band stability, and its missing keys used to crash the
+    worker instead of simply going unreported."""
+    from advtools.tools import rf_chain
+    rf_chain._JOBS['pytest'] = {'state': 'running', 'log': [], 'result': None}
+    rf_chain._optimize_worker('pytest', {
+        'device': 'BFG25AWJ.S2P', 'band_lo': 0.9, 'band_hi': 1.1,
+        'iters': 2, 'target_gain': 6, 'opt_stab': opt_stab,
+        'c_series_in': 47, 'c_series_out': 47})
+    job = rf_chain._JOBS.pop('pytest')
+    assert job['state'] == 'done', job.get('error')
+    out = job['result']
+    assert 0 <= out['gs_mag'] < 1
+    assert {'gain', 'swr_in', 'swr_out'} <= set(out['met'])
+    assert (out['uncond'] is not None) == opt_stab
+    assert ('stab' in out) == opt_stab
+    assert job['log'], 'no progress was reported'
 
 
 def test_every_realization_analyses():

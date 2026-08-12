@@ -3,7 +3,7 @@ AmplifierChain: source -- input match -- device (.s2p) -- output match -- load.
 """
 
 import numpy as np
-from .. import rfnet as skrf
+import skrf
 
 from . import metrics
 from .matching import MatchingNetwork
@@ -48,7 +48,7 @@ class AmplifierChain:
         return float(np.real(self.device.z0[0, 0]))
 
     def _thru(self):
-        from ..rfnet import DefinedGammaZ0
+        from skrf.media import DefinedGammaZ0
         med = DefinedGammaZ0(frequency=self.frequency, z0=self.z0)
         return med.line(0, "m")
 

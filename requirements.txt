@@ -1,2 +1,9 @@
 flask>=3.0
 pytest>=7.0        # verification test suite (optional at runtime)
+
+# Advanced Tools (Tools -> Advanced tools). Only needed for the RF tools;
+# the PCB editor, mesher and openEMS run sequencing do not import these.
+numpy>=1.21
+scipy>=1.7         # differential_evolution, used by the band optimizer
+scikit-rf>=1.0,<2  # 2.x needs numpy>=2; drop the ceiling once you are on it
+matplotlib>=3.5    # optional: rfamp.plotting only (offline figure export)

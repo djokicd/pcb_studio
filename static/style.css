@@ -202,32 +202,86 @@ main { flex: 1; display: flex; min-height: 0; }
    Both selectors are one class, so this needs the extra specificity to
    win regardless of where the rules sit in the file. */
 .uic-box.adv-box {
-  width: min(1180px, 96vw); max-width: none; height: min(860px, 92vh);
+  width: min(1400px, 96vw); max-width: none; height: min(940px, 94vh);
   display: flex; flex-direction: column; white-space: normal;
 }
 .adv-layout { display: flex; gap: 14px; min-height: 0; flex: 1; overflow: hidden; }
-.adv-form {
-  width: 272px; flex: none; overflow-y: auto; padding-right: 6px;
-  border-right: 1px solid var(--border-soft);
+/* control column: only the field list scrolls, so the actions below it
+   stay reachable from anywhere in a long schema */
+.adv-col {
+  width: 278px; flex: none; display: flex; flex-direction: column;
+  min-height: 0; border-right: 1px solid var(--border-soft); padding-right: 8px;
 }
-.adv-form .form input, .adv-form .form select { width: 116px; }
-.adv-form h3:first-child { margin-top: 0; }
+.adv-form { flex: 1; overflow-y: auto; min-height: 0; padding-right: 4px; }
+.adv-form .form input { width: 116px; }
+.adv-form .form select { width: 142px; }   /* file names need the room */
 .adv-gamma { display: flex; gap: 4px; }
-.adv-gamma input { width: 56px !important; }
-.adv-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-.adv-right { flex: 1; min-width: 0; overflow-y: auto; }
-.adv-panels { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+/* wide enough for an optimizer's "0.8497" / "-137.51" without clipping */
+.adv-gamma input { width: 74px !important; }
+.adv-group { border-top: 1px solid var(--border-soft); margin-top: 10px; }
+.adv-group > summary {
+  cursor: pointer; padding: 7px 2px; font-size: 11px; font-weight: 600;
+  letter-spacing: 0.04em; text-transform: uppercase; color: var(--soft);
+  list-style: none;
+}
+.adv-group > summary::marker, .adv-group > summary::-webkit-details-marker { display: none; }
+.adv-group > summary::before { content: '▸ '; color: var(--muted); }
+.adv-group[open] > summary::before { content: '▾ '; }
+.adv-group > summary:hover { color: var(--text); }
+.adv-foot {
+  flex: none; padding-top: 8px; border-top: 1px solid var(--border-soft);
+}
+.adv-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+#advNote { margin: 6px 0 0; }
+.adv-right { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+/* pinned panels share one row above the tabs: the answer (schematic) and
+   the numbers stay on screen whichever plot is being looked at */
+.adv-pinned {
+  flex: none; display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start;
+  /* however much is pinned, the plots keep the larger half of the column */
+  max-height: 46%; overflow-y: auto;
+}
+/* wide enough and they sit side by side; narrower and the table drops
+   below rather than squeezing the schematic */
+.adv-pinned > .adv-card { flex: 1 1 420px; min-width: 0; }
+.adv-pinned > .adv-card:has(.adv-table) { flex: 0 0 292px; }
+.adv-pinned .adv-table { max-height: 320px; overflow-y: auto; }
+.adv-tabs { flex: none; display: flex; gap: 4px; margin: 8px 0; flex-wrap: wrap; }
+.adv-tabs[hidden] { display: none; }
+.adv-tabs button {
+  padding: 5px 12px; font-size: 12px; background: transparent;
+  border: 1px solid transparent; border-radius: 5px; color: var(--soft);
+}
+.adv-tabs button:hover { color: var(--text); }
+.adv-tabs button.on {
+  background: var(--card); border-color: var(--border-soft); color: var(--text);
+}
+.adv-panels {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start;
+  flex: 1; min-height: 0; overflow-y: auto;
+}
+/* one panel at a time: it takes the whole area instead of a quarter of it */
+.adv-panels.single { flex-wrap: nowrap; overflow: hidden; }
+.adv-panels.single > .adv-card {
+  flex: 1 1 auto; height: 100%; display: flex; flex-direction: column;
+  min-width: 0; overflow-y: auto;
+}
+.adv-panels.single > .adv-card > .adv-body { flex: 1; min-height: 0; }
+.adv-panels.single .plotwrap.rsz { height: 100%; }
 .adv-card {
   flex: 1 1 340px; min-width: 300px; background: var(--card);
   border: 1px solid var(--border-soft); border-radius: 5px; padding: 8px 10px;
 }
-.adv-card:has(.adv-schematic) { flex-basis: 100%; }
+/* the layout rules above set `display`, which would otherwise beat
+   [hidden] on specificity and leave every panel on screen */
+.adv-card[hidden], .adv-panels.single > .adv-card[hidden] { display: none; }
+.adv-pinned > .adv-card { margin: 0; }
 .adv-card h3 { margin: 0 0 6px; }
-.adv-body .plotwrap { height: 190px; }
+.adv-body .plotwrap.rsz { height: 200px; }
 .adv-body .plotwrap canvas { width: 100%; }
 .adv-sch { width: 100%; overflow-x: auto; }
-#advIntro { margin: 4px 0 10px; }
-#advWarn { margin-bottom: 8px; }
+#advIntro { margin: 0 0 8px; }
+#advWarn { margin-bottom: 8px; flex: none; }
 .tabs[hidden] { display: none; }
 /* the left panel is user-resizable: fit as many tool columns as it takes */
 #meshTools { grid-template-columns: repeat(auto-fit, minmax(52px, 1fr)); }

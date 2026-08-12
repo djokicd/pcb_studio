@@ -83,7 +83,11 @@ fi
 # ---- 4. dependencies --------------------------------------------------
 if [ "$REQ_OLD" != "$(git hash-object requirements.txt 2>/dev/null || echo none)" ]; then
   info "requirements.txt changed - installing dependencies"
-  "$PYTHON" -m pip install -q -r requirements.txt || warn "dependency install failed - check manually"
+  # Distro pythons are PEP 668 "externally managed" and refuse a plain
+  # install; retry into the user site, which the service python still sees.
+  "$PYTHON" -m pip install -q -r requirements.txt \
+    || "$PYTHON" -m pip install -q --user --break-system-packages -r requirements.txt \
+    || warn "dependency install failed - check manually"
 fi
 
 # ---- 5. restart -------------------------------------------------------

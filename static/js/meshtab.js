@@ -1418,6 +1418,14 @@ function initMeshTools() {
       app.refreshMesh();
     });
   }
+  $('mo_slots').addEventListener('change', e => {
+    // stored only when disabled: absent means the default (on)
+    const m = app.meshTab.mesh();
+    if (e.target.checked) delete m.slots;
+    else m.slots = false;
+    app.dirty();
+    app.refreshMesh();
+  });
 }
 
 /* keep the outside-smoothing inputs in sync with the loaded project */
@@ -1426,4 +1434,5 @@ function meshFormsFromModel() {
   const o = app.meshTab.mesh().outside;
   $('mo_res').value = o.res ?? '';
   $('mo_ratio').value = o.ratio ?? '';
+  $('mo_slots').checked = app.meshTab.mesh().slots !== false;
 }

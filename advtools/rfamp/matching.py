@@ -20,8 +20,8 @@ is used on the output side.
 from abc import ABC, abstractmethod
 
 import numpy as np
-from .. import rfnet as skrf
-from ..rfnet import DefinedGammaZ0
+import skrf
+from skrf.media import DefinedGammaZ0
 
 C0 = 299792458.0  # vacuum speed of light, m/s
 

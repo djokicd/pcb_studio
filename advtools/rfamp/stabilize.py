@@ -15,7 +15,7 @@ match with much lower penalty at moderate frequencies.
 """
 
 import numpy as np
-from .. import rfnet as skrf
+import skrf
 
 
 def _series_two_port(frequency, z, z0):

@@ -2,13 +2,14 @@
 test runner. Each case builds a project model exactly as the GUI would,
 runs it through scriptgen + octave, and evaluates metrics with explicit
 reference values and acceptance windows."""
+import math
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import (stackup, sim_settings, rect, lumped_port, msl_port,
-                     db, at, s_min, unwrapped_eeff, hammerstad)
+                     db, at, s_min, unwrapped_eeff, hammerstad, cbcpw)
 
 
 def metric(label, value, lo, hi, unit='', ref=''):
@@ -93,6 +94,57 @@ def _notch_eval(rows):
     ]
 
 
+def _gcpw_model():
+    # 1.1 mm strip, 0.3 mm gaps, pours stitched to the bottom ground:
+    # conformal mapping gives Z0 = 49.6 Ω, εeff = 3.06. The far end is
+    # SHORTED to the pours by copper, so the lumped z-port reads a pure
+    # shorted stub: Zin = jZ0·tan(βl). The quarter-wave peak pins εeff,
+    # and Im(Zin) at exactly half that frequency (βl = π/4, tan = 1) IS
+    # Z0 - measured with no component and no wave-port mode assumptions.
+    # (An MSL wave port is deliberately NOT used: its U/I decomposition
+    # breaks on the coplanar mode - |S11|²+|S21|² comes out above 1.)
+    # The 0.3 mm slots are what the coplanar-gap meshing must resolve -
+    # without it, the effective Z0 depends on where the mesh happens to
+    # fall in the gap.
+    pours = [rect('gnd_lo', 1, 1.0, 28, 6.15), rect('gnd_hi', 1, 8.85, 28, 6.15)]
+    short = rect('short', 26, 6.0, 2.0, 4.0)
+    vias = [{'id': 300 + k, 'x': 2.0 + 2.0 * (k % 13), 'y': 6.6 if k < 13 else 9.4,
+             'drill': 0.3, 'pad': 0.6, 'from': 'bot', 'to': 'top',
+             'mesh': {'lines': 1}} for k in range(26)]
+    return {
+        'board': {'width': 30, 'height': 16},
+        'stackup': stackup(er=4.6, h=0.8),
+        'shapes': [rect('tl', 4, 7.45, 22.5, 1.1, thirds=True), short] + pours,
+        'vias': vias,
+        'ports': [lumped_port(1, 4, 7.45, 1, 1.1, excite=True)],
+        'sim': sim_settings(fStart=0.6, fStop=2.6, boundary='MUR', airMargin=25),
+    }
+
+
+def _gcpw_eval(rows):
+    z0_ref, eeff_ref = cbcpw(1.1, 0.3, 0.8, 4.6)
+    # quarter-wave peak: |Zin| maximum of the shorted stub. Electrical
+    # length: port centre (x=4.5) to the short (x=26).
+    peak = max(rows, key=lambda r: abs(r['zin']))
+    f_ref = 3e8 / (4 * 21.5e-3 * math.sqrt(eeff_ref)) / 1e9
+    # at half the MEASURED peak frequency βl = π/4 exactly, so the launch
+    # -length uncertainty cancels and Im(Zin) = Z0·tan(π/4) = Z0
+    half = min(rows, key=lambda r: abs(r['f'] - peak['f'] / 2))
+    # ±10%: at this cell density FDTD carries a known capacitance bias
+    # (finer substrate z cells move Z0 up toward the reference - see the
+    # coplanar-gaps notes in the README). The gate exists to catch
+    # regressions: the pre-slot-meshing grid measured 42.5 Ω here, and a
+    # (miscalibrated) MSL wave port read 35 Ω.
+    return [
+        metric('Z₀ = Im(Zin) @ f_peak/2', half['zin'].imag,
+               round(z0_ref * 0.90, 1), round(z0_ref * 1.10, 1), 'Ω',
+               f'{z0_ref:.1f} Ω (conformal mapping)'),
+        metric('λ/4 peak frequency', peak['f'] / 1e9,
+               round(f_ref * 0.92, 2), round(f_ref * 1.08, 2), 'GHz',
+               f'{f_ref:.2f} GHz (εeff {eeff_ref:.2f})'),
+    ]
+
+
 def _patch_model():
     return {
         'board': {'width': 60, 'height': 60},
@@ -129,6 +181,15 @@ CASES = {
         'minutes': 1,
         'build': _line_model,
         'evaluate': _line_eval,
+    },
+    'gcpw_z0': {
+        'title': 'Grounded CPW Z₀ / εeff (0.3 mm slots)',
+        'desc': '1.1 mm strip with 0.3 mm gaps to stitched pours on 0.8 mm '
+                'εr 4.6 — conformal mapping: Z₀ = 49.6 Ω, εeff = 3.06. '
+                'Exercises the coplanar-slot meshing.',
+        'minutes': 2,
+        'build': _gcpw_model,
+        'evaluate': _gcpw_eval,
     },
     'stub_notch': {
         'title': 'Quarter-wave stub notch',

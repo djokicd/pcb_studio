@@ -327,6 +327,8 @@
               Resolution (mm) <input id="mo_res" type="number" step="0.05" min="0" placeholder="edge res"></label>
             <label title="Grading ratio used outside every density range — lower is smoother and denser, higher relaxes faster (empty = the global ratio)">
               Grading ratio <input id="mo_ratio" type="number" step="0.1" min="1.2" max="2" placeholder="global"></label>
+            <label title="Mesh coplanar gaps deliberately: facing copper edges within about a substrate height (CPW slots, launch gaps, trace-to-pour clearances) get edge refinement on both sides and several cells across the gap — the gap width sets the impedance. Disable to save cells on boards where clearances do not matter">
+              <input id="mo_slots" type="checkbox" checked> Refine coplanar gaps</label>
           </div>
         </div>
         <div class="panel">
@@ -767,11 +769,16 @@
       <span id="advTitle">Advanced tool</span>
       <button id="advClose">&#10005;</button>
     </div>
-    <p class="muted mini-note" id="advIntro"></p>
     <div class="adv-layout">
-      <div id="advForm" class="adv-form"></div>
+      <div class="adv-col">
+        <p class="muted mini-note" id="advIntro"></p>
+        <div id="advForm" class="adv-form"></div>
+        <div id="advFoot" class="adv-foot"></div>
+      </div>
       <div class="adv-right">
         <div id="advWarn" class="runforeign" hidden></div>
+        <div id="advPinned" class="adv-pinned"></div>
+        <div id="advTabs" class="adv-tabs" hidden></div>
         <div id="advPanels" class="adv-panels"></div>
       </div>
     </div>

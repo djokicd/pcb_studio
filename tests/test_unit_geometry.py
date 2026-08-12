@@ -266,7 +266,7 @@ def test_via_mesh_lines_economy_settings():
         if setting is not None:
             via['mesh'] = {'lines': setting}
         m['vias'] = [via]
-        xs, ys, xsoft, ysoft, xreg, yreg, _xp, _yp = mesh_lines_xy(m, 0.4)
+        xs, ys, xsoft, ysoft, xreg, yreg, _xp, _yp, _sr = mesh_lines_xy(m, 0.4)
         near_h = [v for v in xs if 28.5 < v < 31.5]
         near_s = [c for c in xsoft if 28.5 < c[0] < 31.5]
         return near_h, near_s
@@ -508,3 +508,121 @@ def test_pad_economy_only_applies_to_concentric_pads():
     off = build_mesh(m)
     on = build_mesh(_fence(nlines=1))
     assert off['cells'] > on['cells'], 'offset circles must keep full sampling'
+
+
+# ------------------------------------------------------- coplanar slots
+def _cpw(gap=0.3, shift=0.0, slots=None, **sim_kw):
+    """GCPW cross-section: 1 mm strip between two pours, `gap` each side.
+    `shift` nudges the whole slot structure by a sub-cell amount - the
+    mesh quality must not depend on where the copper happens to sit."""
+    y0 = 9.4 + shift
+    m = {
+        'board': {'width': 40, 'height': 20},
+        'stackup': stackup(),
+        'shapes': [
+            rect('strip', 2, y0, 36, 1.0),
+            rect('gnd_lo', 1, 1, 38, y0 - gap - 1),
+            rect('gnd_hi', 1, y0 + 1.0 + gap, 38, 19 - (y0 + 1.0 + gap)),
+        ],
+        'ports': [lumped_port(1, 2, y0, 0.5, 1.0, excite=True)],
+        'sim': sim_settings(**sim_kw),
+    }
+    if slots is not None:
+        m['mesh'] = {'slots': slots}
+    return m
+
+
+def _slot_edges_y(m):
+    sh = {s['name']: s for s in m['shapes']}
+    lo = (sh['gnd_lo']['y'] + sh['gnd_lo']['h'], sh['strip']['y'])
+    hi = (sh['strip']['y'] + sh['strip']['h'], sh['gnd_hi']['y'])
+    return lo, hi
+
+
+def test_cpw_gap_is_deliberately_meshed():
+    """Both slot edges carry the thirds pair (rt/3 into the metal, 2rt/3
+    into the gap) and the gap holds several cells - on the GROUND side
+    too, which has no auto-thirds of its own."""
+    m = _cpw(gap=0.3)
+    mesh = build_mesh(m)
+    from geometry import SLOT_CELLS, SLOT_RT_FLOOR
+    rt = max(0.3 / SLOT_CELLS, SLOT_RT_FLOOR)
+    for e0, e1 in _slot_edges_y(m):
+        inside = [y for y in mesh['y'] if e0 + 1e-6 < y < e1 - 1e-6]
+        assert len(inside) >= 3, f'only {len(inside)} lines inside gap [{e0},{e1}]'
+        for e, into_metal in ((e0, -1), (e1, +1)):
+            # gap side: the 2rt/3 line must be there
+            want = e - into_metal * 2.0 * rt / 3.0
+            d = min(abs(y - want) for y in mesh['y'])
+            assert d < 5e-3, f'missing gap-side pair line at {want:.4f} (edge {e})'
+            # metal side: the rt/3 line, unless a hard line sits exactly
+            # on the edge (an abutting port) and the pair yields to it
+            want = e + into_metal * rt / 3.0
+            d = min(min(abs(y - want), abs(y - e)) for y in mesh['y'])
+            assert d < 5e-3, f'edge {e} uncovered on the metal side'
+
+
+def test_cpw_gap_meshing_is_nudge_stable():
+    """Sub-cell geometry nudges must not change how well the gap is
+    resolved: same line count in the slot, edges equally well covered.
+    (Previously 60 um moved lines 20-40 um off the copper edges and
+    changed the cell count in the gap - Z0 jumped run to run.)"""
+    counts, worst_edge = [], []
+    for shift in (0.0, 0.03, 0.07):
+        m = _cpw(gap=0.24, shift=shift)
+        mesh = build_mesh(m)
+        n = 0
+        for e0, e1 in _slot_edges_y(m):
+            n += len([y for y in mesh['y'] if e0 + 1e-6 < y < e1 - 1e-6])
+            for e in (e0, e1):
+                worst_edge.append(min(abs(y - e) for y in mesh['y']))
+        counts.append(n)
+    assert len(set(counts)) == 1, f'line count in gap varies with nudge: {counts}'
+    # nearest line is one of the pair members: never further than 2rt/3
+    from geometry import SLOT_RT_FLOOR
+    assert max(worst_edge) <= 2 * SLOT_RT_FLOOR / 3 + 1e-6, worst_edge
+
+
+def test_slot_refinement_can_be_disabled():
+    on = build_mesh(_cpw(gap=0.3))
+    off = build_mesh(_cpw(gap=0.3, slots=False))
+    assert off['cells'] < on['cells']
+    e0, e1 = _slot_edges_y(_cpw(gap=0.3))[0]
+    inside_off = [y for y in off['y'] if e0 + 1e-6 < y < e1 - 1e-6]
+    inside_on = [y for y in on['y'] if e0 + 1e-6 < y < e1 - 1e-6]
+    assert len(inside_on) > len(inside_off)
+
+
+def test_slots_below_merge_tolerance_are_left_alone():
+    """A 30 um sliver between two pours is import noise: meshMerge fuses
+    its edges, and the slot pass must not fight that with um cells."""
+    m = _cpw(gap=0.03)
+    mesh = build_mesh(m)
+    assert mesh['minCell'] >= 0.02
+
+
+def test_region_boundary_does_not_displace_copper_edge():
+    """A refinement-region boundary within meshMerge of a copper edge
+    must neither move the edge line nor survive as a duplicate."""
+    from meshlines import _smooth_axis
+    out = _smooth_axis([0.0, 9.1, 20.0], 0.0, 20.0, 1.5, 3.0, 0,
+                       regions=[(9.15, 12.0, 0.5)], merge=0.1)
+    assert any(abs(v - 9.1) < 1e-9 for v in out), 'copper edge moved'
+    assert not any(9.1 + 1e-9 < v < 9.2 for v in out), 'stray boundary line'
+    # a boundary clear of the tolerance still becomes a line
+    out = _smooth_axis([0.0, 9.1, 20.0], 0.0, 20.0, 1.5, 3.0, 0,
+                       regions=[(9.3, 12.0, 0.5)], merge=0.1)
+    assert any(abs(v - 9.1) < 1e-9 for v in out)
+    assert any(abs(v - 9.3) < 1e-9 for v in out)
+
+
+def test_pin_does_not_swallow_neighbouring_feature_line():
+    """A pinned line (component terminal) exactly one merge-tolerance
+    from a hard feature line (port edge): both must survive exactly.
+    Previously the pin joined the cluster, dragged the mean, and the
+    pin-restore then deleted the merged line - the port edge vanished."""
+    from meshlines import _smooth_axis
+    out = _smooth_axis([0.0, 9.4, 9.4, 9.5, 20.0], 0.0, 20.0, 1.5, 3.0, 0,
+                       merge=0.1, pinned=[9.5])
+    assert any(abs(v - 9.4) < 1e-9 for v in out), 'port edge line lost'
+    assert any(abs(v - 9.5) < 1e-9 for v in out), 'pin lost'

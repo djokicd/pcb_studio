@@ -447,6 +447,120 @@ def outline_edge_lines(pts, res, hx, hy, sx, sy, corners=True):
             hy.append(yb)
 
 
+# coplanar slots: how many cells the fine zone aims across a gap, a
+# floor on the pair scale (its rt/3 line is the smallest cell a slot may
+# create - g/4 on a hairline clearance would crush the FDTD timestep for
+# marginal gain) and the shortest facing overlap that counts as a slot
+# rather than corners passing by
+SLOT_CELLS = 4.0
+SLOT_RT_FLOOR = 0.075
+SLOT_MIN_OVERLAP = 0.2
+
+
+def _axis_edges(pts, layer, edges_x, edges_y, min_len=0.25):
+    """Collect the outline's axis-aligned edges as
+    (pos, span_lo, span_hi, metal_side, layer) - metal_side is +1 when
+    the copper lies on the increasing-coordinate side of the edge. Short
+    jogs below min_len are ignored (tessellation chords, tiny notches)."""
+    clean = []
+    for p in pts:
+        if not clean or math.hypot(p[0] - clean[-1][0], p[1] - clean[-1][1]) > 1e-9:
+            clean.append(p)
+    if len(clean) >= 2 and math.hypot(clean[0][0] - clean[-1][0],
+                                      clean[0][1] - clean[-1][1]) < 1e-9:
+        clean.pop()
+    if len(clean) < 3:
+        return
+    area2 = sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1)
+                in zip(clean, clean[1:] + clean[:1]))
+    ccw = area2 > 0
+    for (x0, y0), (x1, y1) in zip(clean, clean[1:] + clean[:1]):
+        if abs(x1 - x0) < 1e-6 and abs(y1 - y0) >= min_len:
+            # vertical edge: walking up with a CCW outline puts the
+            # interior on the left, i.e. the -x side
+            side = -1 if ((y1 > y0) == ccw) else +1
+            edges_x.append((x0, min(y0, y1), max(y0, y1), side, layer))
+        elif abs(y1 - y0) < 1e-6 and abs(x1 - x0) >= min_len:
+            side = +1 if ((x1 > x0) == ccw) else -1
+            edges_y.append((y0, min(x0, x1), max(x0, x1), side, layer))
+
+
+def _find_slots(edges, slot_min, slot_max):
+    """Pair opposing same-layer copper edges into slots [(e0, e1), ...]:
+    metal below e0, metal above e1, gap between, no third edge in the
+    way. This is the coplanar-waveguide geometry - the gap width sets the
+    impedance, so it must be meshed deliberately, not by whatever the
+    graded fill happens to leave there. Gaps at or below slot_min (the
+    meshMerge tolerance) are import noise: the mesher fuses their edges
+    into one line, so refining them would fight the merge."""
+    es = sorted(edges, key=lambda e: e[0])
+    out = {}
+    for i, (p0, l0, h0, s0, lay0) in enumerate(es):
+        if s0 != -1:                       # need metal on the low side
+            continue
+        for j in range(i + 1, len(es)):
+            p1, l1, h1, s1, lay1 = es[j]
+            if p1 - p0 > slot_max:
+                break
+            if p1 - p0 <= slot_min or lay1 != lay0 or s1 != +1:
+                continue
+            if min(h0, h1) - max(l0, l1) < SLOT_MIN_OVERLAP:
+                continue
+            # any same-layer edge (either side) between the two that
+            # shares e0's span means this is not one open gap - the
+            # nearer pairing owns it
+            if not any(layk == lay0
+                       and min(h0, hk) - max(l0, lk) >= SLOT_MIN_OVERLAP
+                       for pk, lk, hk, sk, layk in es[i + 1:j]):
+                key = (round(p0, 6), round(p1, 6))
+                ov = (max(l0, l1), min(h0, h1))
+                old = out.get(key)
+                if old is None or ov[1] - ov[0] > old[1] - old[0]:
+                    out[key] = ov
+            break                          # nearest facing edge decides
+    return [(p0, p1, ov) for (p0, p1), ov in sorted(out.items())]
+
+
+def _apply_slots(edges, slot_min, slot_max, edge_res, hard, soft, regs,
+                 avoid=()):
+    """Mesh every detected slot the way the thirds rule meshes a strip
+    edge, on BOTH sides: no line on the copper edge itself, a pair at
+    rt/3 into the metal and 2rt/3 into the gap, and a fine region so the
+    remaining middle of the gap holds ~SLOT_CELLS cells. rt follows the
+    GAP (g/4), not the neighbouring conductor width - a 0.3 mm CPW slot
+    beside a 5 mm pour must still resolve the 0.3 mm.
+
+    `avoid` holds (g0, g1, s0, s1) rectangles in (gap-axis, span-axis)
+    coordinates: a slot inside one is left alone. Component element
+    sheets bridge such gaps and only work on the exact cell structure
+    their pinned lines define - subdividing them corrupts the lumped
+    element."""
+    slots = _find_slots(edges, slot_min, slot_max)
+    if not slots:
+        return hard, None
+    drop = set()
+    rt_min = None
+    for e0, e1, (ov_lo, ov_hi) in slots:
+        if any(g0 - 1e-6 <= e0 and e1 <= g1 + 1e-6
+               and min(ov_hi, s1) - max(ov_lo, s0) > 1e-6
+               for g0, g1, s0, s1 in avoid):
+            continue
+        g = e1 - e0
+        # 3g/8 keeps the two gap-side pair lines from meeting in narrow
+        # slots (they sit 2rt/3 inside each edge)
+        rt = min(edge_res, 3 * g / 8, max(g / SLOT_CELLS, SLOT_RT_FLOOR))
+        rt_min = rt if rt_min is None else min(rt_min, rt)
+        drop.add(e0)
+        drop.add(e1)
+        # priority 2: gap-defining lines outrank via extremes (1) and
+        # generic curve samples (0) in the soft thinning
+        soft += [(e0 - rt / 3.0, rt * 2 / 3.0, 2), (e0 + 2 * rt / 3.0, rt * 2 / 3.0, 2),
+                 (e1 + rt / 3.0, rt * 2 / 3.0, 2), (e1 - 2 * rt / 3.0, rt * 2 / 3.0, 2)]
+        regs.append((e0 - rt, e1 + rt, rt))
+    return [v for v in hard if round(v, 6) not in drop
+            and not any(abs(v - d) < 1e-6 for d in drop)], rt_min
+
+
 def _coalesce(regs):
     """Merge overlapping (lo, hi, res) intervals, keeping the finest res."""
     out = []
@@ -473,6 +587,10 @@ def mesh_lines_xy(model, edge_res, fringe=None):
                   cannot collapse deliberate fine structure)
       regions     (lo, hi, res) intervals where gap filling must be at
                   least as fine as res
+      xpin/ypin   positions the coincidence merge must keep exactly
+      slot_res    finest coplanar-slot pair scale, or None - the z mesh
+                  matches it at signal faces (the slot field dives into
+                  the substrate at the edge-singularity scale)
     """
     board = model['board']
     xs = [0.0, float(board['width'])]
@@ -483,6 +601,9 @@ def mesh_lines_xy(model, edge_res, fringe=None):
     # coalesced: hundreds of overlapping stroke segments become a few
     # merged zones, each contributing a single boundary-line pair
     nreg_x, nreg_y = [], []
+    # axis-aligned copper edges, kept for coplanar-slot pairing after
+    # every shape has contributed its own lines
+    edges_x, edges_y = [], []
 
     def region(res, x0, x1, y0, y1):
         if res:
@@ -492,6 +613,7 @@ def mesh_lines_xy(model, edge_res, fringe=None):
     pad_economy = _pad_economy(model)
     for s in sim_shapes(model):
         pts = shape_outline(s)
+        _axis_edges(pts, s.get('layer'), edges_x, edges_y)
         pxs = [p[0] for p in pts]
         pys = [p[1] for p in pts]
         bx0, bx1, by0, by1 = min(pxs), max(pxs), min(pys), max(pys)
@@ -617,6 +739,29 @@ def mesh_lines_xy(model, edge_res, fringe=None):
         xsoft += sx
         ysoft += sy
 
+    # coplanar slots: pairs of facing copper edges within roughly a
+    # substrate height of each other. The gap width sets the impedance of
+    # CPW lines, launch discontinuities and series gaps, so both its
+    # edges get the thirds treatment and the gap a guaranteed fine fill.
+    # This runs before vias and ports contribute lines: their hard lines
+    # (a port abutting a slot edge) must survive the edge-line removal.
+    W, H = float(board['width']), float(board['height'])
+    shapes = model.get('shapes') or []
+    comp_boxes = [comp_element_box(c, shapes)[:4]
+                  for c in model.get('components') or []]
+    slot_res = None
+    if (model.get('mesh') or {}).get('slots', True):
+        merge = (model.get('sim') or {}).get('meshMerge')
+        slot_min = max(0.1 if merge is None else float(merge), 0.05)
+        slot_max = min(2.0, max(0.6, 1.5 * (fringe or 0.4)))
+        xs, rtx = _apply_slots(edges_x, slot_min, slot_max, edge_res, xs, xsoft, xreg,
+                               [(x0, x1, y0, y1) for x0, y0, x1, y1 in comp_boxes])
+        ys, rty = _apply_slots(edges_y, slot_min, slot_max, edge_res, ys, ysoft, yreg,
+                               [(y0, y1, x0, x1) for x0, y0, x1, y1 in comp_boxes])
+        xs += [0.0, W]
+        ys += [0.0, H]
+        slot_res = min([r for r in (rtx, rty) if r], default=None)
+
     for v in model.get('vias') or []:
         x, y = float(v['x']), float(v['y'])
         rd, rp = float(v['drill']) / 2, float(v['pad']) / 2
@@ -661,7 +806,6 @@ def mesh_lines_xy(model, edge_res, fringe=None):
                 n = max(16, 4 * int(math.ceil(math.pi * r / (2 * max(rv, 1e-3)))))
                 outline_edge_lines(circle_points(x, y, r, n), tol, xs, ys, xsoft, ysoft)
         region(res, x - rp, x + rp, y - rp, y + rp)
-    shapes = model.get('shapes') or []
     # component element boxes and their vertical terminals are zero-
     # thickness structures: they only rasterize when the mesh has lines
     # at their EXACT positions. These coordinates are returned as pinned
@@ -700,4 +844,4 @@ def mesh_lines_xy(model, edge_res, fringe=None):
 
     xreg += _coalesce(nreg_x)
     yreg += _coalesce(nreg_y)
-    return xs, ys, xsoft, ysoft, xreg, yreg, xpin, ypin
+    return xs, ys, xsoft, ysoft, xreg, yreg, xpin, ypin, slot_res

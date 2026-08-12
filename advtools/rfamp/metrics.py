@@ -7,7 +7,7 @@ may be scalars or arrays broadcastable to the frequency axis.
 """
 
 import numpy as np
-from .. import rfnet as skrf
+import skrf
 
 
 def _s(dev):

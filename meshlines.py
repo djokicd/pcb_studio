@@ -178,27 +178,42 @@ def _thin_soft(soft, hard):
 
 def _smooth_axis(fixed, lo, hi, edge_res, max_res, margin, regions=(), merge=0.0,
                  ratio=1.5, soft=(), pinned=(), outside=None, uspans=()):
-    # region boundaries must be mesh lines themselves, otherwise a fine
-    # region inside a large gap never splits it (the gap midpoint decides
-    # the fill resolution and may lie outside the region)
     fixed = list(fixed)
     span_lo, span_hi = min(fixed), max(fixed)
-    for rlo, rhi, _res in regions:
-        if span_lo < rlo < span_hi:
-            fixed.append(rlo)
-        if span_lo < rhi < span_hi:
-            fixed.append(rhi)
+    # pinned positions must survive EXACTLY: zero-thickness structures
+    # (component element sheets, their vertical terminals) only rasterize
+    # on their precise mesh line, and coplanar slot edges set the gap
+    # width. Pins are excluded from the clustering itself - a pin inside
+    # a cluster would drag the mean and then vanish into it, taking a
+    # real feature line (a port edge 100 um from a component terminal)
+    # along. They rejoin afterwards; only non-pinned lines within the
+    # merge tolerance of a pin are pulled onto it.
+    pinset = {round(p, 6) for p in pinned} if pinned else set()
+    if pinset:
+        fixed = [v for v in fixed if round(v, 6) not in pinset]
     lines = _merge_close(fixed, merge) if merge > 0 else _dedupe(fixed)
-    # pinned positions must survive the coincidence merge EXACTLY:
-    # zero-thickness structures (component element sheets and their
-    # vertical terminals) only rasterize on their precise mesh line. Any
-    # merged line the pin's cluster produced is moved back onto the pin.
-    if pinned:
+    if pinset:
         tol = max(merge, 1e-4)
-        for pv in sorted({round(p, 6) for p in pinned}):
-            lines = [v for v in lines if abs(v - pv) > tol - 1e-12]
-            lines.append(pv)
-        lines = _dedupe(lines)
+        lines = [v for v in lines
+                 if all(abs(v - pv) > tol - 1e-12 for pv in pinset)]
+        lines = _dedupe(lines + sorted(pinset))
+    # region boundaries must be mesh lines themselves, otherwise a fine
+    # region inside a large gap never splits it (the gap midpoint decides
+    # the fill resolution and may lie outside the region). They join
+    # AFTER the coincidence merge: an auxiliary boundary participating in
+    # the clustering would drag nearby copper edges off their true
+    # position (a refinement band ending 50 um from a ground edge must
+    # not move that edge). A boundary already within the merge tolerance
+    # of an existing line is dropped - that line bounds the region well
+    # enough.
+    bnd_tol = max(merge, 1e-4)
+    for v in sorted({round(b, 6) for rlo, rhi, _res in regions
+                     for b in (rlo, rhi) if span_lo < b < span_hi}):
+        i = bisect.bisect_left(lines, v)
+        near = min([abs(lines[j] - v) for j in (i - 1, i)
+                    if 0 <= j < len(lines)] or [1e9])
+        if near > bnd_tol:
+            bisect.insort(lines, v)
     # deliberate fine structure (curve samples, edge-refinement pairs) is
     # inserted after the coincidence merge, so meshMerge cannot collapse
     # it; candidates duplicating a hard line are dropped instead
@@ -372,7 +387,7 @@ def build_mesh(model):
     ratio = 1.5 if not ratio else min(2.0, max(1.2, float(ratio)))
     # fringing length scale: total dielectric height of the stackup
     _, _diel, _total = stackup_z(model.get('stackup') or [])
-    xs, ys, xsoft, ysoft, xreg, yreg, xpin, ypin = mesh_lines_xy(
+    xs, ys, xsoft, ysoft, xreg, yreg, xpin, ypin, slot_res = mesh_lines_xy(
         model, edge_res, fringe=_total or None)
     xreg, yreg = list(xreg), list(yreg)
     xspan, yspan = [], []
@@ -407,9 +422,17 @@ def build_mesh(model):
 
     def z_detail(zb, thickness):
         """First-cell size at a dielectric face: fine where geometry sits,
-        moderate at plain interfaces/planes - never above edge_res."""
-        frac = 6.0 if round(zb, 6) in signal_z else 3.0
-        return min(edge_res, max(thickness / frac, 1e-3))
+        moderate at plain interfaces/planes - never above edge_res. On a
+        board with coplanar slots the signal-face cells additionally match
+        the slot resolution: the gap field dives into the substrate at the
+        edge-singularity scale, and a coarse first z cell there reads the
+        slot capacitance high (Z0 low, eeff high). Measured on the GCPW
+        benchmark: halving the substrate z cells moved Z0 by +1.5 ohm."""
+        d = min(edge_res, max(thickness / (6.0 if round(zb, 6) in signal_z
+                                           else 3.0), 1e-3))
+        if slot_res and round(zb, 6) in signal_z:
+            d = min(d, max(slot_res, 1e-3))
+        return d
 
     zf = set(cond_z.values()) | {0.0, total}
     boundaries = _dedupe(list(zf | {z0 for z0, _ in diel_z.values()}
@@ -420,30 +443,31 @@ def build_mesh(model):
         z += _fill_graded(a, b, z_detail(a, t), z_detail(b, t),
                           min(edge_res, max(t / 2.0, 1e-3)), ratio)
         z.append(b)
+    # lumped components float above the copper plane; their element plane
+    # needs an exact z line (and the air gap under the body gets a cell)
+    lifts = []
+    for c in model.get('components') or []:
+        if c.get('layer') in cond_z:
+            zl, _ = comp_lift(cond_z, total, c['layer'])
+            lifts.append(zl)
+    z += lifts
     # air above/below: continue from the outer face's first-cell size,
     # growing geometrically (the microstrip fringing field lives within
     # ~one substrate height of the outer conductors; coarse first air
-    # cells bias Z0 low)
+    # cells bias Z0 low). Ladder steps landing next to a component lift
+    # plane are skipped - the plane is an exact line and a rung a few um
+    # away would leave a sliver cell that crushes the timestep.
     if diel_z:
         spans = sorted(diel_z.values())
         b_thk = spans[0][1] - spans[0][0]
         t_thk = spans[-1][1] - spans[-1][0]
-        s = z_detail(total, t_thk)
-        pos = total
-        for k in range(3):
-            pos += s * ratio ** k
-            z.append(pos)
-        s = z_detail(0.0, b_thk)
-        pos = 0.0
-        for k in range(3):
-            pos -= s * ratio ** k
-            z.append(pos)
-    # lumped components float above the copper plane; their element plane
-    # needs an exact z line (and the air gap under the body gets a cell)
-    for c in model.get('components') or []:
-        if c.get('layer') in cond_z:
-            zl, _ = comp_lift(cond_z, total, c['layer'])
-            z.append(zl)
+        for face, thk, dirn in ((total, t_thk, +1), (0.0, b_thk, -1)):
+            s = z_detail(face, thk)
+            pos = face
+            for k in range(3):
+                pos += dirn * s * ratio ** k
+                if all(abs(pos - zl) > 0.4 * s for zl in lifts):
+                    z.append(pos)
     z = _smooth_axis(z, 0.0, total, edge_res, max_res, margin, (), 0.0, ratio)
 
     mesh = {'x': x, 'y': y, 'z': z, 'cells': len(x) * len(y) * len(z),

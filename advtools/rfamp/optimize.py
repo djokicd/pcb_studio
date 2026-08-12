@@ -9,7 +9,7 @@ frequency point inside the band.
 """
 
 import numpy as np
-from .. import rfnet as skrf
+import skrf
 from scipy.optimize import differential_evolution
 
 from . import metrics

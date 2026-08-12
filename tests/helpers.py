@@ -131,6 +131,19 @@ def unwrapped_eeff(rows, num, length_m):
 
 
 # ---------------------------------------------------------------- analytic
+def cbcpw(w_mm, s_mm, h_mm, er):
+    """(Z0, eeff) of a zero-thickness conductor-backed coplanar waveguide
+    (strip width w, gap s each side, substrate h) by conformal mapping."""
+    from scipy.special import ellipk
+    a, b = w_mm / 2, w_mm / 2 + s_mm
+    k = a / b
+    k3 = math.tanh(math.pi * a / (2 * h_mm)) / math.tanh(math.pi * b / (2 * h_mm))
+    r = ellipk(k ** 2) / ellipk(1 - k ** 2)          # K(k)/K'(k)
+    r3 = ellipk(k3 ** 2) / ellipk(1 - k3 ** 2)
+    eeff = (1 + er * r3 / r) / (1 + r3 / r)
+    return 60 * math.pi / math.sqrt(eeff) / (r + r3), eeff
+
+
 def hammerstad(w_mm, h_mm, er):
     """(Z0, eeff) of a zero-thickness microstrip (Hammerstad-Jensen)."""
     u = w_mm / h_mm

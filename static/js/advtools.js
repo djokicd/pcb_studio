@@ -63,8 +63,10 @@ async function openAdvTool(id) {
   const modal = $('advModal');
   modal.hidden = false;
   $('advTitle').textContent = 'Loading…';
-  $('advForm').textContent = '';
-  $('advPanels').textContent = '';
+  for (const id of ['advForm', 'advFoot', 'advPanels', 'advPinned', 'advTabs']) {
+    $(id).textContent = '';
+  }
+  $('advWarn').hidden = true;
   AdvTools.charts = {};
   AdvTools.result = null;
   try {
@@ -82,22 +84,47 @@ async function openAdvTool(id) {
   }
 }
 
-/* ---------- form ---------- */
+/* ---------- form ----------
+   Groups fold away: a tool's schema is long (this one has 24 fields) but
+   a given task touches one section of it, and the actions have to stay in
+   sight rather than hiding below twenty inputs. Fold state is per tool
+   and per group, so the sections you work in stay where you left them. */
+function advPref(key, fallback) {
+  try {
+    const v = localStorage.getItem(`adv.${AdvTools.tool.id}.${key}`);
+    return v == null ? fallback : v;
+  } catch (e) { return fallback; }
+}
+
+function advSetPref(key, value) {
+  try { localStorage.setItem(`adv.${AdvTools.tool.id}.${key}`, value); }
+  catch (e) { /* private mode: fold state just does not persist */ }
+}
+
 function buildAdvForm(schema) {
   const box = $('advForm');
   box.textContent = '';
   AdvTools.values = {};
   AdvTools.freqFields = new Set();
   let form = null;
-  const newForm = () => { form = document.createElement('div'); form.className = 'form'; box.append(form); };
+  const newForm = (parent) => {
+    form = document.createElement('div');
+    form.className = 'form';
+    (parent || box).append(form);
+  };
   newForm();
   for (const f of schema.fields || []) {
     if (f.group) {
-      const h = document.createElement('h3');
-      h.textContent = f.group;
-      h.style.marginTop = '12px';
-      box.append(h);
-      newForm();
+      const sec = document.createElement('details');
+      sec.className = 'adv-group';
+      const key = 'group.' + f.group;
+      sec.open = advPref(key, f.open === false ? '0' : '1') === '1';
+      sec.ontoggle = () => advSetPref(key, sec.open ? '1' : '0');
+      const sum = document.createElement('summary');
+      sum.textContent = f.group;
+      sec.append(sum);
+      box.append(sec);
+      newForm(sec);
       continue;
     }
     const label = document.createElement('label');
@@ -142,6 +169,10 @@ function buildAdvForm(schema) {
     form.append(label);
   }
 
+  // the actions live outside the scrolling field list, so they are
+  // reachable whichever section you are editing
+  const foot = $('advFoot');
+  foot.textContent = '';
   const bar = document.createElement('div');
   bar.className = 'adv-actions';
   for (const a of schema.actions || []) {
@@ -152,11 +183,11 @@ function buildAdvForm(schema) {
     b.id = 'advAct_' + a.id;
     bar.append(b);
   }
-  box.append(bar);
+  foot.append(bar);
   const note = document.createElement('p');
   note.className = 'muted mini-note';
   note.id = 'advNote';
-  box.append(note);
+  foot.append(note);
 
   // frequency fields left open by the tool follow the selected file, so
   // the first analysis lands mid-band instead of on an edge
@@ -194,13 +225,23 @@ function advFieldChanged(f) {
   set('band_hi', +(lo + (hi - lo) * 0.75).toFixed(4));
 }
 
-/* ---------- panels ---------- */
+/* ---------- panels ----------
+   A panel marked `pin` sits above the tab strip and is always visible
+   (the schematic: it is the answer, the plots are the evidence). The rest
+   are tabs, so one plot gets the whole area instead of four sharing it —
+   with an "All" tab that keeps the old side-by-side grid. */
 function buildAdvPanels(schema) {
   const host = $('advPanels');
+  const pinned = $('advPinned');
+  const tabs = $('advTabs');
   host.textContent = '';
+  pinned.textContent = '';
+  tabs.textContent = '';
+  const tabbed = [];
   for (const p of schema.panels || []) {
     const card = document.createElement('div');
     card.className = 'adv-card';
+    card.id = 'advCard_' + p.id;
     const h = document.createElement('h3');
     h.textContent = p.title || p.id;
     card.append(h);
@@ -208,7 +249,50 @@ function buildAdvPanels(schema) {
     body.id = 'advPanel_' + p.id;
     body.className = 'adv-body adv-' + p.type;
     card.append(body);
+    if (p.pin) { pinned.append(card); continue; }
     host.append(card);
+    tabbed.push(p);
+  }
+  AdvTools.tabbed = tabbed;
+  tabs.hidden = tabbed.length < 2;
+  if (tabs.hidden) { host.classList.remove('single'); return; }
+  for (const p of tabbed) {
+    const b = document.createElement('button');
+    b.textContent = p.title || p.id;
+    b.dataset.panel = p.id;
+    b.onclick = () => showAdvPanel(p.id);
+    tabs.append(b);
+  }
+  const all = document.createElement('button');
+  all.textContent = 'All';
+  all.dataset.panel = '*';
+  all.title = 'Show every panel at once';
+  all.onclick = () => showAdvPanel('*');
+  tabs.append(all);
+  const want = advPref('panel', tabbed[0].id);
+  showAdvPanel(tabbed.some(p => p.id === want) || want === '*'
+    ? want : tabbed[0].id);
+}
+
+function showAdvPanel(id) {
+  const host = $('advPanels');
+  AdvTools.panel = id;
+  advSetPref('panel', id);
+  host.classList.toggle('single', id !== '*');
+  for (const p of AdvTools.tabbed || []) {
+    const card = $('advCard_' + p.id);
+    if (card) card.hidden = id !== '*' && p.id !== id;
+  }
+  for (const b of $('advTabs').children) {
+    b.classList.toggle('on', b.dataset.panel === id);
+  }
+  // A canvas in a hidden card measured zero, so the charts that just
+  // became visible have to be redrawn. Once now (each redraw releases the
+  // inline width it was holding its card open with) and once after the
+  // frame settles, so the last measurement is of the final layout.
+  if (AdvTools.result) {
+    advRelayout(AdvTools.result);
+    requestAnimationFrame(() => advRelayout(AdvTools.result));
   }
 }
 
@@ -226,6 +310,7 @@ function renderAdvPanels(res) {
   // The charts size themselves from their container and write it as an
   // inline width, but the first draw happens before the results column
   // has grown its scrollbar - so measure again once layout has settled.
+  advRelayout(res);
   requestAnimationFrame(() => advRelayout(res));
 
   const warn = $('advWarn');
@@ -240,8 +325,14 @@ function renderAdvPanels(res) {
 }
 
 function advRelayout(res) {
-  for (const ch of Object.values(AdvTools.charts)) {
-    if (ch && ch.draw) ch.draw();
+  for (const [id, ch] of Object.entries(AdvTools.charts)) {
+    const card = $('advCard_' + id);
+    if (!ch || !ch.draw || (card && card.hidden)) continue;   // measures 0
+    // the chart writes its pixel width back as an inline style; left in
+    // place it props the flex card open and the next measurement reads
+    // the old width, so hand the layout back to CSS before re-measuring
+    ch.canvas.style.width = '100%';
+    ch.draw();
   }
   const el = $('advPanel_schematic');
   if (el && res && res.schematic) drawSchematic(el, res.schematic);
@@ -265,7 +356,9 @@ function renderAdvTable(el, rows) {
 function advCanvas(el) {
   el.textContent = '';
   const wrap = document.createElement('div');
-  wrap.className = 'plotwrap';
+  // 'rsz' makes the chart take its height from the wrapper instead of
+  // deriving it from the width, so a tabbed panel fills the whole area
+  wrap.className = 'plotwrap rsz';
   const cv = document.createElement('canvas');
   const tip = document.createElement('div');
   tip.className = 'chart-tip';
@@ -317,7 +410,9 @@ function drawSchematic(el, sch) {
   el.append(wrap);
   const dpr = window.devicePixelRatio || 1;
   const w = Math.max(560, el.clientWidth || 560);
-  cv.style.width = '100%';
+  // below the minimum the wrapper scrolls; squeezing 560 px of symbols
+  // into 300 would only make them unreadable
+  cv.style.width = w + 'px';
   cv.style.height = SCH_H + 'px';
   cv.width = w * dpr;
   cv.height = SCH_H * dpr;
@@ -566,8 +661,9 @@ async function pollAdvJob(jobId, actionId) {
       + (r.minGainDb != null ? ` · min |S21| ${r.minGainDb.toFixed(2)} dB` : '')
       + (r.maxSwrIn != null ? ` · SWR in ≤ ${r.maxSwrIn.toFixed(2)}` : '')
       + (r.maxSwrOut != null ? ` · SWR out ≤ ${r.maxSwrOut.toFixed(2)}` : '')
-      + (r.uncond ? ' · unconditionally stable over the measured range'
-                  : ' · NOT unconditionally stable');
+      + (r.uncond == null ? ''      // band stability was not part of this search
+         : r.uncond ? ' · unconditionally stable over the measured range'
+                    : ' · NOT unconditionally stable');
     // re-analyse first, then report: the analysis clears the note
     if (needsAnalysis) await runAdvAction('analyse');
     note.textContent = verdict;

@@ -48,6 +48,9 @@ S-parameters and Smith charts down to animated surface-current density.
 ## Requirements
 
 - Python 3 with Flask
+- numpy, scipy and [scikit-rf](https://scikit-rf.org) — only for the
+  advanced RF tools (`pip install -r requirements.txt`); everything else
+  runs on Flask alone
 - GNU Octave
 - openEMS with its Octave/Matlab interface. Looked for under
   `$OPENEMS_MATLAB_ROOT`, `~/opt/openEMS/share`, `/usr/local/share`,
@@ -430,6 +433,36 @@ adjacent-cell step** — on a typical imported CPW board the rework took
 that step from ≈27× to ≈1.8×, and the microstrip benchmark's return-loss
 floor improved from −31 dB to −37 dB.
 
+### Coplanar gaps
+
+Facing copper edges on the same layer within roughly a substrate height
+of each other — CPW slots, launch gaps, series gaps, trace-to-pour
+clearances — are detected as **slots** and meshed deliberately: both
+edges get the metal-edge refinement pair (no line on the edge itself,
+one at rt/3 into the metal, one at 2rt/3 into the gap, with rt tied to
+the **gap** width) and a fine zone guarantees several cells across the
+gap. Without this the number of cells in a 0.3 mm CPW gap — and with it
+the effective gap width and the line impedance — depended on where the
+graded fill happened to land, so a 50 µm geometry nudge could change
+the simulated Z₀.
+
+Slot edges are also protected from the coincidence merge: refinement
+-region boundaries and other auxiliary lines can no longer drag a
+ground-pour edge tens of µm off its true position.
+
+The z mesh follows: on a board with slots, the first substrate cells at
+signal faces match the slot resolution, because the gap field dives into
+the substrate at the edge-singularity scale and coarse first z cells
+read the slot capacitance high (Z₀ low, εeff high — worth ≈1.5 Ω on the
+GCPW benchmark). Component element gaps are exempt from slot refinement:
+lumped elements need exactly the cell structure their pinned lines
+define.
+
+Gaps at or below the **meshMerge** tolerance (default 0.1 mm) are
+treated as import noise and left to the merge, as before. The whole
+behaviour can be turned off per project in the Meshing tab ("Refine
+coplanar gaps") when clearances don't matter and the cell budget does.
+
 ### Curved and oblique edges
 
 Copper edges produce mesh lines that follow the actual edge: axis-aligned
@@ -502,6 +535,15 @@ Use these instead of lumped ports when accurate line impedance / return
 loss matters (a 50 Ω test line measures S11 < −30 dB with MSL ports vs
 ≈ −25 dB with lumped ports). Requires an absorbing boundary (MUR/PML-8);
 S-parameters are referenced to the port's "Ref. impedance".
+
+**Not for coplanar waveguide.** The MSL port's mode template (voltage
+strip-to-plane, current around the strip) does not fit a CPW/GCPW mode
+whose return current flows in the coplanar pours: the wave decomposition
+turns inconsistent (|S11|² + |S21|² comes out above 1) and the apparent
+Z₀ reads far too low. Measure CPW lines with a lumped port and a
+deliberately mismatched termination resistor instead — the quarter-wave
+dip gives Z₀ = √(R·Zin_min) — which is exactly how the `gcpw_z0`
+verification benchmark does it.
 
 ## S-parameter devices (Touchstone)
 
@@ -930,15 +972,34 @@ each topology is visible rather than assumed.
   inductance: 9.6 dB at f0 against a 9.8 dB MAG, SWR 1.45/1.30, and
   K ≥ 1.25 across the whole file.
 
-The maths came from a standalone scikit-rf application. Rather than pull
-scikit-rf and its dependency tree into a project that runs on Flask
-alone, the slice it used — a two-port container, the S/Z/ABCD
-conversions, a cascade and an ideal-line medium — is implemented on numpy
-in `advtools/rfnet.py`. The upstream package's own 28-test suite passes
-against it unchanged, which is how the port was checked. One difference
-worth recording: renormalizing through Z breaks on a half-wave line
-(`I − S` is singular there, turning a passive line into a 1.2× amplifier),
-so the shim uses the power-wave form instead.
+The maths comes from a standalone [scikit-rf](https://scikit-rf.org)
+application, vendored here as `advtools/rfamp/` and running on scikit-rf
+itself — the two-port container, the S/Z/ABCD conversions, the cascade
+and the transmission-line media are all upstream code, so the tool
+behaves exactly like the original program and stays easy to re-sync with
+it.
+
+This is the one part of the project with third-party dependencies:
+`numpy`, `scipy` (the band optimizer's differential evolution) and
+`scikit-rf`. They are needed only when an RF tool is opened — the editor,
+the mesher and the openEMS run sequencing still import nothing beyond
+Flask. Install them with
+
+```bash
+pip install -r requirements.txt
+```
+
+On a distribution python that refuses to install into itself (PEP 668,
+"externally managed environment"), install into the user site instead —
+the service python picks it up from there:
+
+```bash
+pip install --user --break-system-packages -r requirements.txt
+```
+
+scikit-rf 2.x requires numpy ≥ 2, so `requirements.txt` caps it at
+`<2` for the numpy 1.x that ships with most distributions; drop the
+ceiling once your numpy is 2.x.
 
 ## Adding another tool
 
@@ -957,6 +1018,15 @@ browser owns the widgets (`number`, `select`, `check`, `freq`, `gamma`)
 and the panels (`table`, `text`, `chart`, `smith`, `schematic`), so a new
 tool describes what it wants rather than shipping its own interface. An
 action marked `job` runs in the background with polled progress.
+
+The window lays itself out from the same description. Controls sit in a
+column whose `group` entries fold — `{'group': ..., 'open': False}` starts
+a section closed — while the action buttons and the status line stay
+below it, out of the scroll. Panels marked `'pin': True` share a strip
+along the top and stay visible; the rest become tabs, so one plot gets
+the whole area instead of a quarter of it, with an **All** tab for the
+side-by-side view. Which tab you left open and which sections you folded
+are remembered per tool.
 
 ---
 
@@ -991,9 +1061,8 @@ are flagged in the editor and before each run.
 - `geometry.py` – stackup z-positions, shape outlines, footprints
 - `meshlines.py` – mesh line generation (shared by preview and script)
 - `simplify.py` – stroke chaining, outline thinning, overlap cleanup
-- `advtools/` – advanced tools: registry, `rfnet.py` (numpy microwave
-  layer), `rfamp/` (matching, stability, optimization), `tools/` (one
-  module per tool)
+- `advtools/` – advanced tools: registry, `rfamp/` (scikit-rf based
+  matching, stability, optimization), `tools/` (one module per tool)
 - `polybool.py` – polygon boolean union used by the overlap cleanup
 - `static/` – vanilla JS UI: `js/editor.js` (canvas editor),
   `js/meshtab.js` (Meshing view), `js/charts.js` (dB/Smith/polar +
