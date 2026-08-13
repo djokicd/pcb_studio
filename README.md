@@ -399,6 +399,30 @@ can go back and forth. The z axis always follows the stackup — a
 conductor sheet only rasterizes on its own mesh line, so those are not
 optional.
 
+**Auto-mesh lumped components** (on by default, in *Outside the ranges*)
+goes further than keeping a component connected. It pins a line on every
+copper edge around the part so its pads keep the shape they were drawn
+with — a pad edge with no line near it moves to the nearest one, and a
+narrow pad gap can close entirely, merging the copper either side of the
+component — and it then resolves each interval those edges create.
+
+Both halves are needed, which is worth knowing because it is not
+obvious: pinning the edges *alone* made a terminated GCPW line read
+2 Ω **further** from the converged answer, because an edge pinned with a
+single cell beside it models that gap worse than not pinning it at all.
+Measured on the bundled board against the automatic mesh as reference
+(Zin = 24.30 Ω at 1 GHz):
+
+| | Zin @ 1 GHz | cells |
+|---|---|---|
+| edges pinned only | 22.28 Ω | 363 k |
+| + 3 cells per interval (**default**) | 23.47 Ω | 498 k |
+| + 5 cells per interval | 23.94 Ω | 612 k |
+
+— converging on the reference as the resolution rises, which is what a
+correct model does. Add ranges over the part for more than the default.
+Turn the option off to mesh components entirely by hand.
+
 **Structures that cannot exist without a line keep theirs.** A
 component's element sheet and its vertical terminals are zero-thickness:
 they only rasterize where a mesh line already is, so a terminal 20 µm

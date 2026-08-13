@@ -1003,7 +1003,12 @@ def test_manual_hard_pins_survive_a_coarse_mesh_and_grade():
     mesh = build_mesh(m)
     for v in (x0, x1):
         assert min(abs(q - v) for q in mesh['x']) < 1e-9
-    assert _worst_step(mesh['x']) <= 1.5 + 0.1
+    # around the part - where the field is - the grading holds exactly
+    near = [v for v in mesh['x'] if x0 - 2 <= v <= x1 + 2]
+    assert _worst_step(near) <= 1.5 + 0.1
+    # out in the bulk two grading fronts meet mid-gap and the sequence
+    # cannot land exactly, which costs a little over the ratio there
+    assert _worst_step(mesh['x']) <= 1.8
 
 
 def test_manual_hard_pins_are_not_merged_into_a_via():
@@ -1079,3 +1084,47 @@ def test_mesh_check_is_clean_on_the_automatic_mesh():
     c = m['check']
     assert c['gapCells'] >= 2, f"only {c['gapCells']} cells across the gap"
     assert c['worstOff'] < 0.1
+
+
+def test_manual_auto_component_meshing_resolves_the_element_gap():
+    """Pinning a component's own lines keeps it connected; auto-meshing
+    it also gives the gap its element sheet bridges cells to carry the
+    field, instead of the single cell a coarse background leaves."""
+    m = _with_component(min_res=1.5)
+    x0, _, x1, _, _, _ = comp_element_box(m['components'][0], m['shapes'])
+    off = build_mesh(dict(m, mesh=dict(m['mesh'], autoComp=False)))
+    on = build_mesh(m)                       # default: on
+    span = lambda mesh: len([v for v in mesh['x']
+                             if x0 - 1e-9 <= v <= x1 + 1e-9]) - 1
+    assert span(off) <= 2, 'the coarse background should barely cross it'
+    assert span(on) >= 4, f'auto-meshed gap only got {span(on)} cells'
+    # and the part still sits exactly where it was drawn
+    for v in (x0, x1):
+        assert min(abs(q - v) for q in on['x']) < 1e-9
+
+
+def test_manual_auto_component_meshing_keeps_pad_gaps_open():
+    """A pad gap with no line near it closes on the grid and merges the
+    copper either side of the part - the failure that shorted a board."""
+    # two pads either side of a narrow gap, bridged by the component
+    shapes = [rect('a', 5, 9, 14.5, 2), rect('pad', 20.5, 9, 0.4, 2),
+              rect('b', 21.1, 9, 13.9, 2)]
+    m = _manual(min_res=1.5, shapes=shapes, ports=[])
+    m['vias'] = []
+    m['components'] = [{'id': 9, 'ref': 'R1', 'ctype': 'R', 'value': 100,
+                        'package': '0603', 'x': 20, 'y': 10, 'rot': 0,
+                        'layer': 'top'}]
+
+    def gap_on_grid(mesh, lo, hi):
+        import bisect
+        def snap(v):
+            L = mesh['x']
+            i = bisect.bisect_left(L, v)
+            c = [L[j] for j in (i - 1, i) if 0 <= j < len(L)]
+            return min(c, key=lambda q: abs(q - v))
+        return snap(hi) - snap(lo)
+
+    off = build_mesh(dict(m, mesh=dict(m['mesh'], autoComp=False)))
+    on = build_mesh(m)
+    assert gap_on_grid(off, 20.9, 21.1) < 1e-9, 'expected the gap to close'
+    assert gap_on_grid(on, 20.9, 21.1) > 0.19, 'the gap must stay open'

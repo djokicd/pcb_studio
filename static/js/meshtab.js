@@ -1659,14 +1659,16 @@ function initMeshTools() {
       app.refreshMesh();
     });
   }
-  $('mo_slots').addEventListener('change', e => {
-    // stored only when disabled: absent means the default (on)
-    const m = app.meshTab.mesh();
-    if (e.target.checked) delete m.slots;
-    else m.slots = false;
-    app.dirty();
-    app.refreshMesh();
-  });
+  for (const [id, key] of [['mo_slots', 'slots'], ['mo_autoComp', 'autoComp']]) {
+    $(id).addEventListener('change', e => {
+      // stored only when disabled: absent means the default (on)
+      const m = app.meshTab.mesh();
+      if (e.target.checked) delete m[key];
+      else m[key] = false;
+      app.dirty();
+      app.refreshMesh();
+    });
+  }
   $('mm_mode').addEventListener('change', e => {
     const m = app.meshTab.mesh();
     if (e.target.value === 'manual') m.mode = 'manual';
@@ -1747,6 +1749,9 @@ function meshFormsFromModel() {
   $('mo_res').value = m.outside.res ?? '';
   $('mo_ratio').value = m.outside.ratio ?? '';
   $('mo_slots').checked = m.slots !== false;
+  $('mo_autoComp').checked = m.autoComp !== false;
+  // in automatic mode the geometry pass already meshes components
+  $('mo_comp_lab').hidden = !manual;
   $('mm_mode').value = manual ? 'manual' : 'auto';
   $('mm_note').textContent = manual
     ? 'Copper contributes no mesh lines: only the ranges below place them, '

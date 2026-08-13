@@ -20,7 +20,8 @@ import bisect
 import math
 
 from geometry import (stackup_z, mesh_lines_xy, sim_shapes, comp_lift,
-                      comp_element_box, _mesh_lines)
+                      comp_element_box, shape_outline, _axis_edges,
+                      _mesh_lines)
 
 C0 = 299792458.0
 
@@ -486,6 +487,60 @@ def manual_ranges(model, axis, limit):
     return sorted(out)
 
 
+# A lumped component asks for more than its own exact lines: the gap it
+# bridges carries the field between the two pads, and the copper it lands
+# on has to stay where it was drawn or that gap can close on the grid.
+COMP_GAP_CELLS = 4        # across the gap the element sheet spans
+COMP_CROSS_CELLS = 2      # across the element's width
+COMP_NEAR_CELLS = 3       # across each copper interval around the part
+
+
+def manual_component_lines(model, axis, limit):
+    """Lines that make a lumped component simulate properly in manual
+    mode, over and above the exact positions it cannot exist without.
+
+    Its element sheet spans a gap between two pads: that gap gets cells
+    across it instead of one, and every copper edge around the part is
+    pinned - a pad edge with no line near it moves to the nearest one,
+    which is how a 0.2 mm pad gap closes and merges the copper either
+    side of the component."""
+    out = []
+    shapes = model.get('shapes') or []
+    for c in model.get('components') or []:
+        x0, y0, x1, y1, ny, connected = comp_element_box(c, shapes)
+        if not connected:
+            continue
+        lo, hi = (y0, y1) if axis == 'y' else (x0, x1)
+        if hi - lo <= 1e-9:
+            continue
+        # the series axis carries the gap; the other one the width
+        series = (ny == 1) == (axis == 'y')
+        n = COMP_GAP_CELLS if series else COMP_CROSS_CELLS
+        for k in range(1, n):
+            out.append(round(lo + (hi - lo) * k / n, 6))
+        # Copper edges around the part, so its pads keep their shape - a
+        # pad edge with no line near it moves to the nearest one and a
+        # narrow pad gap can close, merging the copper either side.
+        # Pinning them is not enough on its own: an edge pinned with a
+        # single cell beside it models that gap worse than not pinning it
+        # at all (measured: it moved a terminated GCPW line 2 ohm the
+        # WRONG way), so each interval they create is resolved too.
+        margin = hi - lo
+        ex, ey = [], []
+        for s in sim_shapes(model):
+            if s.get('layer') != c.get('layer'):
+                continue
+            _axis_edges(shape_outline(s), s.get('layer'), ex, ey, min_len=0.05)
+        near = sorted({round(pos, 6)
+                       for pos, _a, _b, _side, _lay in (ey if axis == 'y' else ex)
+                       if lo - margin <= pos <= hi + margin})
+        out += near
+        for a, b in zip(near, near[1:]):
+            for k in range(1, COMP_NEAR_CELLS):
+                out.append(round(a + (b - a) * k / COMP_NEAR_CELLS, 6))
+    return [v for v in out if math.isfinite(v) and -1e-9 <= v <= limit + 1e-9]
+
+
 def manual_pins(model, axis, limit):
     """Lines individual objects need in manual mode, as (soft, hard).
 
@@ -550,6 +605,11 @@ def manual_pins(model, axis, limit):
         except (KeyError, TypeError, ValueError):
             continue
         add(c, halves, n)
+    # opt-out: the extra lines a component needs to behave are on by
+    # default, because without them it is modelled wrongly rather than
+    # merely coarsely
+    if (model.get('mesh') or {}).get('autoComp', True):
+        hard += manual_component_lines(model, axis, limit)
     ok = lambda v: math.isfinite(v) and -1e-9 <= v <= limit + 1e-9
     return [c for c in out if ok(c)], _dedupe([h for h in hard if ok(h)])
 
