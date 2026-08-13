@@ -158,6 +158,20 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 #meshSide .form input { width: 90px; }
 .mini-note { font-size: 11px; margin: 4px 0 8px; line-height: 1.45; }
+/* The range list grows without bound, so it scrolls inside itself. It
+   takes only the height it needs, but yields it back when the pane is
+   tight - otherwise a dozen ranges push the object list (how you reach a
+   via's mesh settings) off the pane entirely. */
+#meshItemPanel {
+  display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto;
+}
+#meshItemList {
+  flex: 0 1 auto; min-height: 76px; max-height: 46vh;
+  overflow-y: auto; overscroll-behavior: contain;
+}
+/* the object list is how a via's mesh settings are reached, so it keeps a
+   working height: the range list gives way first and scrolls instead */
+#ltab-mesh #objPanel { min-height: 148px; }
 .mregion {
   display: flex; align-items: center; gap: 5px;
   padding: 4px 6px; margin-bottom: 4px; border-radius: 4px;
@@ -178,6 +192,40 @@ main { flex: 1; display: flex; min-height: 0; }
   color: var(--mr-col); text-transform: uppercase; font-size: 10px;
   letter-spacing: 0.05em; min-width: 42px;
 }
+/* the manual summary row uses the tag as a one-letter axis chip */
+.mregion .mr-tag:has(+ .mr-sum) {
+  min-width: 12px; font-weight: 700; font-size: 11px;
+}
+.mregion .mr-prof {
+  margin-left: auto; padding: 0 6px; background: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px; color: var(--soft); font-size: 12px; line-height: 1.5;
+}
+.mregion .mr-prof:hover { color: var(--text); border-color: var(--mr-col); }
+.mregion .mr-prof + .mr-del { margin-left: 0; }
+/* summary row: interval above, density below, buttons always reachable
+   however narrow the pane gets */
+.mregion .mr-body { flex: 1 1 auto; min-width: 0; }
+.mregion .mr-sum {
+  display: block; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: var(--text); font-variant-numeric: tabular-nums;
+}
+/* auto-mode rows keep their inline number fields: let them wrap rather
+   than push the delete button out of the panel */
+.mregion { flex-wrap: wrap; row-gap: 3px; }
+/* the manual row lays itself out - wrapping would move the edit button
+   below the fold */
+.mregion:has(.mr-body) { flex-wrap: nowrap; }
+.mregion .mr-tag:has(+ .mr-body) { min-width: 12px; font-weight: 700; font-size: 11px; }
+/* settings a mode does not use stay visible but read as inactive */
+.form label.off { opacity: 0.45; }
+/* density-profile popup: the line pattern the range will produce */
+.mprof-preview {
+  margin-top: 12px; padding: 2px; border: 1px solid var(--border-soft);
+  border-radius: 5px; background: var(--card);
+}
+.mprof-preview canvas { display: block; }
+.mprof-preview.pending { opacity: 0.4; }
 /* top-bar chip for a simulation running in the background */
 .runchip {
   display: flex; align-items: center; gap: 6px; margin-right: 8px;

@@ -24,7 +24,7 @@ from gerber import parse_gerber, parse_excellon, GerberError
 from scriptgen import generate_script, ValidationError, dump_layers
 from touchstone import (parse_touchstone, interpolate, connect, TouchstoneError,
                         _matmul, _solve)
-from meshlines import build_mesh
+from meshlines import build_mesh, profile_lines, _range_cells
 
 BASE_DIR = Path(__file__).resolve().parent
 SIM_ROOT = BASE_DIR / 'sims'
@@ -954,6 +954,36 @@ def api_mesh():
     except (ValidationError, KeyError, TypeError, ValueError) as e:
         return jsonify({'error': str(e)}), 400
     return jsonify(mesh)
+
+
+@app.post('/api/mesh/profile')
+def api_mesh_profile():
+    """Lines one manual range would produce - the density-profile editor
+    previews from the same code that meshes, so what is drawn is what is
+    simulated."""
+    p = request.get_json(force=True) or {}
+    try:
+        lo, hi = float(p.get('from') or 0.0), float(p.get('to') or 0.0)
+        lo, hi = min(lo, hi), max(lo, hi)
+        off = max(0.0, float(p.get('offset') or 0.0))
+        # the line-free edge bands are mesh cells too: previewing them
+        # keeps the reported smallest/largest cell honest
+        off = min(off, (hi - lo) / 2.0 - 1e-6) if off > 0 else 0.0
+        inner = (lo + off, hi - off) if off > 0 else (lo, hi)
+        # the count may be given directly or as a target spacing - the
+        # preview resolves it exactly as the mesher does
+        cells = _range_cells(p, inner[1] - inner[0])
+        lines = profile_lines(inner[0], inner[1], cells,
+                              float(p.get('ratio') or 1.0),
+                              str(p.get('bias') or 'uniform'))
+    except (TypeError, ValueError) as e:
+        return jsonify({'error': str(e)}), 400
+    if off > 0 and lines:
+        lines = [lo] + lines + [hi]
+    widths = [b - a for a, b in zip(lines, lines[1:])]
+    return jsonify({'lines': lines, 'band': off or None, 'cells': cells,
+                    'minCell': round(min(widths), 6) if widths else None,
+                    'maxCell': round(max(widths), 6) if widths else None})
 
 
 def _safe_project_name(name):

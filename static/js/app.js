@@ -1328,8 +1328,11 @@ function updateMeshStats(m, err) {
     }
   }
   if (!m) {
-    for (const id of ['mstX', 'mstY', 'mstZ', 'mstCells', 'mstMin', 'mstWorst', 'mstRes'])
+    for (const id of ['mstX', 'mstY', 'mstZ', 'mstCells', 'mstMin', 'mstWorst',
+                      'mstRes', 'mstEdges', 'mstGap'])
       set(id, '–');
+    const note = $('meshCheckNote');
+    if (note) note.hidden = true;
     set('meshInfo', err ? 'mesh: ' + err : '');
     return;
   }
@@ -1339,9 +1342,70 @@ function updateMeshStats(m, err) {
   set('mstCells', fmtCount(m.cells));
   set('mstMin', m.minCell != null ? `${(m.minCell * 1000).toFixed(0)} µm` : '–');
   set('mstWorst', m.worstRatio != null ? `${m.worstRatio}×` : '–');
+  // a size jump well past the grading ratio means some junction could not
+  // be smoothed - flag it rather than let it pass as a number in a table
+  const wEl = $('mstWorst');
+  if (wEl) {
+    const want = (app.project.mesh && app.project.mesh.outside
+      && app.project.mesh.outside.ratio) || app.project.sim.meshRatio || 1.5;
+    const bad = m.worstRatio != null && m.worstRatio > want * 1.25 + 0.05;
+    wEl.classList.toggle('adv-bad', !!bad);
+    wEl.title = bad
+      ? `Cells jump by ${m.worstRatio}× somewhere — more than the ${want}× `
+        + 'grading asked for. A range whose cells are far from the density '
+        + 'next to it (or a wide edge offset) cannot be smoothed in the '
+        + 'space available.'
+      : 'Largest size jump between adjacent cells; smooth meshes stay near '
+        + 'the grading ratio';
+  }
   set('mstRes', m.edgeRes != null
     ? `${m.edgeRes.toFixed(2)} / ${m.maxRes.toFixed(2)} mm` : '–');
+  updateMeshCheck(m.check);
   set('meshInfo', '');
+}
+
+/* Does the mesh represent the board that was drawn? Cell counts and the
+   grading ratio can both look healthy while the copper has moved onto a
+   different grid - which is how a port box lands off-grid and the run
+   reports a short. */
+function updateMeshCheck(c) {
+  const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+  const note = $('meshCheckNote');
+  if (!c) {
+    set('mstEdges', '–'); set('mstGap', '–');
+    if (note) note.hidden = true;
+    return;
+  }
+  const off = c.worstOff || 0;
+  const edgeEl = $('mstEdges');
+  // a whole cell of movement redraws the board; a fraction of one is the
+  // ordinary consequence of a coincidence merge
+  const edgeBad = off > (c.minFeature || 1) * 0.25;
+  set('mstEdges', c.offEdges
+    ? `${c.offEdges} off by ≤ ${(off * 1000).toFixed(0)} µm` : 'exact');
+  if (edgeEl) edgeEl.classList.toggle('adv-bad', !!edgeBad);
+  const gapEl = $('mstGap');
+  const gapBad = c.gapCells != null && c.gapCells < 2;
+  set('mstGap', c.gapCells == null ? 'none'
+    : `${c.gapCells} cell${c.gapCells === 1 ? '' : 's'} across ${c.gapWidth} mm`);
+  if (gapEl) gapEl.classList.toggle('adv-bad', !!gapBad);
+  if (!note) return;
+  const msgs = [];
+  if (c.gapCells === 0) {
+    msgs.push(`A ${c.gapWidth} mm gap has no mesh line inside it: on the grid `
+      + 'it can close and short the copper either side.');
+  } else if (gapBad) {
+    msgs.push(`The narrowest gap (${c.gapWidth} mm) is crossed by one cell — `
+      + 'the gap width sets the impedance, so put a range across it.');
+  }
+  if (edgeBad) {
+    msgs.push(`Copper edges move up to ${(off * 1000).toFixed(0)} µm onto the `
+      + `nearest line (narrowest feature ${c.minFeature} mm): what is simulated `
+      + 'is not quite what is drawn.');
+  }
+  note.hidden = !msgs.length;
+  note.className = 'muted mini-note' + (msgs.length ? ' adv-bad' : '');
+  note.textContent = msgs.join(' ');
 }
 
 /* ---------- run control ---------- */
@@ -4821,10 +4885,33 @@ window.addEventListener('DOMContentLoaded', () => {
       const k = e.key.toLowerCase();
       if (k === 'z') { (e.shiftKey ? redoEdit : undoEdit)(); e.preventDefault(); return; }
       if (k === 'y') { redoEdit(); e.preventDefault(); return; }
-      if (k === 'c') { app.copySelection(false); e.preventDefault(); }
-      else if (k === 'x') { app.copySelection(true); e.preventDefault(); }
-      else if (k === 'v') { app.pasteClipboard(); e.preventDefault(); }
-      else if (k === 'd') { if (app.copySelection(false)) app.pasteClipboard(); e.preventDefault(); }
+      // In the Meshing view the clipboard belongs to the mesh: copying
+      // there must not put copper on the design's clipboard, and pasting
+      // must not drop a shape into the board while you are meshing. It
+      // falls through to the object clipboard only when no mesh item is
+      // selected (the view can also select vias and shapes).
+      const mt = app.currentView === 'mesh' ? app.meshTab : null;
+      const meshItem = mt && mt.sel;
+      if (k === 'c') {
+        if (!(meshItem && mt.copySel(false))) {
+          if (mt) mt.clearClip();
+          app.copySelection(false);
+        }
+        e.preventDefault();
+      } else if (k === 'x') {
+        if (!(meshItem && mt.copySel(true))) {
+          if (mt) mt.clearClip();
+          app.copySelection(true);
+        }
+        e.preventDefault();
+      } else if (k === 'v') {
+        if (!(mt && mt.pasteClip())) app.pasteClipboard();
+        e.preventDefault();
+      } else if (k === 'd') {
+        if (meshItem && mt.copySel(false)) mt.pasteClip();
+        else if (app.copySelection(false)) app.pasteClipboard();
+        e.preventDefault();
+      }
       else if (k === 'a') { app.selectAllObjects(); e.preventDefault(); }
       return;   // never treat ctrl-combos as tool shortcuts
     }

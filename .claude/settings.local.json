@@ -73,7 +73,12 @@
       "Bash(timeout 300 bash -c 'until grep -q \"4-way even\" /tmp/claude-1000/-home-djokicd-OpenEMS-WebGUI/92c3ef49-87b2-4a31-80e4-21e6bc9c973b/tasks/b0tt6r09e.output 2>/dev/null; do sleep 5; done')",
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('state', d['state']\\)\")",
       "Bash(chmod +x scripts/bench-threads.py)",
-      "Bash(python3 scripts/bench-threads.py GCPW_line_100R --threads 2 --ts 800)"
+      "Bash(python3 scripts/bench-threads.py GCPW_line_100R --threads 2 --ts 800)",
+      "Bash(python3 -m pytest tests/ --collect-only -q)",
+      "Bash(python3 -m pytest tests/ --collect-only)",
+      "Bash(curl -s -X POST localhost:8036/api/mesh/profile -H 'Content-Type: application/json' -d '{\"from\":9,\"to\":10.8,\"cells\":12,\"ratio\":1,\"bias\":\"uniform\",\"offset\":0.2}')",
+      "Bash(git check-ignore *)",
+      "Bash(python3 -m pytest \"tests/test_unit_geometry.py::test_manual_outside_is_smooth_in_both_directions[regs1-out_cfg1]\" tests/test_unit_geometry.py::test_manual_via_lines_are_graded_into_the_background -q)"
     ]
   }
 }

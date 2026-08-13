@@ -380,26 +380,158 @@ copper edges for single lines — with a live preview showing when a snap
 is active. Pinned lines are exact: the coincidence merge pulls a nearby
 geometry line onto the pin rather than averaging the pair away.
 
+### Mesh mode: automatic or manual
+
+**Lines from** at the top of the Meshing tab decides where mesh lines
+come from at all:
+
+- **Automatic (geometry + ranges)** — the default described in [Graded
+  meshing](#graded-meshing): copper edges, vias, ports and coplanar gaps
+  all place lines, and the ranges below refine on top of that.
+- **Manual (ranges only)** — the geometry contributes **nothing**. The
+  board starts with no mesh lines whatsoever; the only lines are the
+  ones the ranges you place put there, and everything else relaxes to
+  the minimum density. Nothing is snapped, merged or inferred.
+
+Switching modes changes nothing in the project but the mode: ranges keep
+both their manual line count and their automatic resolution cap, so you
+can go back and forth. The z axis always follows the stackup — a
+conductor sheet only rasterizes on its own mesh line, so those are not
+optional.
+
+**Structures that cannot exist without a line keep theirs.** A
+component's element sheet and its vertical terminals are zero-thickness:
+they only rasterize where a mesh line already is, so a terminal 20 µm
+off its line silently disconnects the part and the run quietly models
+nothing at all. A port box that lands off-grid changes area, and with it
+the impedance the run reports. Both are therefore pinned **exactly** in
+manual mode — no merging, no snapping to something nearby — along with
+the ESR split junction and the z stackup. Where such a pin lands on top
+of an existing line it *replaces* it rather than adding a hairline cell
+beside it, so a range keeps the cell count it was given and only its
+spacing shifts by a fraction of a cell.
+
+**Per-object settings still apply too.** Nothing else is *derived* from
+the geometry, but a mesh setting you put on an object is an instruction
+rather than a derivation, so it is honoured: a via (or round
+pad) set to 1 / 3 / 5 lines pins them — centre, drill edges, pad edges —
+and the cells around them grade back out to the minimum density. An
+unset via asks for nothing, which the selector spells out as *none — no
+lines at all*; give any via that carries current at least one line, or
+its barrel lands on whatever cell happens to cover it. Select the whole
+fence and set them in one go from the Meshing view's selection panel.
+
+Those pins are **counted against the mesh that is already there**, not
+added blindly: they merge with each other and with the lines the ranges
+placed, using the same *Merge lines <* tolerance as automatic mode. It
+matters more than it sounds — a stitching fence whose two rows are
+offset by 0.1 mm would otherwise pin a pair of lines a tenth of a
+millimetre apart, and that hairline cell then needs a dozen lines of
+grading on either side of it. On the bundled GCPW board (57 vias) the
+merge takes *1 line per via* from 221 x-lines to 165, and *3 lines* from
+400 to 255 — while the worst adjacent-cell step improves from 2.95× and
+2.68× to 1.79× and 1.76×. Merging is measured from each group's first
+member rather than chained, so a via's own structure (edge, centre,
+edge) survives while genuinely redundant lines fuse.
+
 ### Density ranges
 
-Intervals of the x or y axis where no cell may exceed a chosen
-resolution. A freshly dragged range starts at half the mesh actually
-present in that interval, so it refines immediately; bands are then moved
-and resized directly on the view.
+Intervals of the x or y axis. What a range means depends on the mode.
 
-**Outside the ranges** a separate resolution cap and grading ratio apply
-to the board area no range covers — pin the density where it matters and
-let the rest relax smoothly.
+In **automatic** mode it is a cap: no cell inside may exceed the chosen
+resolution. A freshly dragged range starts at half the mesh actually
+present in that interval, so it refines immediately.
+
+In **manual** mode it is the mesh. The range list lives in the left pane
+beside the tools; each row shows its interval, and the `⋯` button (or a
+double-click) opens the editor for everything else.
+
+Density is set either way round — **Density by**:
+
+- **Cell count** — the range holds exactly that many cells, so widening
+  it stretches them;
+- **Spacing between lines** — the range takes the whole number of cells
+  closest to that spacing, so widening it *adds* cells and the density
+  stays put. With a graded profile this is the average spacing.
+
+The cells are then distributed by a **density profile**:
+
+| Profile | Cell sizes across the range |
+|---|---|
+| Uniform | all equal |
+| Fine at start | grow from the low edge at the growth ratio |
+| Fine at end | grow towards the low edge |
+| Fine at both ends | smallest at both edges, coarsest in the middle — slots, gaps, coupled edges |
+| Fine in the middle | smallest at the centre, coarsest at the edges |
+
+Every profile spends the same interval and places the same number of
+cells; the ratio only decides how they are distributed. The popup
+previews the actual line pattern with the smallest and largest cell, and
+draws it from the mesher itself, so the picture cannot drift from what
+is simulated.
+
+**Edge offset** holds the mesh lines back from the range's own edges:
+snap a range onto a copper edge and keep the first line a chosen
+distance inside it. Each band is exactly one cell with nothing in it —
+the relaxation outside cannot drop a line there either. Keep the offset
+near one cell size: the band is itself a cell, so a wide one next to
+fine cells is a size jump, and the popup says so when it happens.
+
+Bands are moved and resized **on the board view as well as in the axis
+strips**: the two dashed boundaries are grab handles — the cursor turns
+into a resize arrow over one — so a band can be nudged while looking at
+the copper it has to line up with. Everything snaps to copper edges, and
+the guide line shows the snap while you aim, not only after you let go.
+
+A range that took some tuning is worth reusing, so they **copy and
+paste**: `Ctrl+C` / `Ctrl+V` (`Ctrl+X` cuts, `Ctrl+D` duplicates), or the
+*Range: copy / paste* buttons. The copy keeps the width, cell count,
+profile, growth ratio and edge offset, and lands **centred on the mouse
+pointer**, snapped to copper — put a slot range on one gap, then drop the
+same one on the next. Each paste selects the copy, so repeated pastes
+walk along instead of stacking. Pinned lines and points copy the same
+way.
+
+This clipboard is the mesh's own: copying in the Meshing view never puts
+copper on the design clipboard, and pasting there never drops a shape
+into the board. The view can also select vias and shapes, so whichever
+you copied last is what pastes. Ranges are drawn as two dashed boundaries in plain ink and are
+labelled only while selected; the colour coding lives in the axis strips
+and the range list, so nothing washes over the copper and the mesh lines
+stay readable.
+
+**Outside the ranges** a resolution cap and grading ratio apply to the
+board area no range covers — in manual mode this is the *minimum
+density*. Cells step geometrically from each range's own edge cell
+towards it and then stay there, all the way through the air margin.
+The stepping goes **both ways**: a range finer than the minimum density
+grows out of it, and a range *coarser* than it shrinks down to it. (An
+earlier version clamped the starting size to the cap, which put a 17×
+size jump right at the boundary of any coarse range.)
+
+Some combinations cannot be smoothed at all — 5 mm cells next to a
+0.3 mm minimum have no room to ramp in the space between them. The
+mesher gets as close as the geometry allows and the Meshing tab's
+**Worst step** turns red with an explanation, rather than reporting a
+bad number quietly.
 
 ### Axis strips
 
-Bottom (x) and left (y) strips summarise the whole meshed domain the way
-the right-hand strip summarises z — mesh-line density, every configured
-range and pinned line, and a bracket showing the part of the domain
-currently on screen. The strips **own** the ranges and pinned lines: they
-are selected there, moved by dragging the band, and resized by dragging
-its edge. The board view is only ever about objects, so a click on copper
-can never grab a band lying over it.
+Bottom (x) and left (y) strips are **rulers for what the view is
+showing** — mesh-line density, every range and pinned line in the
+visible interval, drawn on the view's own scale. A band in a strip sits
+directly under (or beside) its own boundary on the board, and zooming
+the view zooms the strips with it; their end labels read off the visible
+interval and gain decimals as you go in.
+
+*(They used to show the whole meshed domain with a bracket framing the
+visible part. Reading a band's position then meant translating between
+two different scales, and at any real zoom the bracket was a sliver.)*
+
+The strips **own** the ranges and pinned lines: they are selected there,
+moved by dragging the band, and resized by dragging its edge — all of it
+snapping to copper edges. The board view is only ever about objects, so
+a click on copper can never grab a band lying over it.
 
 ### Selection and bulk edits
 

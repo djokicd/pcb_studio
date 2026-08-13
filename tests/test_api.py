@@ -155,3 +155,54 @@ def test_bad_tool_input_is_400_not_500():
                       json={'device': 'does_not_exist.s2p'})
     assert r.status_code == 400
     assert 'error' in r.get_json()
+
+
+def test_mesh_profile_endpoint_previews_a_range():
+    c = client()
+    r = c.post('/api/mesh/profile', json={'from': 2, 'to': 5, 'cells': 12,
+                                          'ratio': 1.3, 'bias': 'both'})
+    assert r.status_code == 200
+    d = r.get_json()
+    assert len(d['lines']) == 13                 # cells + 1
+    assert abs(d['lines'][0] - 2) < 1e-9 and abs(d['lines'][-1] - 5) < 1e-9
+    assert d['minCell'] < d['maxCell']
+    # the popup previews from the mesher, so a uniform profile is flat
+    d2 = c.post('/api/mesh/profile',
+                json={'from': 0, 'to': 1, 'cells': 4}).get_json()
+    assert abs(d2['minCell'] - d2['maxCell']) < 1e-9
+
+
+def test_mesh_profile_endpoint_rejects_junk():
+    r = client().post('/api/mesh/profile', json={'from': 'x', 'to': 5})
+    assert r.status_code == 400 and 'error' in r.get_json()
+
+
+def test_manual_mesh_mode_over_the_api():
+    m = model()
+    m['mesh'] = {'mode': 'manual', 'outside': {'res': 1.0, 'ratio': 1.5},
+                 'regions': [{'id': 1, 'axis': 'x', 'from': 10, 'to': 12,
+                              'cells': 20, 'ratio': 1.2, 'bias': 'both'}]}
+    got = client().post('/api/mesh', json=m)
+    assert got.status_code == 200
+    mesh = got.get_json()
+    inside = [v for v in mesh['x'] if 10 - 1e-9 <= v <= 12 + 1e-9]
+    assert len(inside) == 21
+
+
+def test_mesh_profile_endpoint_previews_the_edge_offset():
+    d = client().post('/api/mesh/profile',
+                      json={'from': 9, 'to': 10.8, 'cells': 12,
+                            'offset': 0.2}).get_json()
+    assert d['band'] == 0.2
+    # the line-free bands are cells too: first and last cell are the band
+    assert abs(d['lines'][1] - 9.2) < 1e-9
+    assert abs(d['maxCell'] - 0.2) < 1e-9
+    assert len(d['lines']) == 15                 # 13 profile lines + 2 edges
+
+
+def test_mesh_profile_endpoint_accepts_a_spacing():
+    d = client().post('/api/mesh/profile',
+                      json={'from': 0, 'to': 2, 'by': 'spacing',
+                            'spacing': 0.25}).get_json()
+    assert d['cells'] == 8 and len(d['lines']) == 9
+    assert abs(d['minCell'] - 0.25) < 1e-9

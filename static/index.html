@@ -253,8 +253,22 @@
           <button id="meshSelNone" class="lr-btn" title="Clear the selection">none</button>
         </div>
         <div class="mbulk-row" style="margin-top:6px">
+          <span class="muted">Range:</span>
+          <button id="meshCopy" class="lr-btn" title="Copy the selected range, pinned line or point (Ctrl+C). Ctrl+X cuts, Ctrl+D duplicates in one step.">copy</button>
+          <button id="meshPaste" class="lr-btn" title="Paste the copied item centred on the mouse pointer, snapped to copper (Ctrl+V). Same width, same density profile.">paste</button>
+        </div>
+        <div class="mbulk-row" style="margin-top:6px">
           <button id="meshFit" class="lr-btn" title="Fit the whole board in the view (F)">fit view</button>
         </div>
+      </div>
+      <div class="panel" id="meshItemPanel">
+        <h3 id="meshItemHead">Ranges &amp; pinned lines</h3>
+        <div class="mbulk-row" id="meshAddRow" hidden>
+          <span class="muted">Add range:</span>
+          <button id="meshAddX" class="lr-btn" title="Add an x range covering the whole board — then set its extent and density">x</button>
+          <button id="meshAddY" class="lr-btn" title="Add a y range covering the whole board — then set its extent and density">y</button>
+        </div>
+        <div id="meshItemList"></div>
       </div>
       <div id="meshObjSlot"></div>
       <div class="panel hint">
@@ -302,7 +316,21 @@
             <tr><td title="Smallest cell in the mesh — sets the FDTD timestep">Min cell</td><td id="mstMin">–</td></tr>
             <tr><td title="Largest size jump between adjacent cells; smooth meshes stay near the grading ratio">Worst step</td><td id="mstWorst">–</td></tr>
             <tr><td title="Fill resolution on the board (edge resolution) and in the surrounding air (&lambda;/N)">Resolution</td><td id="mstRes">–</td></tr>
+            <tr><td title="FDTD rasterizes copper onto the grid: an edge with no mesh line near it moves to the nearest one, so the simulated conductor is not the one drawn. This is the furthest any copper edge moves.">Copper on grid</td><td id="mstEdges">–</td></tr>
+            <tr><td title="Cells across the narrowest coplanar gap. The gap width sets the impedance; one cell carries no field detail, and zero means the gap can close on the grid and short the copper either side of it.">Narrowest gap</td><td id="mstGap">–</td></tr>
           </tbody></table>
+          <p class="muted mini-note" id="meshCheckNote" hidden></p>
+        </div>
+        <div class="panel">
+          <h3>Mesh mode</h3>
+          <div class="form">
+            <label title="Automatic derives mesh lines from the geometry (copper edges, vias, ports, coplanar gaps) and refines them with the ranges below. Manual derives NOTHING from the geometry: the mesh starts empty and consists only of the ranges you place, relaxing to the minimum density everywhere else.">
+              Lines from <select id="mm_mode">
+                <option value="auto">Automatic (geometry + ranges)</option>
+                <option value="manual">Manual (ranges only)</option>
+              </select></label>
+          </div>
+          <p class="muted mini-note" id="mm_note"></p>
         </div>
         <div class="panel">
           <h3>Global settings</h3>
@@ -318,23 +346,20 @@
             <label title="Air kept around the board on every side — meshed coarsely at &lambda;/N">
               Air margin (mm) <input id="s_airMargin" type="number" step="1" min="0"></label>
           </div>
-          <h3 style="margin-top:14px">Outside the ranges</h3>
-          <p class="muted mini-note">Smooth meshing for the board area not
+          <h3 style="margin-top:14px" id="mo_head">Outside the ranges</h3>
+          <p class="muted mini-note" id="mo_note">Smooth meshing for the board area not
             covered by any density range — pin the density where it matters
             and let the rest relax.</p>
           <div class="form">
             <label title="Coarsest cell allowed outside every density range (empty = the global edge resolution)">
-              Resolution (mm) <input id="mo_res" type="number" step="0.05" min="0" placeholder="edge res"></label>
+              <span id="mo_res_lab">Resolution (mm)</span> <input id="mo_res" type="number" step="0.05" min="0" placeholder="edge res"></label>
             <label title="Grading ratio used outside every density range — lower is smoother and denser, higher relaxes faster (empty = the global ratio)">
               Grading ratio <input id="mo_ratio" type="number" step="0.1" min="1.2" max="2" placeholder="global"></label>
-            <label title="Mesh coplanar gaps deliberately: facing copper edges within about a substrate height (CPW slots, launch gaps, trace-to-pour clearances) get edge refinement on both sides and several cells across the gap — the gap width sets the impedance. Disable to save cells on boards where clearances do not matter">
+            <label id="mo_slots_lab" title="Mesh coplanar gaps deliberately: facing copper edges within about a substrate height (CPW slots, launch gaps, trace-to-pour clearances) get edge refinement on both sides and several cells across the gap — the gap width sets the impedance. Disable to save cells on boards where clearances do not matter">
               <input id="mo_slots" type="checkbox" checked> Refine coplanar gaps</label>
           </div>
         </div>
-        <div class="panel">
-          <h3>Ranges &amp; pinned lines</h3>
-          <div id="meshItemList"></div>
-        </div>
+        <div id="meshItemSlot"></div>
         <div class="panel" id="meshObjPanel" hidden>
           <h3>Selection</h3>
           <div id="meshObjForm"></div>
@@ -781,6 +806,44 @@
         <div id="advTabs" class="adv-tabs" hidden></div>
         <div id="advPanels" class="adv-panels"></div>
       </div>
+    </div>
+  </div>
+</div>
+
+<div id="mprofModal" hidden>
+  <div class="uic-box">
+    <div class="modal-head"><span id="mprofTitle">Density profile</span><button id="mprofClose">&#10005;</button></div>
+    <p class="muted mini-note" id="mprofWhere"></p>
+    <div class="form">
+      <label title="Interval start (mm)">From (mm) <input id="mprofFrom" type="number" step="0.05"></label>
+      <label title="Interval end (mm)">To (mm) <input id="mprofTo" type="number" step="0.05"></label>
+      <label title="Give the range a fixed number of cells, or a target spacing. With a spacing, resizing the range adds and removes cells instead of stretching them — the density stays put.">
+        Density by <select id="mprofBy">
+          <option value="cells">Cell count</option>
+          <option value="spacing">Spacing between lines</option>
+        </select></label>
+      <label id="mprofCellsLab" title="How many cells the range is divided into — one more mesh line than this, counting both ends">
+        Cells <input id="mprofCells" type="number" step="1" min="1" max="20000"></label>
+      <label id="mprofSpacingLab" title="Target distance between mesh lines. The range takes the whole number of cells closest to it, so the lines still land exactly on both ends. With a graded profile this sets the AVERAGE spacing — the profile then decides where the cells are fine and where they are coarse.">
+        Spacing (mm) <input id="mprofSpacing" type="number" step="0.01" min="0.001"></label>
+      <label title="Where the fine cells go. Uniform spaces them evenly; the graded profiles keep the same cell count but concentrate them at one end, at both ends (slots, gaps) or in the middle.">
+        Profile <select id="mprofBias">
+          <option value="uniform">Uniform</option>
+          <option value="start">Fine at start</option>
+          <option value="end">Fine at end</option>
+          <option value="both">Fine at both ends</option>
+          <option value="center">Fine in the middle</option>
+        </select></label>
+      <label title="Growth factor between neighbouring cells within the range. 1 = uniform; 1.2 is gentle, 2 is aggressive.">
+        Growth ratio <input id="mprofRatio" type="number" step="0.05" min="1" max="8"></label>
+      <label title="Dead band at each end of the range that gets no mesh lines at all — snap the range to a copper edge and keep the first line this far inside it. The band is one cell wide; the cells outside grade away from it as usual.">
+        Edge offset (mm) <input id="mprofOffset" type="number" step="0.01" min="0" placeholder="0"></label>
+    </div>
+    <div id="mprofPreview" class="mprof-preview"></div>
+    <p class="muted mini-note" id="mprofStats"></p>
+    <div class="uic-btns">
+      <button id="mprofCancel">Cancel</button>
+      <button id="mprofApply" class="primary">Apply</button>
     </div>
   </div>
 </div>

@@ -19,7 +19,8 @@ ground side).
 import bisect
 import math
 
-from geometry import stackup_z, mesh_lines_xy, sim_shapes, comp_lift
+from geometry import (stackup_z, mesh_lines_xy, sim_shapes, comp_lift,
+                      comp_element_box, _mesh_lines)
 
 C0 = 299792458.0
 
@@ -298,6 +299,406 @@ def resolutions(model):
     return edge_res, max_res
 
 
+# ------------------------------------------------------------ manual mode
+# Density profiles for a manual range. Each is a rule for how the cell
+# sizes vary across the range; `ratio` is the growth per cell step.
+BIASES = ('uniform', 'start', 'end', 'both', 'center')
+
+
+def profile_lines(a, b, cells, ratio=1.0, bias='uniform'):
+    """Mesh lines across [a, b] for one manual range: exactly `cells`
+    cells, so `cells + 1` lines including both ends.
+
+    The profile is one formula - a weight per cell, normalized to the
+    span - so every bias grades at the same `ratio` per step and none of
+    them can overshoot or leave the range:
+
+      uniform  every cell the same size
+      start    cells grow from a  (fine at the low end)
+      end      cells grow towards a  (fine at the high end)
+      both     fine at both ends, coarsest in the middle
+      center   fine in the middle, coarsest at both ends
+    """
+    a, b = float(a), float(b)
+    n = max(1, int(cells))
+    span = b - a
+    if span <= 0:
+        return []
+    r = float(ratio or 1.0)
+    if bias not in BIASES:
+        bias = 'uniform'
+    if bias == 'uniform' or abs(r - 1.0) < 1e-9 or n == 1:
+        return [a + span * k / n for k in range(n + 1)]
+    r = min(max(r, 1.0 / 8.0), 8.0)
+    mid = (n - 1) / 2.0
+    w = []
+    for k in range(n):
+        if bias == 'start':
+            d = k
+        elif bias == 'end':
+            d = n - 1 - k
+        elif bias == 'both':
+            d = min(k, n - 1 - k)        # smallest cells at both ends
+        else:                            # center: smallest in the middle
+            d = abs(k - mid)
+        w.append(r ** d)
+    total = sum(w)
+    out, pos = [a], a
+    for size in w[:-1]:
+        pos += span * size / total
+        out.append(pos)
+    out.append(b)
+    return out
+
+
+def _toward(s, cap, ratio):
+    """One grading step from cell size `s` towards `cap` - growing when
+    the neighbour is finer than the cap, shrinking when it is coarser."""
+    return min(s * ratio, cap) if s < cap else max(s / ratio, cap)
+
+
+def _relax_gap(a, b, d_left, d_right, cap, ratio):
+    """Interior lines for a gap between manual ranges (or out to the
+    board edge): cell sizes move geometrically from the neighbouring
+    cells towards `cap` and plateau there.
+
+    Unlike the automatic mesher's fill this handles neighbours COARSER
+    than the cap - a range with big cells beside a fine minimum density
+    has to step down gradually. Clamping to the cap instead put a 17x
+    size jump right at the range boundary."""
+    gap = b - a
+    if gap <= 1e-12:
+        return []
+    r = max(1.0001, float(ratio))
+    sl = max(float(d_left), 1e-4)
+    sr = max(float(d_right), 1e-4)
+    # both neighbours finer than the cap is the ordinary case the graded
+    # fill already solves - and solves better, because it knows how to
+    # give up a cell rather than crush a whole sequence into a short gap
+    if sl <= cap and sr <= cap:
+        return _fill_graded(a, b, sl, sr, cap, r)
+    # One cell is acceptable when it is within a grading step of both
+    # neighbours and does not badly overrun the density asked for. Inside
+    # a ramp stepping DOWN from a coarse range the cells are legitimately
+    # bigger than the cap, so the second test follows the neighbours
+    # there - otherwise a re-run would chop the ramp up and reopen the
+    # junction it was built to close.
+    limit = max(cap, min(sl, sr) * r) * 1.3
+    if gap <= min(sl, sr) * r * 1.1 and gap <= limit:
+        return []
+    # Each side runs its own transition to the cap first; whatever span
+    # is left in the middle is plateau. Interleaving the two fronts by
+    # size instead lets them meet mid-gap at very different sizes - the
+    # jump just moves from the range boundary into the middle of the gap.
+    def ramp(s):
+        out, cur = [], s
+        while abs(cur - cap) > 1e-9 and sum(out) < gap and len(out) < 10000:
+            cur = _toward(cur, cap, r)
+            out.append(cur)
+        return out
+
+    lefts, rights = ramp(sl), ramp(sr)
+    rest = gap - sum(lefts) - sum(rights)
+    plateau = max(0, int(round(rest / cap))) if cap > 0 else 0
+    seq = lefts + [cap] * plateau + rights[::-1]
+    if not seq:
+        return []
+    # scaling is uniform, so the grading INSIDE the gap stays exactly at
+    # `ratio`; only a gap too short for both ramps ends up compressed,
+    # and that shows up honestly in the worst-step statistic
+    scale = gap / sum(seq)
+    out, pos = [], a
+    for s in seq[:-1]:
+        pos += s * scale
+        if a + 1e-6 < pos < b - 1e-6 and (not out or pos - out[-1] > 1e-6):
+            out.append(pos)
+    return out
+
+
+def _range_cells(r, span):
+    """How many cells a manual range holds. Either given directly, or
+    derived from a target spacing - `by: 'spacing'` keeps the DENSITY
+    fixed, so resizing the band adds and removes cells instead of
+    stretching them."""
+    if r.get('by') == 'spacing':
+        try:
+            step = float(r.get('spacing') or 0)
+        except (TypeError, ValueError):
+            step = 0.0
+        if step > 0 and span > 0:
+            return max(1, min(20000, int(round(span / step))))
+    try:
+        cells = int(r.get('cells') or 0)
+    except (TypeError, ValueError):
+        cells = 0
+    if cells <= 0:
+        # no explicit count: fall back to the cell-size field, so a range
+        # drawn before the profile was set still meshes
+        try:
+            res = float(r.get('res') or 0)
+        except (TypeError, ValueError):
+            res = 0.0
+        cells = max(1, int(math.ceil(span / res))) if res > 0 and span > 0 else 4
+    return min(cells, 20000)
+
+
+def manual_ranges(model, axis, limit):
+    """Enabled manual ranges on one axis, clipped to [0, limit] and
+    normalized to (lo, hi, cells, ratio, bias). Invalid entries drop."""
+    out = []
+    for r in (model.get('mesh') or {}).get('regions') or []:
+        if not isinstance(r, dict) or r.get('off'):
+            continue
+        if ('y' if r.get('axis') == 'y' else 'x') != axis:
+            continue
+        try:
+            lo, hi = float(r['from']), float(r['to'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (math.isfinite(lo) and math.isfinite(hi)):
+            continue
+        lo, hi = max(0.0, min(lo, hi)), min(limit, max(lo, hi))
+        if hi - lo <= 1e-9:
+            continue
+        # optional dead band at each edge: the range is placed against a
+        # copper edge, but its first mesh line sits `offset` inside it.
+        # The band is one cell wide with nothing in it - the outer span
+        # still counts as covered, so the relaxation outside cannot drop
+        # a line into it.
+        out_lo, out_hi = lo, hi
+        try:
+            off = float(r.get('offset') or 0.0)
+        except (TypeError, ValueError):
+            off = 0.0
+        if off > 0 and math.isfinite(off):
+            off = min(off, (hi - lo) / 2.0 - 1e-6)
+            if off > 0:
+                lo, hi = lo + off, hi - off
+        if hi - lo <= 1e-9:
+            continue
+        cells = _range_cells(r, hi - lo)
+        try:
+            ratio = float(r.get('ratio') or 1.0)
+        except (TypeError, ValueError):
+            ratio = 1.0
+        bias = r.get('bias') if r.get('bias') in BIASES else 'uniform'
+        out.append((lo, hi, cells, ratio, bias, out_lo, out_hi))
+    return sorted(out)
+
+
+def manual_pins(model, axis, limit):
+    """Lines individual objects need in manual mode, as (soft, hard).
+
+    SOFT - vias and round pads that were told to pin 1 / 3 / 5 lines.
+    The geometry derives nothing on its own here, but a per-object mesh
+    setting is an instruction rather than a derivation. `mesh.lines`
+    unset means the object asks for nothing. These merge against each
+    other and against the lines already present.
+
+    HARD - the exact positions structures cannot exist without. A
+    component's element sheet and its vertical terminals are zero
+    -thickness: they only rasterize where a mesh line already is, so a
+    terminal 20 um off its line silently disconnects the part and the
+    simulation quietly models nothing. Ports are the same story - their
+    box has to keep its true area or the measured impedance is wrong.
+    These are placed exactly and never merged away.
+    """
+    out = []
+    hard = []
+    key = 'y' if axis == 'y' else 'x'
+    shapes = model.get('shapes') or []
+    for c in model.get('components') or []:
+        x0, y0, x1, y1, ny, _conn = comp_element_box(c, shapes)
+        lo, hi = (y0, y1) if axis == 'y' else (x0, x1)
+        hard += [lo, hi]
+        # the ESR split joins two element sheets at the gap centre, a
+        # zero-width junction that needs its own exact line
+        if (ny == 1) == (axis == 'y'):
+            hard.append(round((lo + hi) / 2.0, 6))
+    for p in model.get('ports') or []:
+        try:
+            lo = float(p[key])
+            hi = lo + float(p['h' if axis == 'y' else 'w'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        hard += [lo, hi]
+
+    def add(c, half_list, n):
+        out.append(c)
+        if n >= 3 and half_list:
+            out.extend((c - half_list[0], c + half_list[0]))
+        if n >= 5 and len(half_list) > 1:
+            out.extend((c - half_list[1], c + half_list[1]))
+
+    for v in model.get('vias') or []:
+        n = _mesh_lines(v)
+        if not n:
+            continue
+        try:
+            c = float(v['y' if axis == 'y' else 'x'])
+            halves = [float(v['drill']) / 2.0, float(v['pad']) / 2.0]
+        except (KeyError, TypeError, ValueError):
+            continue
+        add(c, halves, n)
+    for s in sim_shapes(model):
+        n = _mesh_lines(s)
+        if not n or s.get('type') != 'circle':
+            continue
+        try:
+            c = float(s['cy' if axis == 'y' else 'cx'])
+            halves = [float(s['r'])]
+        except (KeyError, TypeError, ValueError):
+            continue
+        add(c, halves, n)
+    ok = lambda v: math.isfinite(v) and -1e-9 <= v <= limit + 1e-9
+    return [c for c in out if ok(c)], _dedupe([h for h in hard if ok(h)])
+
+
+def _cluster_pins(vals, tol):
+    """Group object-pinned lines that land within `tol` of each other and
+    replace each group by its mean.
+
+    Grouping is measured from the FIRST member, not the running last one:
+    a chain-merge would swallow a whole via - drill edge, centre, other
+    edge are each a tolerance apart - and collapse the barrel to a single
+    line. Measuring from the group start keeps the structure and only
+    fuses lines that are genuinely redundant, which is what two vias a
+    tenth of a millimetre apart produce."""
+    if tol <= 0:
+        return _dedupe(vals)
+    out, group = [], []
+    for v in sorted(vals):
+        if group and v - group[0] > tol:
+            out.append(round(sum(group) / len(group), 6))
+            group = []
+        group.append(v)
+    if group:
+        out.append(round(sum(group) / len(group), 6))
+    return _dedupe(out)
+
+
+def manual_axis(ranges, limit, min_res, ratio, margin, pins=(), merge=0.0):
+    """One axis of a manual mesh: the ranges' own lines, the board edges,
+    a graded fill relaxing to `min_res` everywhere else, and the air
+    margin. Nothing is derived from the geometry - with no ranges at all
+    this is just the board at the minimum density."""
+    lines = [0.0, float(limit)]
+    covered = []
+    for lo, hi, cells, r, bias, out_lo, out_hi in ranges:
+        lines += profile_lines(lo, hi, cells, r, bias)
+        if out_lo < lo:                 # edges of the line-free offset band
+            lines.append(out_lo)
+        if out_hi > hi:
+            lines.append(out_hi)
+        if covered and out_lo <= covered[-1][1] + 1e-9:
+            covered[-1][1] = max(covered[-1][1], out_hi)
+        else:
+            covered.append([out_lo, out_hi])
+    lines = _dedupe(lines, 1e-6)
+
+    def inside(v):
+        return any(lo - 1e-9 <= v <= hi + 1e-9 for lo, hi in covered)
+
+    soft, hard = pins if pins else ((), ())
+    # Structures that only exist where a line is (component sheets and
+    # terminals, port boxes) are placed EXACTLY - no merging, no
+    # thinning, no snapping to something nearby. A pin may displace an
+    # ordinary line that would otherwise sit a hair away from it, or the
+    # range line it stands in for (so the range keeps the cell count it
+    # was given); it may never displace ANOTHER PIN - a component
+    # terminal and a port edge a tenth of a millimetre apart both have
+    # to be there, and letting them replace each other silently dropped
+    # one of the two structures.
+    hard_set = sorted({round(float(h), 6) for h in hard})
+    if hard_set:
+        def pin_dist(v):
+            i = bisect.bisect_left(hard_set, v)
+            return min([abs(hard_set[j] - v) for j in (i - 1, i)
+                        if 0 <= j < len(hard_set)] or [1e9])
+
+        keep = []
+        for k, v in enumerate(lines):
+            if abs(v) < 1e-9 or abs(v - limit) < 1e-9:
+                keep.append(v)             # the board edges anchor the domain
+                continue
+            d = pin_dist(v)
+            if d <= 1e-9:
+                continue                   # the pin itself, re-added below
+            local = min(v - lines[k - 1] if k else 1e9,
+                        lines[k + 1] - v if k + 1 < len(lines) else 1e9)
+            # Outside a range the merge tolerance decides. Inside one the
+            # yardstick is the range's OWN cell - a range asked for 50 um
+            # cells is not "near-coincident" at 50 um, and judging it by
+            # the 0.1 mm merge would quietly delete two of its lines.
+            if (d <= merge if not inside(v) else d <= local * 0.6):
+                continue                   # displaced by the pin
+            keep.append(v)
+        lines = keep
+        for pv in hard_set:
+            bisect.insort(lines, pv)
+    # Everything else joins last and is counted against what is already
+    # there: two vias a tenth of a millimetre apart fuse into one line,
+    # and a pin landing on a line that exists is simply that line. Left
+    # unchecked each near-miss became a hairline cell that then needed a
+    # dozen lines of grading either side of it.
+    if soft:
+        for pv in _cluster_pins([float(p) for p in soft], merge):
+            i = bisect.bisect_left(lines, pv)
+            near = min([abs(lines[j] - pv) for j in (i - 1, i)
+                        if 0 <= j < len(lines)] or [1e9])
+            if near > merge:
+                bisect.insort(lines, pv)
+
+    # fill the gaps between ranges (and out to the board edges): cells
+    # start from the neighbouring range's OWN cell - not clamped to the
+    # minimum density - and grade towards it from there, so the junction
+    # at a range boundary is smooth whichever side is coarser
+    def fill_pass(lines, first):
+        widths = [b - a for a, b in zip(lines, lines[1:])]
+        out = [lines[0]]
+        for j, (a, b) in enumerate(zip(lines, lines[1:])):
+            if inside(0.5 * (a + b)):
+                out.append(b)           # a range owns this interval
+                continue
+        # the neighbouring cell to grade away from. A gap a range owns
+        # keeps its own size, however coarse; any other neighbour ends up
+        # at most min_res wide, so clamp it there - but a NARROW one (two
+        # via pins 0.15 mm apart) stays narrow and must be graded from,
+        # or the fine cells sit straight against the bulk.
+            # On the first pass a wide neighbour is still unfilled and
+            # will end up at most min_res, so it counts as min_res. Once
+            # filled, every width is a real cell - clamping then would
+            # throw away the ramp stepping down from a coarse range.
+            def detail(k):
+                if not (0 <= k < len(widths)):
+                    return min_res
+                w = widths[k]
+                if first and not inside(0.5 * (lines[k] + lines[k + 1])):
+                    return min(w, min_res)
+                return w
+            dl = detail(j - 1) if j > 0 else min_res
+            dr = detail(j + 1) if j + 1 < len(widths) else min_res
+            out += _relax_gap(a, b, dl, dr, min_res, ratio)
+            out.append(b)
+        return _dedupe(out)
+
+    # one pass sizes every gap from the gaps it started with, so a gap
+    # that ends up split leaves its neighbour mismatched. Re-running on
+    # the result sees the real cells and closes those junctions.
+    out = lines
+    for k in range(8):
+        new = fill_pass(out, k == 0)
+        if len(new) == len(out):
+            break
+        out = new
+    if margin > 0:
+        first = out[1] - out[0] if len(out) > 1 else min_res
+        last = out[-1] - out[-2] if len(out) > 1 else min_res
+        out = list(reversed(_grade_out(out[0], first, min_res, margin, -1, ratio))) \
+            + out + _grade_out(out[-1], last, min_res, margin, +1, ratio)
+    return _dedupe(out)
+
+
 def user_regions(model):
     """User-defined refinement intervals from the Meshing tab:
     [(lo, hi, res, axis), ...] with invalid or disabled entries dropped.
@@ -373,6 +774,70 @@ def user_outside(model):
     return out
 
 
+def mesh_check(model, mesh):
+    """Does this mesh actually represent the board that was drawn?
+
+    FDTD rasterizes copper onto the grid: an edge with no mesh line near
+    it moves to the nearest one, so the simulated conductor is not the
+    one on screen. A gap crossed by a single cell carries no field
+    detail at all. Neither shows up in the cell count or the grading
+    ratio, so they are reported here:
+
+      offEdges / worstOff  copper edges that move, and by how far (mm)
+      gapCells / gapWidth  the coplanar gap resolved by the fewest cells
+      minFeature           the narrowest copper the grid has to carry
+    """
+    from geometry import _axis_edges, _find_slots, shape_outline
+
+    out = {'offEdges': 0, 'worstOff': 0.0, 'movedBy': None,
+           'gapCells': None, 'gapWidth': None, 'minFeature': None}
+    ex, ey = [], []
+    for s in sim_shapes(model):
+        _axis_edges(shape_outline(s), s.get('layer'), ex, ey)
+    if not (ex or ey):
+        return out
+
+    for edges, axis in ((ex, 'x'), (ey, 'y')):
+        lines = mesh[axis]
+        if len(lines) < 2:
+            continue
+        for pos, _lo, _hi, _side, _lay in edges:
+            i = bisect.bisect_left(lines, pos)
+            near = [lines[j] for j in (i - 1, i) if 0 <= j < len(lines)]
+            if not near:
+                continue
+            best = min(near, key=lambda v: abs(v - pos))
+            d = abs(best - pos)
+            # a cell edge that lands within a whisker of the copper is
+            # exact for our purposes; anything else moves the conductor
+            if d > 1e-6:
+                out['offEdges'] += 1
+                out['worstOff'] = max(out['worstOff'], d)
+
+    # narrowest coplanar gap and how many cells cross it
+    for edges, axis in ((ex, 'x'), (ey, 'y')):
+        lines = mesh[axis]
+        for lo, hi, _ov in _find_slots(edges, 0.0, 5.0):
+            n = len([v for v in lines if lo - 1e-9 <= v <= hi + 1e-9]) - 1
+            n = max(n, 0)
+            if out['gapCells'] is None or n < out['gapCells']:
+                out['gapCells'] = n
+                out['gapWidth'] = round(hi - lo, 4)
+
+    # the narrowest copper the mesh has to carry at all
+    for s in sim_shapes(model):
+        pts = shape_outline(s)
+        if not pts:
+            continue
+        w = max(p[0] for p in pts) - min(p[0] for p in pts)
+        h = max(p[1] for p in pts) - min(p[1] for p in pts)
+        d = min(w, h)
+        if d > 1e-6 and (out['minFeature'] is None or d < out['minFeature']):
+            out['minFeature'] = round(d, 4)
+    out['worstOff'] = round(out['worstOff'], 4)
+    return out
+
+
 def build_mesh(model):
     """Returns {'x': [...], 'y': [...], 'z': [...], 'cells': int} in mm."""
     board = model['board']
@@ -387,25 +852,43 @@ def build_mesh(model):
     ratio = 1.5 if not ratio else min(2.0, max(1.2, float(ratio)))
     # fringing length scale: total dielectric height of the stackup
     _, _diel, _total = stackup_z(model.get('stackup') or [])
-    xs, ys, xsoft, ysoft, xreg, yreg, xpin, ypin, slot_res = mesh_lines_xy(
-        model, edge_res, fringe=_total or None)
-    xreg, yreg = list(xreg), list(yreg)
-    xspan, yspan = [], []
-    for lo_u, hi_u, res_u, axis_u in user_regions(model):
-        if axis_u == 'y':
-            yreg.append((lo_u, hi_u, res_u))
-            yspan.append((lo_u, hi_u))
-        else:
-            xreg.append((lo_u, hi_u, res_u))
-            xspan.append((lo_u, hi_u))
-    ux, uy = user_lines(model, W, H)
-    xs, ys = list(xs) + ux, list(ys) + uy
-    xpin, ypin = list(xpin) + ux, list(ypin) + uy
-    outside = user_outside(model)
-    x = _smooth_axis(xs, 0.0, W, edge_res, max_res, margin, xreg, merge, ratio,
-                     xsoft, xpin, outside, xspan)
-    y = _smooth_axis(ys, 0.0, H, edge_res, max_res, margin, yreg, merge, ratio,
-                     ysoft, ypin, outside, yspan)
+
+    # Manual mode: the geometry contributes NOTHING to x/y. The mesh is
+    # the ranges the user placed (each with its own line count and
+    # density profile) plus a graded relaxation to the minimum density
+    # everywhere else. z still follows the stackup - conductor faces are
+    # not optional, a sheet only rasterizes on its own mesh line.
+    manual = (model.get('mesh') or {}).get('mode') == 'manual'
+    if manual:
+        out_cfg = user_outside(model)
+        min_res = out_cfg.get('res') or max_res
+        m_ratio = out_cfg.get('ratio') or ratio
+        x = manual_axis(manual_ranges(model, 'x', W), W, min_res, m_ratio,
+                        margin, manual_pins(model, 'x', W), merge)
+        y = manual_axis(manual_ranges(model, 'y', H), H, min_res, m_ratio,
+                        margin, manual_pins(model, 'y', H), merge)
+        edge_res = max_res = min_res
+        slot_res = None
+    else:
+        xs, ys, xsoft, ysoft, xreg, yreg, xpin, ypin, slot_res = mesh_lines_xy(
+            model, edge_res, fringe=_total or None)
+        xreg, yreg = list(xreg), list(yreg)
+        xspan, yspan = [], []
+        for lo_u, hi_u, res_u, axis_u in user_regions(model):
+            if axis_u == 'y':
+                yreg.append((lo_u, hi_u, res_u))
+                yspan.append((lo_u, hi_u))
+            else:
+                xreg.append((lo_u, hi_u, res_u))
+                xspan.append((lo_u, hi_u))
+        ux, uy = user_lines(model, W, H)
+        xs, ys = list(xs) + ux, list(ys) + uy
+        xpin, ypin = list(xpin) + ux, list(ypin) + uy
+        outside = user_outside(model)
+        x = _smooth_axis(xs, 0.0, W, edge_res, max_res, margin, xreg, merge, ratio,
+                         xsoft, xpin, outside, xspan)
+        y = _smooth_axis(ys, 0.0, H, edge_res, max_res, margin, yreg, merge, ratio,
+                         ysoft, ypin, outside, yspan)
 
     # z: conductor sheets + dielectric interfaces. Field detail lives at
     # the conductor faces that carry geometry (strips, ports, pads); plane
@@ -483,4 +966,5 @@ def build_mesh(model):
                 worst = max(worst, c1 / c2, c2 / c1)
     mesh['minCell'] = round(min_cell, 4) if min_cell < float('inf') else None
     mesh['worstRatio'] = round(worst, 2)
+    mesh['check'] = mesh_check(model, mesh)
     return mesh
