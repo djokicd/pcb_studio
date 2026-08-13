@@ -1659,12 +1659,31 @@ function initMeshTools() {
       app.refreshMesh();
     });
   }
-  for (const [id, key] of [['mo_slots', 'slots'], ['mo_autoComp', 'autoComp']]) {
+  $('mo_slots').addEventListener('change', e => {
+    // stored only when disabled: absent means the default (on)
+    const m = app.meshTab.mesh();
+    if (e.target.checked) delete m.slots;
+    else m.slots = false;
+    app.dirty();
+    app.refreshMesh();
+  });
+  $('mo_compMesh').addEventListener('change', e => {
+    const m = app.meshTab.mesh();
+    delete m.autoComp;                    // superseded by the level
+    if (e.target.value === 'gap') delete m.compMesh;
+    else m.compMesh = e.target.value;
+    meshFormsFromModel();
+    app.dirty();
+    app.refreshMesh();
+  });
+  // µm in the field, mm in the model - the rest of the mesh is in mm
+  for (const [id, key, scale] of [['mo_compCells', 'compCells', 1],
+                                  ['mo_compMin', 'compMin', 1e-3]]) {
     $(id).addEventListener('change', e => {
-      // stored only when disabled: absent means the default (on)
       const m = app.meshTab.mesh();
-      if (e.target.checked) delete m[key];
-      else m[key] = false;
+      const v = parseFloat(e.target.value);
+      if (isFinite(v) && v > 0) m[key] = +(v * scale).toFixed(6);
+      else delete m[key];
       app.dirty();
       app.refreshMesh();
     });
@@ -1749,9 +1768,17 @@ function meshFormsFromModel() {
   $('mo_res').value = m.outside.res ?? '';
   $('mo_ratio').value = m.outside.ratio ?? '';
   $('mo_slots').checked = m.slots !== false;
-  $('mo_autoComp').checked = m.autoComp !== false;
-  // in automatic mode the geometry pass already meshes components
-  $('mo_comp_lab').hidden = !manual;
+  const lvl = ['off', 'gap', 'near'].includes(m.compMesh) ? m.compMesh
+    : (m.autoComp === false ? 'off' : 'gap');
+  $('mo_compMesh').value = lvl;
+  $('mo_compCells').value = m.compCells ?? '';
+  $('mo_compMin').value = m.compMin ? Math.round(m.compMin * 1000) : '';
+  // in automatic mode the geometry pass already meshes components; the
+  // resolution knobs only mean something once a level is chosen
+  const hasComps = (app.project.components || []).length > 0;
+  $('mo_comp_lab').hidden = !manual || !hasComps;
+  $('mo_compCells_lab').hidden = !manual || !hasComps || lvl === 'off';
+  $('mo_compMin_lab').hidden = !manual || !hasComps || lvl === 'off';
   $('mm_mode').value = manual ? 'manual' : 'auto';
   $('mm_note').textContent = manual
     ? 'Copper contributes no mesh lines: only the ranges below place them, '

@@ -357,8 +357,16 @@
               Grading ratio <input id="mo_ratio" type="number" step="0.1" min="1.2" max="2" placeholder="global"></label>
             <label id="mo_slots_lab" title="Mesh coplanar gaps deliberately: facing copper edges within about a substrate height (CPW slots, launch gaps, trace-to-pour clearances) get edge refinement on both sides and several cells across the gap — the gap width sets the impedance. Disable to save cells on boards where clearances do not matter">
               <input id="mo_slots" type="checkbox" checked> Refine coplanar gaps</label>
-            <label id="mo_comp_lab" title="Give every lumped component the mesh it needs: cells across the gap its element sheet bridges, and a pinned line on each copper edge around it so its pads keep their shape. Without this the pads move onto the nearest line — a narrow pad gap can close and merge the copper either side of the part. Turn off only to mesh components by hand with ranges.">
-              <input id="mo_autoComp" type="checkbox" checked> Auto-mesh lumped components</label>
+            <label id="mo_comp_lab" title="How much mesh each lumped component gets beyond the exact lines it cannot exist without. Off: nothing more — mesh it yourself with ranges. Element gap: the copper inside the part's own span, resolved, which keeps a narrow pad gap from closing on the grid and merging the copper either side. Around the part: also every copper edge within a gap width of it — thorough, and much more expensive because every line runs the whole width of the board.">
+              Components <select id="mo_compMesh">
+                <option value="off">Off — structural lines only</option>
+                <option value="gap">Element gap (default)</option>
+                <option value="near">Around the part</option>
+              </select></label>
+            <label id="mo_compCells_lab" title="How many cells each copper interval by the component is divided into. More is better resolved and costs cells everywhere, since a mesh line runs the full width of the board.">
+              Cells per interval <input id="mo_compCells" type="number" step="1" min="1" max="12" placeholder="3"></label>
+            <label id="mo_compMin_lab" title="The finest cell component meshing may create. Boards carry copper detail far below anything electrically meaningful — a 1 µm sliver between two imported polygons is not a feature — and resolving it costs the whole board: the cell crushes the timestep and needs ~18 graded cells either side to relax. Raise it to cut the cell count, lower it to resolve genuinely fine parts.">
+              Finest cell (µm) <input id="mo_compMin" type="number" step="5" min="1" placeholder="50"></label>
           </div>
         </div>
         <div id="meshItemSlot"></div>

@@ -399,29 +399,48 @@ can go back and forth. The z axis always follows the stackup — a
 conductor sheet only rasterizes on its own mesh line, so those are not
 optional.
 
-**Auto-mesh lumped components** (on by default, in *Outside the ranges*)
-goes further than keeping a component connected. It pins a line on every
-copper edge around the part so its pads keep the shape they were drawn
-with — a pad edge with no line near it moves to the nearest one, and a
-narrow pad gap can close entirely, merging the copper either side of the
-component — and it then resolves each interval those edges create.
+**Component meshing** (in *Outside the ranges*, shown when the board has
+components) decides how much mesh each part gets beyond those exact
+lines. It pins a line on the copper edges by the part so its pads keep
+the shape they were drawn with — a pad edge with no line near it moves
+to the nearest one, and a narrow pad gap can close entirely, merging the
+copper either side of the component — and resolves each interval those
+edges create.
 
 Both halves are needed, which is worth knowing because it is not
 obvious: pinning the edges *alone* made a terminated GCPW line read
 2 Ω **further** from the converged answer, because an edge pinned with a
 single cell beside it models that gap worse than not pinning it at all.
-Measured on the bundled board against the automatic mesh as reference
-(Zin = 24.30 Ω at 1 GHz):
+Measured against the automatic mesh as reference (Zin = 24.30 Ω at
+1 GHz): edges only 22.28 Ω, +3 cells 23.47 Ω, +5 cells 23.94 Ω —
+converging on the reference as resolution rises, which is what a correct
+model does.
 
-| | Zin @ 1 GHz | cells |
-|---|---|---|
-| edges pinned only | 22.28 Ω | 363 k |
-| + 3 cells per interval (**default**) | 23.47 Ω | 498 k |
-| + 5 cells per interval | 23.94 Ω | 612 k |
+That resolution is not free, and on a rectilinear grid it is never local
+— every mesh line runs the full width of the board, so a line that buys
+little near one part costs cells everywhere. Three controls set the
+balance:
 
-— converging on the reference as the resolution rises, which is what a
-correct model does. Add ranges over the part for more than the default.
-Turn the option off to mesh components entirely by hand.
+- **Components** — *Off* (structural lines only), *Element gap* (the
+  default: the copper inside the part's own span), or *Around the part*
+  (also every copper edge within a gap width of it).
+- **Cells per interval** — how finely each of those copper intervals is
+  divided (default 3).
+- **Finest cell** — the smallest cell component meshing may create
+  (default 50 µm). This is the biggest lever by far: boards carry copper
+  detail far below anything electrical — a 1 µm sliver between two
+  imported polygons is not a feature — and resolving it costs the whole
+  board, since that cell crushes the timestep and needs ~18 graded cells
+  either side to relax back to the bulk.
+
+On a 5-component amplifier board (795 k cells with components off):
+
+| setting | cells |
+|---|---|
+| Element gap, 3 cells, 50 µm (default) | 1.2 M |
+| Element gap, 3 cells, 200 µm | 1.0 M |
+| Element gap, 6 cells, 50 µm | 1.5 M |
+| Around the part, 3 cells, 50 µm | 2.0 M |
 
 **Structures that cannot exist without a line keep theirs.** A
 component's element sheet and its vertical terminals are zero-thickness:

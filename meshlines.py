@@ -493,19 +493,50 @@ def manual_ranges(model, axis, limit):
 COMP_GAP_CELLS = 4        # across the gap the element sheet spans
 COMP_CROSS_CELLS = 2      # across the element's width
 COMP_NEAR_CELLS = 3       # across each copper interval around the part
+# The finest cell component meshing may create. Boards carry copper
+# detail far below anything that matters electrically - a 1 um sliver
+# between two imported polygons is not a feature - and resolving it
+# costs the whole board: the cell crushes the timestep and needs ~18
+# graded cells either side of it to relax back to the bulk.
+COMP_MIN_CELL = 0.05
+
+
+def comp_mesh_cfg(model):
+    """(level, cells) for component meshing. Levels, cheapest first:
+
+      off   nothing beyond the exact positions the part cannot exist
+            without (element sheet, terminals, ESR junction)
+      gap   + the copper inside the element's own span, resolved. Keeps
+            a narrow pad gap from closing on the grid, which is the
+            failure that silently merges the copper either side of a part
+      near  + every copper edge within a gap width of the part, each
+            interval resolved. Thorough and expensive: each line runs the
+            width of the board, so on a dense board this multiplies
+    """
+    m = model.get('mesh') or {}
+    level = m.get('compMesh')
+    if level not in ('off', 'gap', 'near'):
+        level = 'off' if m.get('autoComp') is False else 'gap'
+    try:
+        cells = int(m.get('compCells') or COMP_NEAR_CELLS)
+    except (TypeError, ValueError):
+        cells = COMP_NEAR_CELLS
+    try:
+        floor = float(m.get('compMin') or COMP_MIN_CELL)
+    except (TypeError, ValueError):
+        floor = COMP_MIN_CELL
+    return level, max(1, min(cells, 12)), max(1e-4, floor)
 
 
 def manual_component_lines(model, axis, limit):
     """Lines that make a lumped component simulate properly in manual
-    mode, over and above the exact positions it cannot exist without.
-
-    Its element sheet spans a gap between two pads: that gap gets cells
-    across it instead of one, and every copper edge around the part is
-    pinned - a pad edge with no line near it moves to the nearest one,
-    which is how a 0.2 mm pad gap closes and merges the copper either
-    side of the component."""
+    mode, over and above the exact positions it cannot exist without."""
+    level, cells, floor = comp_mesh_cfg(model)
+    if level == 'off':
+        return []
     out = []
     shapes = model.get('shapes') or []
+    edges_cache = None
     for c in model.get('components') or []:
         x0, y0, x1, y1, ny, connected = comp_element_box(c, shapes)
         if not connected:
@@ -518,26 +549,38 @@ def manual_component_lines(model, axis, limit):
         n = COMP_GAP_CELLS if series else COMP_CROSS_CELLS
         for k in range(1, n):
             out.append(round(lo + (hi - lo) * k / n, 6))
-        # Copper edges around the part, so its pads keep their shape - a
-        # pad edge with no line near it moves to the nearest one and a
-        # narrow pad gap can close, merging the copper either side.
-        # Pinning them is not enough on its own: an edge pinned with a
-        # single cell beside it models that gap worse than not pinning it
-        # at all (measured: it moved a terminated GCPW line 2 ohm the
-        # WRONG way), so each interval they create is resolved too.
-        margin = hi - lo
-        ex, ey = [], []
-        for s in sim_shapes(model):
-            if s.get('layer') != c.get('layer'):
-                continue
-            _axis_edges(shape_outline(s), s.get('layer'), ex, ey, min_len=0.05)
-        near = sorted({round(pos, 6)
-                       for pos, _a, _b, _side, _lay in (ey if axis == 'y' else ex)
-                       if lo - margin <= pos <= hi + margin})
+        # On a rectilinear grid every line runs the whole width of the
+        # board, so lines that buy nothing cost everywhere. Across the
+        # part (the axis with no gap in it) the element box edges are
+        # already pinned and that is all the sheet needs, so the copper
+        # sweep is confined to the axis the current actually crosses.
+        if not series and level != 'near':
+            continue
+        # Copper edges by the part, so its pads keep their shape - a pad
+        # edge with no line near it moves to the nearest one and a narrow
+        # pad gap can close, merging the copper either side. Pinning them
+        # is not enough on its own: an edge pinned with a single cell
+        # beside it models that gap worse than not pinning it at all
+        # (measured: 2 ohm the WRONG way on a terminated GCPW line), so
+        # each interval they create is resolved too.
+        if edges_cache is None:
+            ex, ey = [], []
+            for s in sim_shapes(model):
+                _axis_edges(shape_outline(s), s.get('layer'), ex, ey, min_len=0.05)
+            edges_cache = (ex, ey)
+        margin = (hi - lo) if level == 'near' else 0.0
+        near = [pos for pos, _a, _b, _side, lay in
+                (edges_cache[1] if axis == 'y' else edges_cache[0])
+                if lay == c.get('layer') and lo - margin <= pos <= hi + margin]
+        # copper detail below the floor is not a feature worth a cell:
+        # fuse those edges before they turn into micron-wide slivers
+        near = _cluster_pins(near, floor)
         out += near
         for a, b in zip(near, near[1:]):
-            for k in range(1, COMP_NEAR_CELLS):
-                out.append(round(a + (b - a) * k / COMP_NEAR_CELLS, 6))
+            # never subdivide past the floor, however many cells were asked
+            n = min(cells, max(1, int((b - a) / floor)))
+            for k in range(1, n):
+                out.append(round(a + (b - a) * k / n, 6))
     return [v for v in out if math.isfinite(v) and -1e-9 <= v <= limit + 1e-9]
 
 
@@ -605,11 +648,7 @@ def manual_pins(model, axis, limit):
         except (KeyError, TypeError, ValueError):
             continue
         add(c, halves, n)
-    # opt-out: the extra lines a component needs to behave are on by
-    # default, because without them it is modelled wrongly rather than
-    # merely coarsely
-    if (model.get('mesh') or {}).get('autoComp', True):
-        hard += manual_component_lines(model, axis, limit)
+    hard += manual_component_lines(model, axis, limit)
     ok = lambda v: math.isfinite(v) and -1e-9 <= v <= limit + 1e-9
     return [c for c in out if ok(c)], _dedupe([h for h in hard if ok(h)])
 

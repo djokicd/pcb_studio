@@ -1128,3 +1128,48 @@ def test_manual_auto_component_meshing_keeps_pad_gaps_open():
     on = build_mesh(m)
     assert gap_on_grid(off, 20.9, 21.1) < 1e-9, 'expected the gap to close'
     assert gap_on_grid(on, 20.9, 21.1) > 0.19, 'the gap must stay open'
+
+
+def test_component_mesh_levels_trade_cost_against_detail():
+    """Component meshing is a choice, not a switch: each level costs
+    more and resolves more, and the finest-cell floor bounds all of it.
+    A dense board is where this matters - every mesh line runs the whole
+    width, so lines that buy little cost everywhere."""
+    def cells(**cfg):
+        m = _with_component(min_res=1.5)
+        # copper detail far below anything electrical, as an import leaves,
+        # plus a 120 um pad the floor can either resolve or decline to
+        m['shapes'].append(rect('sliver', 20.5001, 9, 0.002, 2))
+        m['shapes'].append(rect('pad', 19.2, 9, 0.12, 2))
+        m['mesh'] = dict(m['mesh'], **cfg)
+        return build_mesh(m)['cells']
+
+    off = cells(compMesh='off')
+    gap = cells(compMesh='gap')
+    near = cells(compMesh='near')
+    assert off < gap < near, f'{off} / {gap} / {near}'
+
+    # more cells per interval costs more
+    assert cells(compMesh='gap', compCells=6) > gap
+    # a coarser floor costs less wherever fine copper is in scope - at
+    # 'gap' the 120 um pad sits outside the element's own span, so the
+    # level that reaches it is where the floor bites
+    assert cells(compMesh='near', compMin=0.2) < near
+    # and the floor is what stops a 2 um sliver from being resolved
+    assert build_mesh(dict(_with_component(min_res=1.5),
+                           mesh={'mode': 'manual', 'regions': [],
+                                 'outside': {'res': 1.5, 'ratio': 1.5},
+                                 'compMesh': 'gap'}))['minCell'] >= 0.004
+
+
+def test_component_mesh_level_is_backwards_compatible():
+    """Projects saved with the earlier on/off flag keep their meaning."""
+    from meshlines import comp_mesh_cfg
+    assert comp_mesh_cfg({'mesh': {}})[0] == 'gap'
+    assert comp_mesh_cfg({'mesh': {'autoComp': False}})[0] == 'off'
+    assert comp_mesh_cfg({'mesh': {'compMesh': 'near'}})[0] == 'near'
+    # an explicit level wins over the old flag, and junk falls back
+    assert comp_mesh_cfg({'mesh': {'autoComp': False, 'compMesh': 'gap'}})[0] == 'gap'
+    assert comp_mesh_cfg({'mesh': {'compMesh': 'nonsense'}})[0] == 'gap'
+    lvl, cells, floor = comp_mesh_cfg({'mesh': {'compCells': 99, 'compMin': -1}})
+    assert cells == 12 and floor > 0
