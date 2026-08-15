@@ -21,7 +21,7 @@ import math
 
 from geometry import (stackup_z, mesh_lines_xy, sim_shapes, comp_lift,
                       comp_element_box, shape_outline, _axis_edges,
-                      _mesh_lines)
+                      _mesh_lines, MIN_SOFT_RES)
 
 C0 = 299792458.0
 
@@ -490,7 +490,6 @@ def manual_ranges(model, axis, limit):
 # A lumped component asks for more than its own exact lines: the gap it
 # bridges carries the field between the two pads, and the copper it lands
 # on has to stay where it was drawn or that gap can close on the grid.
-COMP_GAP_CELLS = 4        # across the gap the element sheet spans
 COMP_CROSS_CELLS = 2      # across the element's width
 COMP_NEAR_CELLS = 3       # across each copper interval around the part
 # The finest cell component meshing may create. Boards carry copper
@@ -530,7 +529,16 @@ def comp_mesh_cfg(model):
 
 def manual_component_lines(model, axis, limit):
     """Lines that make a lumped component simulate properly in manual
-    mode, over and above the exact positions it cannot exist without."""
+    mode, over and above the exact positions it cannot exist without.
+
+    All of a part's lines come from ONE anchor set per axis - the
+    element ends, the ESR junction, and the copper edges that actually
+    face the part - with the intervals between anchors subdivided.
+    Two independent line families (a fixed gap split laid over raw
+    copper edges) land arbitrarily close to each other: measured on the
+    GCPW termination board they produced 23 um hairline cells inside
+    the element gap, which crush the timestep and drag a skirt of
+    graded lines across the whole board."""
     level, cells, floor = comp_mesh_cfg(model)
     if level == 'off':
         return []
@@ -542,43 +550,62 @@ def manual_component_lines(model, axis, limit):
         if not connected:
             continue
         lo, hi = (y0, y1) if axis == 'y' else (x0, x1)
+        c_lo, c_hi = (x0, x1) if axis == 'y' else (y0, y1)
         if hi - lo <= 1e-9:
             continue
-        # the series axis carries the gap; the other one the width
+        # the series axis carries the gap; the other one the width. The
+        # ESR split joins two element sheets at the gap centre, so the
+        # centre is an anchor, not a derived line.
         series = (ny == 1) == (axis == 'y')
-        n = COMP_GAP_CELLS if series else COMP_CROSS_CELLS
-        for k in range(1, n):
-            out.append(round(lo + (hi - lo) * k / n, 6))
+        anchors = [lo, hi] + ([round((lo + hi) / 2.0, 6)] if series else [])
+        n_base = cells if series else COMP_CROSS_CELLS
         # On a rectilinear grid every line runs the whole width of the
         # board, so lines that buy nothing cost everywhere. Across the
-        # part (the axis with no gap in it) the element box edges are
-        # already pinned and that is all the sheet needs, so the copper
-        # sweep is confined to the axis the current actually crosses.
-        if not series and level != 'near':
-            continue
-        # Copper edges by the part, so its pads keep their shape - a pad
-        # edge with no line near it moves to the nearest one and a narrow
-        # pad gap can close, merging the copper either side. Pinning them
-        # is not enough on its own: an edge pinned with a single cell
-        # beside it models that gap worse than not pinning it at all
-        # (measured: 2 ohm the WRONG way on a terminated GCPW line), so
-        # each interval they create is resolved too.
-        if edges_cache is None:
-            ex, ey = [], []
-            for s in sim_shapes(model):
-                _axis_edges(shape_outline(s), s.get('layer'), ex, ey, min_len=0.05)
-            edges_cache = (ex, ey)
-        margin = (hi - lo) if level == 'near' else 0.0
-        near = [pos for pos, _a, _b, _side, lay in
-                (edges_cache[1] if axis == 'y' else edges_cache[0])
-                if lay == c.get('layer') and lo - margin <= pos <= hi + margin]
-        # copper detail below the floor is not a feature worth a cell:
-        # fuse those edges before they turn into micron-wide slivers
-        near = _cluster_pins(near, floor)
-        out += near
-        for a, b in zip(near, near[1:]):
-            # never subdivide past the floor, however many cells were asked
-            n = min(cells, max(1, int((b - a) / floor)))
+        # part (the axis with no gap in it) the element box edges plus a
+        # centre cell are all the sheet needs, so the copper sweep is
+        # confined to the axis the current actually crosses unless the
+        # level asks for the whole neighbourhood.
+        if series or level == 'near':
+            # Copper edges by the part, so its pads keep their shape - a
+            # pad edge with no line near it moves to the nearest one and
+            # a narrow pad gap can close, merging the copper either side.
+            # Pinning them is not enough on its own: an edge pinned with
+            # a single cell beside it models that gap worse than not
+            # pinning it at all (measured: 2 ohm the WRONG way on a
+            # terminated GCPW line), so each interval is resolved too.
+            if edges_cache is None:
+                ex, ey = [], []
+                for s in sim_shapes(model):
+                    _axis_edges(shape_outline(s), s.get('layer'), ex, ey,
+                                min_len=0.05)
+                edges_cache = (ex, ey)
+            # the sweep reaches one element-span past the ends: the first
+            # copper gap beyond each end is the part's connection to the
+            # rest of the circuit (pad to trace, pad to pour), and it
+            # closes on a coarse grid exactly like the element gap does.
+            # 'near' widens this to the cross axis too.
+            margin = (hi - lo) if series or level == 'near' else 0.0
+            # Only edges that actually FACE the part count: their extent
+            # on the other axis has to overlap the element box. Without
+            # that check a pour edge eight millimetres away - same layer,
+            # same x - injects lines straight into the element gap.
+            near = [pos for pos, e0, e1, _side, lay in
+                    (edges_cache[1] if axis == 'y' else edges_cache[0])
+                    if lay == c.get('layer')
+                    and lo - margin <= pos <= hi + margin
+                    and e0 <= c_hi + margin + 1e-9
+                    and e1 >= c_lo - margin - 1e-9]
+            # copper detail below the floor is not a feature worth a
+            # cell, and an edge a hair from a structural anchor IS that
+            # anchor - fuse both before they turn into hairline cells
+            for p in _cluster_pins(near, floor):
+                if min(abs(p - q) for q in anchors) > floor:
+                    anchors.append(p)
+        anchors = sorted(anchors)
+        out += anchors
+        for a, b in zip(anchors, anchors[1:]):
+            # never subdivide past the floor, however many cells asked
+            n = min(n_base, max(1, int((b - a) / floor)))
             for k in range(1, n):
                 out.append(round(a + (b - a) * k / n, 6))
     return [v for v in out if math.isfinite(v) and -1e-9 <= v <= limit + 1e-9]
@@ -648,9 +675,68 @@ def manual_pins(model, axis, limit):
         except (KeyError, TypeError, ValueError):
             continue
         add(c, halves, n)
-    hard += manual_component_lines(model, axis, limit)
     ok = lambda v: math.isfinite(v) and -1e-9 <= v <= limit + 1e-9
-    return [c for c in out if ok(c)], _dedupe([h for h in hard if ok(h)])
+    # Structural pins (element ends, ESR junctions, port edges) are exact
+    # or the structure vanishes. Component RESOLUTION lines are not: they
+    # exist to give the copper around a part cells, and one that lands a
+    # hair from a structural pin - or from another part's line, two
+    # sweeps covering the same copper - would live beside it as a
+    # micron-wide cell, since pins never displace pins. Cluster them
+    # against each other and absorb them into any structural pin within
+    # the component floor.
+    struct = _dedupe([h for h in hard if ok(h)])
+    floor = comp_mesh_cfg(model)[2]
+    comp = _cluster_pins(
+        [c for c in manual_component_lines(model, axis, limit) if ok(c)],
+        floor)
+    for v in comp:
+        i = bisect.bisect_left(struct, v)
+        near = min([abs(struct[j] - v) for j in (i - 1, i)
+                    if 0 <= j < len(struct)] or [1e9])
+        if near > floor:
+            bisect.insort(struct, v)
+    return [c for c in out if ok(c)], struct
+
+
+def manual_windows(model, axis, limit, fringe, min_res):
+    """Automatic refinement windows around ports and lumped components
+    in manual mode, as (lo, hi, res) spans for the graded fill.
+
+    Manual meshing is for COPPER - the user draws ranges over the
+    geometry they know. Ports and lumped components are not copper:
+    a port's probes read the fields in the cells around its box, and
+    coarse cells there bias the measured impedance the same way in
+    every mesh mode; a part's pads live or die by the cells around the
+    element. So their neighbourhoods are refined automatically - the
+    same fringe-length window and resolution the automatic mesher uses
+    - wherever the user has not put a range of their own (a range keeps
+    the exact cells it was given)."""
+    out = []
+    key = 'y' if axis == 'y' else 'x'
+    spans = []
+    for p in model.get('ports') or []:
+        try:
+            lo = float(p[key])
+            hi = lo + float(p['h' if axis == 'y' else 'w'])
+            size = max(float(p['w']), float(p['h']))
+        except (KeyError, TypeError, ValueError):
+            continue
+        spans.append((lo, hi, size))
+    shapes = model.get('shapes') or []
+    if comp_mesh_cfg(model)[0] != 'off':
+        for c in model.get('components') or []:
+            x0, y0, x1, y1, _ny, connected = comp_element_box(c, shapes)
+            if not connected:
+                continue
+            lo, hi = (y0, y1) if axis == 'y' else (x0, x1)
+            spans.append((lo, hi, max(x1 - x0, y1 - y0)))
+    for lo, hi, size in spans:
+        fr = fringe or max(size, 1.0)
+        res = min(min_res, max(fr / 3.0, MIN_SOFT_RES))
+        a, b = max(0.0, lo - fr), min(float(limit), hi + fr)
+        if b - a > 1e-9 and hi > -1e-9 and lo < limit + 1e-9:
+            out.append((a, b, res))
+    return out
 
 
 def _cluster_pins(vals, tol):
@@ -676,11 +762,15 @@ def _cluster_pins(vals, tol):
     return _dedupe(out)
 
 
-def manual_axis(ranges, limit, min_res, ratio, margin, pins=(), merge=0.0):
+def manual_axis(ranges, limit, min_res, ratio, margin, pins=(), merge=0.0,
+                windows=()):
     """One axis of a manual mesh: the ranges' own lines, the board edges,
     a graded fill relaxing to `min_res` everywhere else, and the air
     margin. Nothing is derived from the geometry - with no ranges at all
-    this is just the board at the minimum density."""
+    this is just the board at the minimum density. `windows` are
+    (lo, hi, res) spans - port and component neighbourhoods - where the
+    fill relaxes to `res` instead of `min_res`; a user range overlapping
+    a window still owns its cells."""
     lines = [0.0, float(limit)]
     covered = []
     for lo, hi, cells, r, bias, out_lo, out_hi in ranges:
@@ -693,12 +783,29 @@ def manual_axis(ranges, limit, min_res, ratio, margin, pins=(), merge=0.0):
             covered[-1][1] = max(covered[-1][1], out_hi)
         else:
             covered.append([out_lo, out_hi])
-    lines = _dedupe(lines, 1e-6)
-
     def inside(v):
         return any(lo - 1e-9 <= v <= hi + 1e-9 for lo, hi in covered)
 
+    # window boundaries join as ordinary lines, so every fill gap lies
+    # wholly in or out of a window from the FIRST pass - a gap straddling
+    # the boundary would be filled coarse first and re-chopped fine on a
+    # later pass, leaving a mismatched junction at the window's edge.
+    # A boundary is only a hint of where the fill target changes: one
+    # that would land against an existing line or a pin is redundant
+    # there, and inserting it anyway leaves a hairline cell behind.
     soft, hard = pins if pins else ((), ())
+    for w_lo, w_hi, w_res in windows:
+        tol = max(merge, 0.25 * w_res)
+        for v in (w_lo, w_hi):
+            if not (1e-9 < v < limit - 1e-9) or inside(v):
+                continue
+            if min((abs(v - q) for q in lines), default=1e9) <= tol:
+                continue
+            if min((abs(v - float(h)) for h in hard), default=1e9) <= tol:
+                continue
+            lines.append(v)
+    lines = _dedupe(lines, 1e-6)
+
     # Structures that only exist where a line is (component sheets and
     # terminals, port boxes) are placed EXACTLY - no merging, no
     # thinning, no snapping to something nearby. A pin may displace an
@@ -748,6 +855,17 @@ def manual_axis(ranges, limit, min_res, ratio, margin, pins=(), merge=0.0):
             if near > merge:
                 bisect.insort(lines, pv)
 
+    # the fill target for an interval: min_res in the bulk, a window's
+    # own resolution inside a port/component neighbourhood (the finest
+    # one wins where windows overlap)
+    def cap_at(a, b):
+        m = 0.5 * (a + b)
+        cap = min_res
+        for w_lo, w_hi, w_res in windows:
+            if w_lo - 1e-9 <= m <= w_hi + 1e-9:
+                cap = min(cap, w_res)
+        return cap
+
     # fill the gaps between ranges (and out to the board edges): cells
     # start from the neighbouring range's OWN cell - not clamped to the
     # minimum density - and grade towards it from there, so the junction
@@ -761,23 +879,29 @@ def manual_axis(ranges, limit, min_res, ratio, margin, pins=(), merge=0.0):
                 continue
         # the neighbouring cell to grade away from. A gap a range owns
         # keeps its own size, however coarse; any other neighbour ends up
-        # at most min_res wide, so clamp it there - but a NARROW one (two
-        # via pins 0.15 mm apart) stays narrow and must be graded from,
-        # or the fine cells sit straight against the bulk.
+        # at most its fill target wide, so clamp it there - but a NARROW
+        # one (two via pins 0.15 mm apart) stays narrow and must be
+        # graded from, or the fine cells sit straight against the bulk.
             # On the first pass a wide neighbour is still unfilled and
-            # will end up at most min_res, so it counts as min_res. Once
-            # filled, every width is a real cell - clamping then would
-            # throw away the ramp stepping down from a coarse range.
+            # will end up at most its own cap - and right at our junction
+            # it grades down to about OUR target, so estimating it any
+            # coarser would make this gap ramp against a cell that will
+            # not exist and dump the misfit as hairline cells at a pin.
+            # Once filled, every width is a real cell - clamping then
+            # would throw away the ramp stepping down from a coarse range.
+            cap = cap_at(a, b)
+
             def detail(k):
                 if not (0 <= k < len(widths)):
                     return min_res
                 w = widths[k]
                 if first and not inside(0.5 * (lines[k] + lines[k + 1])):
-                    return min(w, min_res)
+                    return min(w, cap_at(lines[k], lines[k + 1]),
+                               cap * ratio)
                 return w
             dl = detail(j - 1) if j > 0 else min_res
             dr = detail(j + 1) if j + 1 < len(widths) else min_res
-            out += _relax_gap(a, b, dl, dr, min_res, ratio)
+            out += _relax_gap(a, b, dl, dr, cap, ratio)
             out.append(b)
         return _dedupe(out)
 
@@ -963,9 +1087,11 @@ def build_mesh(model):
         min_res = out_cfg.get('res') or max_res
         m_ratio = out_cfg.get('ratio') or ratio
         x = manual_axis(manual_ranges(model, 'x', W), W, min_res, m_ratio,
-                        margin, manual_pins(model, 'x', W), merge)
+                        margin, manual_pins(model, 'x', W), merge,
+                        manual_windows(model, 'x', W, _total, min_res))
         y = manual_axis(manual_ranges(model, 'y', H), H, min_res, m_ratio,
-                        margin, manual_pins(model, 'y', H), merge)
+                        margin, manual_pins(model, 'y', H), merge,
+                        manual_windows(model, 'y', H, _total, min_res))
         edge_res = max_res = min_res
         slot_res = None
     else:

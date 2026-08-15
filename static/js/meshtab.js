@@ -1781,11 +1781,12 @@ function meshFormsFromModel() {
   $('mo_compMin_lab').hidden = !manual || !hasComps || lvl === 'off';
   $('mm_mode').value = manual ? 'manual' : 'auto';
   $('mm_note').textContent = manual
-    ? 'Copper contributes no mesh lines: only the ranges below place them, '
-      + 'and everything else relaxes to the minimum density. Structures that '
-      + 'cannot exist without a line — component elements and their terminals, '
-      + 'port boxes, the z stackup — keep theirs, and vias pin what you set '
-      + 'on them.'
+    ? 'Manual meshing is for copper: it contributes no lines on its own — '
+      + 'only the ranges below place them, and everything else relaxes to '
+      + 'the minimum density. Ports and lumped components are meshed '
+      + 'automatically: exact structural lines plus a refined neighbourhood, '
+      + 'wherever a range of yours does not already cover them. Vias pin '
+      + 'what you set on them.'
     : 'Copper edges, vias, ports and coplanar gaps place mesh lines; the '
       + 'ranges below refine on top of that.';
   // settings that only mean something in one mode

@@ -1003,11 +1003,13 @@ def test_manual_hard_pins_survive_a_coarse_mesh_and_grade():
     mesh = build_mesh(m)
     for v in (x0, x1):
         assert min(abs(q - v) for q in mesh['x']) < 1e-9
-    # around the part - where the field is - the grading holds exactly
-    near = [v for v in mesh['x'] if x0 - 2 <= v <= x1 + 2]
+    # around the part - inside its automatic refinement window, where the
+    # field is - the grading holds exactly
+    near = [v for v in mesh['x'] if x0 - 1.5 <= v <= x1 + 1.5]
     assert _worst_step(near) <= 1.5 + 0.1
-    # out in the bulk two grading fronts meet mid-gap and the sequence
-    # cannot land exactly, which costs a little over the ratio there
+    # out in the bulk (and where the window hands over to it) the graded
+    # fill has to fit whole cells into a fixed span and cannot always
+    # land exactly, which costs a little over the ratio
     assert _worst_step(mesh['x']) <= 1.8
 
 
@@ -1138,9 +1140,12 @@ def test_component_mesh_levels_trade_cost_against_detail():
     def cells(**cfg):
         m = _with_component(min_res=1.5)
         # copper detail far below anything electrical, as an import leaves,
-        # plus a 120 um pad the floor can either resolve or decline to
+        # plus a 120 um pad the floor can either resolve or decline to,
+        # plus a 70 um sliver BESIDE the part that only the cross-axis
+        # sweep of 'near' pins exactly (the window merely grades past it)
         m['shapes'].append(rect('sliver', 20.5001, 9, 0.002, 2))
         m['shapes'].append(rect('pad', 19.2, 9, 0.12, 2))
+        m['shapes'].append(rect('stub', 19.8, 10.55, 0.4, 0.07))
         m['mesh'] = dict(m['mesh'], **cfg)
         return build_mesh(m)['cells']
 
@@ -1173,3 +1178,86 @@ def test_component_mesh_level_is_backwards_compatible():
     assert comp_mesh_cfg({'mesh': {'compMesh': 'nonsense'}})[0] == 'gap'
     lvl, cells, floor = comp_mesh_cfg({'mesh': {'compCells': 99, 'compMin': -1}})
     assert cells == 12 and floor > 0
+
+
+def test_manual_mode_refines_port_neighbourhoods_automatically():
+    """Manual meshing is for COPPER - the user draws ranges over the
+    geometry they know. A port is not copper: its probes read the fields
+    in the cells around the box, and coarse cells there bias the measured
+    impedance in every mesh mode alike. With no range anywhere near it,
+    the port still gets the fringe-length refinement window the automatic
+    mesher gives it."""
+    m = _manual(min_res=2.0)                  # port at x 1..1.5, y 9..11
+    mesh = build_mesh(m)
+    # one fringe = the stackup height (0.8 mm) -> res = max(fr/3, 0.1)
+    res = max(0.8 / 3.0, 0.1)
+    for ax, lo, hi in (('x', 0.2, 2.3), ('y', 8.2, 11.8)):
+        inside = [v for v in mesh[ax] if lo - 1e-9 <= v <= hi + 1e-9]
+        widest = max(b - a for a, b in zip(inside, inside[1:]))
+        assert widest <= res + 1e-6, \
+            f'{ax}: {widest:.3f} mm cells beside the port probes'
+    # the refinement is a WINDOW, not a new global density - the bulk
+    # still relaxes to the minimum the user asked for
+    on_board = [v for v in mesh['x'] if -1e-9 <= v <= 40 + 1e-9]
+    assert max(b - a for a, b in zip(on_board, on_board[1:])) > 1.5
+
+
+def test_manual_port_window_defers_to_a_user_range():
+    """A user range overlapping a port keeps the exact cells it was
+    given - the automatic window only refines where the user said
+    nothing. The port box edges still pin by replacement."""
+    regs = [{'id': 1, 'axis': 'y', 'from': 8.0, 'to': 12.0, 'cells': 5}]
+    m = _manual(regs, min_res=2.0)
+    mesh = build_mesh(m)
+    inside = [v for v in mesh['y'] if 8.0 - 1e-9 <= v <= 12.0 + 1e-9]
+    assert len(inside) - 1 == 5, f'range holds {len(inside) - 1} cells'
+    for v in (9.0, 11.0):                     # the port edges, exact
+        assert min(abs(q - v) for q in mesh['y']) < 1e-9
+
+
+def test_component_sweep_ignores_copper_that_does_not_face_the_part():
+    """Copper at the same x as the element gap but far away on the other
+    axis must not inject lines into the gap - a mesh line runs the whole
+    board, but the PART only cares about the copper it actually faces."""
+    from meshlines import manual_component_lines
+    m = _with_component(min_res=1.0)
+    base = sorted(manual_component_lines(m, 'x', 40))
+    m['shapes'].append(rect('far', 19.7, 2.0, 0.13, 2.0))   # y 2..4
+    poisoned = sorted(manual_component_lines(m, 'x', 40))
+    assert poisoned == base, 'far-away copper changed the element lines'
+
+
+def test_component_resolution_lines_are_absorbed_by_structural_pins():
+    """A component resolution line landing a hair from a port edge (or
+    another part's line) may not survive beside it: pins never displace
+    pins, so an unabsorbed near-miss would live on as a micron cell."""
+    m = _with_component(min_res=1.0)
+    # port edges 13 and 20 um from where the element's thirds would land
+    m['ports'].append(lumped_port(2, 19.68, 12.0, 0.5, 2.0))
+    mesh = build_mesh(m)
+    span = [v for v in mesh['x'] if 19.4 - 1e-9 <= v <= 20.7 + 1e-9]
+    tightest = min(b - a for a, b in zip(span, span[1:]))
+    assert tightest >= 0.04, f'{tightest * 1000:.1f} um cell by the part'
+    for v in (19.68, 20.18, 19.5, 20.0, 20.5):   # structure stays exact
+        assert min(abs(q - v) for q in mesh['x']) < 1e-9, f'no line at {v}'
+
+
+def test_element_gap_lines_come_from_one_anchor_set():
+    """Everything a part asks for on an axis - element ends, the ESR
+    junction, the copper edges it faces - subdivides as ONE set, so no
+    two lines land closer than the floor. Two independent families (a
+    fixed gap split over raw copper edges) once produced 23 um cells
+    inside a gap on the GCPW termination board."""
+    from meshlines import manual_component_lines
+    m = _with_component(min_res=1.0)
+    # copper slivers inside the gap: one mid-interval, one that must
+    # fuse into the ESR junction anchor
+    m['shapes'].append(rect('s1', 19.9, 9, 0.02, 2))
+    m['shapes'].append(rect('s2', 19.97, 9, 0.02, 2))
+    lines = sorted(v for v in manual_component_lines(m, 'x', 40)
+                   if 19.5 - 1e-9 <= v <= 20.5 + 1e-9)
+    tightest = min(b - a for a, b in zip(lines, lines[1:]))
+    assert tightest >= 0.05 - 1e-9, \
+        f'{tightest * 1000:.1f} um interval inside the element span'
+    for v in (19.5, 20.0, 20.5):
+        assert min(abs(q - v) for q in lines) < 1e-9

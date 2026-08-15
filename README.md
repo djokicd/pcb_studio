@@ -388,10 +388,12 @@ come from at all:
 - **Automatic (geometry + ranges)** — the default described in [Graded
   meshing](#graded-meshing): copper edges, vias, ports and coplanar gaps
   all place lines, and the ranges below refine on top of that.
-- **Manual (ranges only)** — the geometry contributes **nothing**. The
+- **Manual (ranges only)** — the copper contributes **nothing**. The
   board starts with no mesh lines whatsoever; the only lines are the
   ones the ranges you place put there, and everything else relaxes to
-  the minimum density. Nothing is snapped, merged or inferred.
+  the minimum density. Nothing is snapped, merged or inferred from the
+  copper — ports and lumped components, which are not copper, are
+  meshed automatically (below).
 
 Switching modes changes nothing in the project but the mode: ranges keep
 both their manual line count and their automatic resolution cap, so you
@@ -399,13 +401,41 @@ can go back and forth. The z axis always follows the stackup — a
 conductor sheet only rasterizes on its own mesh line, so those are not
 optional.
 
+**Manual meshing is for copper. Ports and lumped components are meshed
+automatically.** The ranges you place govern the copper — the geometry
+you drew and know. A port is not copper: its probes read the fields in
+the cells around its box, and coarse cells there bias the measured
+impedance in every mesh mode alike, so each port automatically gets the
+same fringe-length refinement window the automatic mesher gives it
+(about a third of the stackup height per cell, one stackup height out
+from the box). Lumped components get a window of the same kind around
+the element. The windows only refine where you said nothing: a range
+overlapping one keeps exactly the cells it was given.
+
 **Component meshing** (in *Outside the ranges*, shown when the board has
-components) decides how much mesh each part gets beyond those exact
-lines. It pins a line on the copper edges by the part so its pads keep
-the shape they were drawn with — a pad edge with no line near it moves
-to the nearest one, and a narrow pad gap can close entirely, merging the
-copper either side of the component — and resolves each interval those
-edges create.
+components) decides how much mesh each part gets beyond that window and
+its exact structural lines. It pins a line on the copper edges the part
+faces so its pads keep the shape they were drawn with — a pad edge with
+no line near it moves to the nearest one, and a narrow pad gap can close
+entirely, merging the copper either side of the component — and resolves
+each interval those edges create. On the series axis the sweep reaches
+one element-span past the ends, because the first copper gap beyond each
+end is the part's connection to the rest of the circuit and closes on a
+coarse grid exactly like the element gap does.
+
+All of a part's lines on an axis come from **one anchor set** — element
+ends, the ESR junction, the copper edges it faces — subdivided together,
+so no two of them land closer than the finest-cell floor. Only edges
+that actually *face* the part count (their extent on the other axis has
+to overlap the element box): every mesh line runs the whole board, and
+without that check a pour edge eight millimetres away at the same x
+injects lines straight into the element gap. Resolution lines that land
+within the floor of a structural pin — a port edge, another part's line
+— are absorbed by it rather than left standing a hair away, since pins
+never displace pins and such a near-miss used to survive as a
+micron-wide cell. (Measured on the GCPW termination board before this
+scheme: 23 µm hairline cells inside the element gap, crushing the
+timestep and dragging a skirt of graded lines across the whole board.)
 
 Both halves are needed, which is worth knowing because it is not
 obvious: pinning the edges *alone* made a terminated GCPW line read
@@ -421,26 +451,27 @@ That resolution is not free, and on a rectilinear grid it is never local
 little near one part costs cells everywhere. Three controls set the
 balance:
 
-- **Components** — *Off* (structural lines only), *Element gap* (the
-  default: the copper inside the part's own span), or *Around the part*
-  (also every copper edge within a gap width of it).
+- **Components** — *Off* (structural lines and the automatic window
+  only), *Element gap* (the default: the copper the part faces, out to
+  one element-span past its ends on the series axis), or *Around the
+  part* (the same sweep widened to the cross axis).
 - **Cells per interval** — how finely each of those copper intervals is
   divided (default 3).
 - **Finest cell** — the smallest cell component meshing may create
-  (default 50 µm). This is the biggest lever by far: boards carry copper
-  detail far below anything electrical — a 1 µm sliver between two
-  imported polygons is not a feature — and resolving it costs the whole
-  board, since that cell crushes the timestep and needs ~18 graded cells
-  either side to relax back to the bulk.
+  (default 50 µm). Boards carry copper detail far below anything
+  electrical — a 1 µm sliver between two imported polygons is not a
+  feature — and resolving it costs the whole board, since that cell
+  crushes the timestep and needs ~18 graded cells either side to relax
+  back to the bulk.
 
-On a 5-component amplifier board (795 k cells with components off):
+On a 5-component amplifier board (839 k cells with components off):
 
 | setting | cells |
 |---|---|
-| Element gap, 3 cells, 50 µm (default) | 1.2 M |
-| Element gap, 3 cells, 200 µm | 1.0 M |
-| Element gap, 6 cells, 50 µm | 1.5 M |
-| Around the part, 3 cells, 50 µm | 2.0 M |
+| Element gap, 3 cells, 50 µm (default) | 1.14 M |
+| Element gap, 3 cells, 200 µm | 0.95 M |
+| Element gap, 6 cells, 50 µm | 1.52 M |
+| Around the part, 3 cells, 50 µm | 1.17 M |
 
 **Structures that cannot exist without a line keep theirs.** A
 component's element sheet and its vertical terminals are zero-thickness:
