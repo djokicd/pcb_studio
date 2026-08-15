@@ -436,6 +436,9 @@ def _parallel_runner(tmp_path, monkeypatch, parallel, seconds=0.3):
     real_popen = sp.Popen
     monkeypatch.setattr(server.subprocess, 'Popen',
                         lambda cmd, **kw: real_popen(['python3', str(fake)], **kw))
+    # a synthetic 8-core no-SMT machine: thread splits and core blocks
+    # must not depend on the topology of whatever host runs the tests
+    monkeypatch.setattr(server, 'CPU_CORES', [[i] for i in range(8)])
     monkeypatch.setattr(server, 'generate_script', lambda m: '% fake')
     monkeypatch.setattr(server, 'merge_excitations', lambda *a, **k: None)
     monkeypatch.setattr(server, 'combine_devices', lambda *a, **k: None)
