@@ -231,6 +231,42 @@ MAX_PARALLEL = 16
 CELLS_PER_THREAD = 150_000
 
 
+def cpu_topology():
+    """PHYSICAL cores with their logical siblings, e.g. [[0, 16], [1, 17],
+    ...] on a 16C/32T machine. The FDTD update is bandwidth- and FPU-bound,
+    so a hyperthread sibling is not a worker: budgeting threads by logical
+    CPUs on an SMT machine packs two solver threads onto every FPU and
+    each runs at half speed. Falls back to one core per logical CPU when
+    /sys topology is unavailable (containers, exotic kernels)."""
+    groups = {}
+    try:
+        for d in sorted(Path('/sys/devices/system/cpu').glob('cpu[0-9]*')):
+            f = d / 'topology' / 'thread_siblings_list'
+            if not f.exists():
+                continue
+            groups.setdefault(f.read_text().strip(), []).append(int(d.name[3:]))
+    except OSError:
+        pass
+    if groups:
+        return sorted((sorted(g) for g in groups.values()), key=lambda g: g[0])
+    return [[i] for i in range(os.cpu_count() or 1)]
+
+
+CPU_CORES = cpu_topology()
+
+
+def _fmt_cpuset(cpus):
+    """'0-7,16-23' style range list for humans and logs."""
+    out, i = [], 0
+    while i < len(cpus):
+        j = i
+        while j + 1 < len(cpus) and cpus[j + 1] == cpus[j] + 1:
+            j += 1
+        out.append(str(cpus[i]) if i == j else f'{cpus[i]}-{cpus[j]}')
+        i = j + 1
+    return ','.join(out)
+
+
 def split_threads(cores, cells, parallel, live, queued):
     """openEMS threads for the next stage launch when several excitations
     share the machine. Left to itself each instance benchmarks thread
@@ -288,6 +324,8 @@ class Runner:
         self.base_model = None
         self.project = ''        # which design this run belongs to
         self.parallel = 1        # excitations solved side by side
+        self.cpu_free = []       # unallocated physical-core indices
+        self.cpu_alloc = {}      # stage index -> allocated core indices
         self.threads = 0         # openEMS threads per excitation (0 = auto)
         self.auto_split = False  # runner balances threads at each launch
         self.plan_cells = None   # mesh size known before launch
@@ -310,11 +348,20 @@ class Runner:
     def _new_stage_record(exc, label):
         return {'exc': exc, 'label': label, 'samples': [], 'info': {},
                 'warn': [], 'notConverged': False, 'state': 'queued',
-                'percent': 0.0, 'done': False, 'threads': None}
+                'percent': 0.0, 'done': False, 'threads': None,
+                'cpus': None, 'log': []}
 
-    def status(self, offset=0):
+    def status(self, offset=0, stage=None):
         with self.lock:
-            offset = max(0, min(int(offset), len(self.log)))
+            # stage-filtered raw output: one solver's stream, untagged
+            src = self.log
+            try:
+                si = int(stage)
+            except (TypeError, ValueError):
+                si = None
+            if si is not None and 0 <= si < len(self.stage_data):
+                src = self.stage_data[si]['log']
+            offset = max(0, min(int(offset), len(src)))
             # the "current" stage for the single-stage top-level fields:
             # whichever is running (the earliest, when several are), else
             # the last one that produced anything
@@ -330,8 +377,8 @@ class Runner:
                 'state': self.state,
                 'percent': round(self.percent, 1),
                 'error': self.error,
-                'lines': self.log[offset:],
-                'nextOffset': len(self.log),
+                'lines': src[offset:],
+                'nextOffset': len(src),
                 'elapsed': round(time.time() - self.started_at, 1) if self.started_at else 0,
                 # top level mirrors the stage in progress; `stages` carries
                 # every excitation separately for the tabbed run view
@@ -354,7 +401,8 @@ class Runner:
                             'warn': s['warn'], 'notConverged': s['notConverged'],
                             'state': s.get('state', 'queued'),
                             'percent': round(s.get('percent', 0.0), 1),
-                            'threads': s.get('threads')}
+                            'threads': s.get('threads'),
+                            'cpus': s.get('cpus')}
                            for s in self.stage_data],
             }
 
@@ -459,6 +507,8 @@ class Runner:
             self.parallel = par
             self.threads = threads
             self.auto_split = threads == 0 and par > 1
+            self.cpu_free = list(range(len(CPU_CORES)))
+            self.cpu_alloc = {}
             self.plan_cells = plan_cells
             multi = len(stages) > 1
             for i, st in enumerate(stages):
@@ -519,7 +569,7 @@ class Runner:
         if self.auto_split:
             queued = sum(1 for r in self.stage_data
                          if r['state'] == 'queued')      # includes this one
-            t = split_threads(os.cpu_count() or 1, self.plan_cells,
+            t = split_threads(len(CPU_CORES), self.plan_cells,
                               self.parallel, len(self.procs), queued)
             # the validated script carries no thread flag; the launch pins
             # this stage's fair share (a lone tail stage gets them all)
@@ -529,8 +579,27 @@ class Runner:
             rec['threads'] = t
         (st['dir'] / 'pcb_sim.m').write_text(script)
         rec['state'] = 'running'
+        cmd = ['stdbuf', '-oL', '-eL', 'octave', '--no-gui',
+               '--no-window-system', 'pcb_sim.m']
+        # Side-by-side solvers get DISJOINT physical-core sets. Unpinned,
+        # their threads migrate freely over every core: each instance
+        # keeps evicting the others' working set, on SMT machines two
+        # solver threads land on one FPU, and four instances that should
+        # each behave like a small dedicated machine instead melt into
+        # one oversubscribed pot (observed on a 32-CPU server: 19 MC/s
+        # per instance where a lone run does 100). Pinning also bounds
+        # the blast radius if a solver ignores its thread count - it can
+        # only ever use its own cores. A lone run stays unpinned.
+        if self.parallel > 1 and self.cpu_free:
+            want = rec.get('threads') or self.threads or 1
+            block = self.cpu_free[:max(1, min(want, len(self.cpu_free)))]
+            del self.cpu_free[:len(block)]
+            self.cpu_alloc[idx] = block
+            cpus = sorted(c for i in block for c in CPU_CORES[i])
+            rec['cpus'] = _fmt_cpuset(cpus)
+            cmd = ['taskset', '-c', ','.join(map(str, cpus))] + cmd
         proc = subprocess.Popen(
-            ['stdbuf', '-oL', '-eL', 'octave', '--no-gui', '--no-window-system', 'pcb_sim.m'],
+            cmd,
             cwd=st['dir'],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -576,6 +645,13 @@ class Runner:
         self.log.append(tag + line)
         if len(self.log) > MAX_LOG_LINES:
             del self.log[:len(self.log) - MAX_LOG_LINES]
+        # each stage also keeps its own untangled stream: the raw-output
+        # pane can show one solver at a time, and the stage's log is
+        # written next to its results when it finishes
+        if rec is not None:
+            rec['log'].append(line)
+            if len(rec['log']) > MAX_LOG_LINES:
+                del rec['log'][:len(rec['log']) - MAX_LOG_LINES]
         self._parse(line, rec)
 
     INFO_PATTERNS = [
@@ -680,6 +756,17 @@ class Runner:
             if buf:
                 self._append_line(buf.decode('utf-8', 'replace'), rec)
             self.procs.pop(idx, None)
+            # give the stage's cores back before anything else launches
+            freed = self.cpu_alloc.pop(idx, None)
+            if freed:
+                self.cpu_free = sorted(self.cpu_free + freed)
+            # the stage's own output stays reviewable next to its results
+            if rec is not None and rec['log'] and idx < len(self.stages):
+                try:
+                    (self.stages[idx]['dir'] / 'solver.log').write_text(
+                        '\n'.join(rec['log']) + '\n')
+                except OSError:
+                    pass
             if self.state == 'stopped':
                 if rec is not None:
                     rec['state'] = 'stopped'
@@ -939,7 +1026,8 @@ def api_run():
 
 @app.get('/api/status')
 def api_status():
-    return jsonify(runner.status(request.args.get('offset', 0)))
+    return jsonify(runner.status(request.args.get('offset', 0),
+                                 request.args.get('stage')))
 
 
 @app.post('/api/stop')

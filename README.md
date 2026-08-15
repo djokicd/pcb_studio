@@ -862,8 +862,31 @@ each launch:
   share alone would hand a medium board 16 threads whose per-timestep
   sync it cannot feed.
 
+**Each instance is pinned to its own physical cores.** Threads are
+budgeted on *physical* cores, not hyperthreads — the FDTD update is
+bandwidth- and FPU-bound, so an SMT sibling is not a worker, and on a
+16-core/32-thread server a "32 CPU" budget packs two solver threads
+onto every FPU with each running at half speed. Each side-by-side
+launch is then run under `taskset` on a **disjoint block** of those
+cores (SMT siblings included in its mask). Unpinned, the instances'
+threads migrate over every core, keep evicting each other's working
+sets and melt into one oversubscribed pot — observed on a 32-CPU
+server as 19 MC/s per instance where a lone run did 100 — while pinned
+they behave like small dedicated machines: on the 8-core reference
+machine two pinned 3-thread instances sustained 272 + 152 MC/s
+side by side, more combined throughput than a lone run's bandwidth
+peak. A block is released the moment its stage finishes, so a tail
+stage launching late still takes the larger share. Pinning also bounds
+a misbehaving solver: whatever thread count it decides on, it can only
+ever use its own cores. Each stage's tab tooltip names its cores
+(`3 threads on cores 0-2`). A *single* run stays unpinned.
+
 The run monitor shows the outcome (`4 running in parallel · 2 threads
-each`). A **Threads per excitation** value overrides all of this, and
+each`). With several solvers side by side the **Raw solver output** pane
+interleaves their streams (each line tagged `[Exc N]`); a *Show*
+selector above it switches to any one excitation's untangled stream,
+and every stage also writes its own `solver.log` next to its results.
+A **Threads per excitation** value overrides all of this, and
 
 ```bash
 python3 scripts/bench-threads.py <project> --threads 1,2,4,8,16

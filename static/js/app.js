@@ -1499,6 +1499,8 @@ function buildRunTabs(st) {
     b.title = `Excitation ${i + 1} of ${stages.length}`
       + (s.exc != null ? ` — port ${s.exc} driven` : '')
       + (s.state ? ` — ${STATE_TXT[s.state] || s.state}` : '')
+      + (s.threads ? ` — ${s.threads} thread${s.threads !== 1 ? 's' : ''}` : '')
+      + (s.cpus ? ` on cores ${s.cpus}` : '')
       + (live && s.percent ? ` (${s.percent.toFixed(0)}%)` : '')
       + (s.notConverged ? ' — did not reach the end criteria' : '')
       + (s.warn && s.warn.length ? ` — ${s.warn.length} solver warning(s)` : '');
@@ -1658,6 +1660,34 @@ function appendLog(lines) {
   if (atBottom) log.scrollTop = log.scrollHeight;
 }
 
+/* Raw-output excitation filter: parallel solvers interleave in the
+   combined stream, so each stage's own untangled log can be shown
+   instead. Switching resets the offset - the pane refills from the
+   chosen stream's start. */
+function syncRunLogSel(st) {
+  const bar = $('runLogBar');
+  const sel = $('runLogSel');
+  const stages = st.stages || [];
+  bar.hidden = stages.length < 2;
+  if (bar.hidden) {
+    if (app.runLogStage != null) { app.runLogStage = null; app.logOffset = 0; }
+    return;
+  }
+  if (sel.options.length !== stages.length + 1) {
+    const cur = sel.value;
+    sel.innerHTML = '';
+    sel.append(new Option('all (interleaved)', ''));
+    stages.forEach((s, i) => sel.append(new Option(s.label || `Run ${i + 1}`, String(i))));
+    sel.value = cur !== '' && Number(cur) < stages.length ? cur : '';
+  }
+}
+$('runLogSel').onchange = () => {
+  const v = $('runLogSel').value;
+  app.runLogStage = v === '' ? null : Number(v);
+  app.logOffset = 0;
+  $('runLog').textContent = '';
+};
+
 async function startRun() {
   const warnings = updateWarnings();
   if (warnings.length &&
@@ -1672,6 +1702,9 @@ async function startRun() {
     app.logOffset = 0;
     app._runStageSeen = null;   // rebuild the excitation tabs for this run
     app.runStageView = null;
+    app.runLogStage = null;
+    $('runLogSel').innerHTML = '';
+    $('runLogBar').hidden = true;
     $('runLog').textContent = '';
     $('results').hidden = true;
     $('noResults').hidden = false;
@@ -1692,9 +1725,11 @@ function poll() {
   clearTimeout(app.polling);
   app.polling = setTimeout(async () => {
     try {
-      const st = await apiJson(`/api/status?offset=${app.logOffset}`);
+      const st = await apiJson(`/api/status?offset=${app.logOffset}`
+        + (app.runLogStage != null ? `&stage=${app.runLogStage}` : ''));
       app.logOffset = st.nextOffset;
       app.runProject = st.project || '';
+      syncRunLogSel(st);
       appendLog(st.lines);
       setRunUI(st.state, st.percent, st.elapsed, st.stageInfo);
       updateRunStats(st);

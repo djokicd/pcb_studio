@@ -592,3 +592,92 @@ def test_explicit_thread_cap_disables_the_auto_split(tmp_path, monkeypatch):
     st, _ = _drain(r)
     assert all(t == 3 for t in seen), seen
     assert all(s['threads'] is None for s in st['stages'])
+
+
+def test_cpu_topology_lists_physical_cores():
+    """Each entry is one physical core's logical siblings; no logical CPU
+    appears twice, groups are sorted. FDTD threads are budgeted on these,
+    not on hyperthreads - two solver threads on one FPU each run at half
+    speed."""
+    cores = server.cpu_topology()
+    logical = [c for grp in cores for c in grp]
+    assert cores and len(logical) == len(set(logical))
+    assert all(grp == sorted(grp) for grp in cores)
+    assert cores == sorted(cores, key=lambda g: g[0])
+
+
+def test_fmt_cpuset_compresses_ranges():
+    assert server._fmt_cpuset([0, 1, 2, 3]) == '0-3'
+    assert server._fmt_cpuset([0, 2, 3, 5]) == '0,2-3,5'
+    assert server._fmt_cpuset([4]) == '4'
+
+
+def test_parallel_stages_get_disjoint_core_sets(monkeypatch, tmp_path):
+    """Side-by-side solvers are pinned to DISJOINT physical-core blocks.
+    Unpinned, their threads migrate over every core, evict each other's
+    working sets, and the instances melt into one oversubscribed pot -
+    observed on a 32-CPU server as 19 MC/s per instance where a lone run
+    does 100. Pinning also bounds a solver that ignores its thread count:
+    it can only ever use its own cores."""
+    calls = []
+
+    class FakeProc:
+        def __init__(self, cmd):
+            calls.append(cmd)
+            self.stdout = None
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(server.subprocess, 'Popen',
+                        lambda cmd, **kw: FakeProc(cmd))
+    monkeypatch.setattr(server.Runner, '_reader',
+                        lambda self, proc, idx=0: None)
+    monkeypatch.setattr(server, 'CPU_CORES', [[i] for i in range(8)])
+
+    r = server.Runner()
+    r.parallel = 4
+    r.auto_split = True
+    r.threads = 0
+    r.plan_cells = 1_500_000
+    r.cpu_free = list(range(8))
+    r.cpu_alloc = {}
+    for i in range(4):
+        r.stages.append({'dir': tmp_path / f's{i}',
+                         'script': 'RunOpenEMS(Sim_Path, Sim_File);'})
+        r.stage_data.append(r._new_stage_record(i + 1, f'Exc {i + 1}'))
+    for i in range(4):
+        r._launch_stage_locked(i)
+
+    sets = []
+    for cmd, rec in zip(calls, r.stage_data):
+        assert cmd[0] == 'taskset' and cmd[1] == '-c'
+        cpus = {int(c) for c in cmd[2].split(',')}
+        assert len(cpus) == rec['threads'], 'block size matches its threads'
+        assert rec['cpus'] is not None
+        # the thread flag actually landed in the script it will run
+        script = (r.stages[len(sets)]['dir'] / 'pcb_sim.m').read_text()
+        assert f"--numThreads={rec['threads']}" in script
+        sets.append(cpus)
+    union = set().union(*sets)
+    assert len(union) == sum(len(s) for s in sets), 'blocks overlap'
+    assert r.cpu_free == [], '4 stages x 2 cores cover all 8'
+
+
+def test_status_serves_one_stage_log_untangled():
+    """The combined raw log interleaves parallel solvers (tagged); asking
+    for one stage returns that solver's own stream, untagged, with its
+    own offsets."""
+    r = server.Runner()
+    r.stage_data.append(r._new_stage_record(1, 'Exc 1'))
+    r.stage_data.append(r._new_stage_record(2, 'Exc 2'))
+    r.procs = {0: object(), 1: object()}      # two live solvers -> tags
+    r._append_line('Timestep: 100', r.stage_data[0])
+    r._append_line('Timestep: 200', r.stage_data[1])
+    assert r.status()['lines'] == ['[Exc 1] Timestep: 100',
+                                   '[Exc 2] Timestep: 200']
+    assert r.status(stage=0)['lines'] == ['Timestep: 100']
+    assert r.status(0, '1')['lines'] == ['Timestep: 200']
+    st = r.status(0, 'junk')                  # junk falls back to combined
+    assert st['lines'][0].startswith('[Exc 1]')
+    assert st['stages'][0]['cpus'] is None    # nothing pinned here
